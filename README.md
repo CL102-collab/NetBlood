@@ -132,9 +132,24 @@ NBLOOD_VULKAN_WORKERS=1 ./nblood
 
 Worker threads prepare descriptors, copy draw data, and record Vulkan commands.
 Polymost scene traversal, pipeline creation, and GPU submission remain serial.
-The backend still waits for GPU completion before reusing submission resources;
-this change does not enable multiple frames in flight. Startup and shutdown
-logs report the configured worker count and actual recording activity.
+The backend uses two submission slots by default, allowing the CPU to prepare
+the next frame while submitted GPU work runs. Each slot has its own command
+pools, descriptors, upload buffer, and completion fence. Reusing a busy slot
+waits for its fence; normal submission and presentation do not wait for the
+entire queue to become idle. Screenshots and explicit completion requests still
+wait for their results, and swapchain recreation and shutdown drain the device.
+Shared color and depth targets retain their contents and ordered rendering.
+
+`NBLOOD_VULKAN_FRAMES_IN_FLIGHT` selects one, two, or three submission slots.
+More slots allow additional queued work at the cost of memory and potential
+input latency. Set it to `1` for comparison with a single reusable slot:
+
+```sh
+NBLOOD_VULKAN_FRAMES_IN_FLIGHT=1 ./nblood
+```
+
+Startup and shutdown logs report recording activity, submission counts, fence
+waits, and observed pending GPU work.
 
 For GNU Make, install the SDL2 and Vulkan development packages. Vulkan is enabled
 automatically when `pkg-config --exists vulkan` succeeds; it can be requested or

@@ -631,7 +631,7 @@ void APIENTRY vkfClear(GLbitfield mask)
     if (mask) vulkanClear(mask, state.clearColor, state.clearDepth, state.clearStencil, snapshot());
 }
 void APIENTRY vkfFinish() { vulkanFinish(); }
-void APIENTRY vkfFlush() { vulkanFinish(); }
+void APIENTRY vkfFlush() { vulkanFlush(); }
 
 GLuint &boundBuffer(GLenum target)
 {

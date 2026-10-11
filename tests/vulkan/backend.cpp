@@ -13,6 +13,8 @@
 #endif
 #ifdef VULKAN_BACKEND_TEST_WRAP
 #include <atomic>
+#include <map>
+#include <set>
 #include <vulkan/vulkan.h>
 
 namespace {
@@ -22,6 +24,27 @@ std::atomic<bool> failureObserved(false);
 std::atomic<unsigned> backgroundGateReached(0);
 std::atomic<unsigned> backgroundGateHeld(0);
 std::atomic<bool> releaseBackgroundGate(false);
+std::atomic<unsigned> injectedSubmissionFailure(0);
+std::atomic<bool> submissionFailureObserved(false);
+
+struct FenceAudit
+{
+    bool enabled = false;
+    uint64_t submissions = 0, unfencedSubmissions = 0, queueIdles = 0, deviceIdles = 0;
+    uint64_t waits = 0, resets = 0, unsafeResets = 0, unsafeSubmissions = 0, notReadyObservations = 0;
+    unsigned maxObservedUnsignaled = 0;
+    std::set<VkFence> fences;
+    std::map<VkFence, bool> submitted;
+};
+FenceAudit fenceAudit;
+
+bool injectSubmissionFailure(unsigned kind)
+{
+    unsigned expected = kind;
+    if (!injectedSubmissionFailure.compare_exchange_strong(expected, 0)) return false;
+    submissionFailureObserved.store(true);
+    return true;
+}
 
 bool waitForBackgroundGate(bool waitForRelease)
 {
@@ -88,6 +111,105 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAllocateDescriptorSets(
     if (injectWorkerFailure(2)) return VK_ERROR_OUT_OF_HOST_MEMORY;
     return __real_vkAllocateDescriptorSets(device, info, sets);
 }
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueueSubmit(
+    VkQueue queue, uint32_t count, VkSubmitInfo const *submits, VkFence fence);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueSubmit(
+    VkQueue queue, uint32_t count, VkSubmitInfo const *submits, VkFence fence)
+{
+    if (injectSubmissionFailure(1)) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    VkResult const result = __real_vkQueueSubmit(queue, count, submits, fence);
+    if (fenceAudit.enabled && result == VK_SUCCESS)
+    {
+        ++fenceAudit.submissions;
+        if (!fence) ++fenceAudit.unfencedSubmissions;
+        else
+        {
+            // A reset removes the prior submission from this map. Submitting
+            // the same still-pending fence without reset is a lifetime error.
+            if (fenceAudit.submitted[fence]) ++fenceAudit.unsafeSubmissions;
+            fenceAudit.submitted[fence] = true;
+            fenceAudit.fences.insert(fence);
+        }
+    }
+    return result;
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkResetFences(
+    VkDevice device, uint32_t count, VkFence const *fences);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkResetFences(
+    VkDevice device, uint32_t count, VkFence const *fences)
+{
+    if (fenceAudit.enabled)
+    {
+        fenceAudit.resets += count;
+        for (uint32_t i = 0; i < count; ++i)
+            if (fenceAudit.submitted[fences[i]] && vkGetFenceStatus(device, fences[i]) == VK_NOT_READY)
+                ++fenceAudit.unsafeResets;
+    }
+    VkResult const result = __real_vkResetFences(device, count, fences);
+    if (fenceAudit.enabled && result == VK_SUCCESS)
+        for (uint32_t i = 0; i < count; ++i) fenceAudit.submitted[fences[i]] = false;
+    return result;
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkWaitForFences(
+    VkDevice device, uint32_t count, VkFence const *fences, VkBool32 all, uint64_t timeout);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkWaitForFences(
+    VkDevice device, uint32_t count, VkFence const *fences, VkBool32 all, uint64_t timeout)
+{
+    if (fenceAudit.enabled) ++fenceAudit.waits;
+    return __real_vkWaitForFences(device, count, fences, all, timeout);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkGetFenceStatus(VkDevice device, VkFence fence);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkGetFenceStatus(VkDevice device, VkFence fence)
+{
+    VkResult const result = __real_vkGetFenceStatus(device, fence);
+    if (fenceAudit.enabled)
+    {
+        if (result == VK_NOT_READY) ++fenceAudit.notReadyObservations;
+        unsigned unsignaled = 0;
+        for (auto const &entry : fenceAudit.submitted)
+            if (entry.second && __real_vkGetFenceStatus(device, entry.first) == VK_NOT_READY) ++unsignaled;
+        if (unsignaled > fenceAudit.maxObservedUnsignaled) fenceAudit.maxObservedUnsignaled = unsignaled;
+    }
+    return result;
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueueWaitIdle(VkQueue queue);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueWaitIdle(VkQueue queue)
+{
+    if (fenceAudit.enabled) ++fenceAudit.queueIdles;
+    return __real_vkQueueWaitIdle(queue);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkDeviceWaitIdle(VkDevice device);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkDeviceWaitIdle(VkDevice device)
+{
+    if (fenceAudit.enabled) ++fenceAudit.deviceIdles;
+    if (injectSubmissionFailure(5)) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    return __real_vkDeviceWaitIdle(device);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkAcquireNextImageKHR(
+    VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *index);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAcquireNextImageKHR(
+    VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *index)
+{
+    if (injectSubmissionFailure(2)) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (injectSubmissionFailure(3)) return VK_ERROR_OUT_OF_DATE_KHR;
+    return __real_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, index);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueuePresentKHR(VkQueue queue, VkPresentInfoKHR const *info);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueuePresentKHR(VkQueue queue, VkPresentInfoKHR const *info)
+{
+    VkResult const result = __real_vkQueuePresentKHR(queue, info);
+    if ((result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) && injectSubmissionFailure(4))
+        return VK_SUBOPTIMAL_KHR;
+    return result;
+}
 #endif
 
 namespace {
@@ -100,6 +222,7 @@ struct ReferenceImage
 std::vector<ReferenceImage> referenceImages;
 size_t comparisonIndex = 0;
 bool recordReference = true;
+unsigned expectedFramesInFlight = 1;
 
 unsigned recordingWorkerLimit(unsigned cores)
 {
@@ -279,6 +402,8 @@ void streamRollover()
 {
     VulkanDrawState state = defaults();
     float const black[] = { 0.f, 0.f, 0.f, 1.f };
+    triangle(state, 0.f, 0.f, 1.f);
+    require(vulkanPresent(), "queue a frame before overflowing the vertex stream");
     vulkanClear(GL_COLOR_BUFFER_BIT, black, 1.f, 0, state);
     state.scissorTest = true;
     state.scissor[2] = state.scissor[3] = 1;
@@ -309,6 +434,112 @@ void streamRollover()
     pixel("stream rollover preserves earlier packet", 0, 255, 0, 1, 0);
     pixel("stream rollover preserves later packet", 255, 255, 0, 10, 1);
     compareImage("vertex stream rollover with queued packets");
+}
+
+void consecutivePresents()
+{
+    VulkanDrawState state = defaults();
+    float const black[] = { 0.f, 0.f, 0.f, 1.f };
+    vulkanClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, black, 1.f, 0, state);
+    vulkanFinish();
+    VulkanSubmissionStats before = {};
+    vulkanGetSubmissionStats(&before);
+    require(before.framesInFlight == expectedFramesInFlight, "requested submission ring size is active");
+    require(before.pendingSubmissions == 0, "Finish completes every previously queued submission");
+#ifdef VULKAN_BACKEND_TEST_WRAP
+    fenceAudit = FenceAudit();
+    fenceAudit.enabled = true;
+#endif
+    state.scissorTest = true;
+    state.scissor[2] = state.scissor[3] = 8;
+    // Preserve earlier tiles instead of clearing every frame. This catches
+    // attachment contents lost when rotating slots and unsafe command/stream
+    // reuse. No readback, Finish, upload, or resize serializes these presents.
+    for (unsigned frame = 0; frame < 48; ++frame)
+    {
+        state.scissor[0] = (frame % 8) * 8;
+        state.scissor[1] = (frame / 8) * 8;
+        for (unsigned draw = 0; draw < 96; ++draw)
+        {
+            unsigned const color = frame + draw + 1;
+            triangle(state, float(color & 1), float((color >> 1) & 1), float((color >> 2) & 1));
+        }
+        require(vulkanPresent(), "present consecutive frames without CPU readback or Finish");
+    }
+    VulkanSubmissionStats queued = {};
+    vulkanGetSubmissionStats(&queued);
+#ifdef VULKAN_BACKEND_TEST_WRAP
+    fenceAudit.enabled = false;
+    require(fenceAudit.queueIdles == 0 && fenceAudit.deviceIdles == 0,
+            "steady presentation never idles the whole Vulkan queue or device");
+    require(fenceAudit.submissions >= 48 && fenceAudit.unfencedSubmissions == 0,
+            "every rendering submission carries a retirement fence");
+    require(fenceAudit.unsafeResets == 0 && fenceAudit.unsafeSubmissions == 0,
+            "slot fences are completed before reset or reuse");
+    require(fenceAudit.fences.size() >= expectedFramesInFlight, "consecutive frames rotate through the submission ring");
+    std::printf("PASS: %zu distinct submission fences, %llu waits, %llu NOT_READY observations; "
+                "at most %u submitted fences observed unsignaled (not a GPU execution-overlap measurement)\n",
+                fenceAudit.fences.size(), static_cast<unsigned long long>(fenceAudit.waits),
+                static_cast<unsigned long long>(fenceAudit.notReadyObservations), fenceAudit.maxObservedUnsignaled);
+#endif
+    require(queued.presents >= before.presents + 48 && queued.submissions >= before.submissions + 48,
+            "all asynchronous test frames were submitted and presented");
+    require(queued.maxPendingSubmissions <= expectedFramesInFlight,
+            "logical pending submissions stay within the configured ring");
+    require(queued.queueIdleWaits == before.queueIdleWaits && queued.deviceIdleWaits == before.deviceIdleWaits,
+            "submission diagnostics confirm no steady-state queue or device idle");
+    pixel("early partial frame survives slot rotation", 255, 0, 0, 12, 4);
+    pixel("another early partial frame survives slot rotation", 0, 255, 0, 20, 4);
+    pixel("last partial frame is visible to synchronous readback", 255, 255, 255, 60, 44);
+    compareImage("48 consecutive partial-frame presents without readback");
+    vulkanFinish();
+    VulkanSubmissionStats finished = {};
+    vulkanGetSubmissionStats(&finished);
+    require(finished.pendingSubmissions == 0 && finished.completedSubmissions == finished.submissions,
+            "Finish waits for every submission, including earlier ring slots");
+    std::printf("PASS: %u frame slots; peak logical pending submissions %u, driver-observed unsignaled %u\n",
+                finished.framesInFlight, finished.maxPendingSubmissions, finished.maxObservedUnsignaled);
+
+    // Mutate and retire sampled images with older submissions still queued.
+    // Their already rendered tiles must retain the old texels after ID reuse.
+    state = defaults();
+    vulkanClear(GL_COLOR_BUFFER_BIT, black, 1.f, 0, state);
+    unsigned char const colors[3][4] = { {255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255} };
+    vulkanUploadTexture(17, 0, 1, 1, colors[0]);
+    state.uniforms.fixed[0] = 1.f;
+    state.samplers[0].texture = 17;
+    state.scissorTest = true;
+    state.scissor[2] = 16;
+    state.scissor[3] = 64;
+    for (unsigned frame = 0; frame < 3; ++frame)
+    {
+        if (frame == 1) vulkanUploadTextureRegion(17, 0, 0, 0, 1, 1, colors[1]);
+        if (frame == 2)
+        {
+            vulkanDeleteTexture(17);
+            vulkanUploadTexture(17, 0, 1, 1, colors[2]);
+        }
+        state.scissor[0] = frame * 16;
+        for (unsigned draw = 0; draw < 96; ++draw) triangle(state, 1.f, 1.f, 1.f);
+        require(vulkanPresent(), "present sampled images before their mutation or retirement");
+    }
+    vulkanDeleteTexture(17);
+    pixel("pending texture mutation preserves earlier red tile", 255, 0, 0, 8, 32);
+    pixel("pending texture deletion preserves earlier green tile", 0, 255, 0, 24, 32);
+    pixel("pending texture ID reuse displays new blue tile", 0, 0, 255, 40, 32);
+    compareImage("texture mutation and retirement across queued submissions");
+    vulkanFinish();
+    vulkanGetSubmissionStats(&finished);
+    require(finished.pendingSubmissions == 0 && finished.pendingRetiredImages == 0,
+            "Finish drains both submitted work and retired texture resources");
+    state = defaults();
+    triangle(state, 1.f, 0.f, 1.f);
+    uint64_t const submissionsBeforeFlush = finished.submissions;
+    vulkanFlush();
+    vulkanGetSubmissionStats(&finished);
+    require(finished.submissions > submissionsBeforeFlush, "Flush submits pending drawing commands");
+    pixel("synchronous readback observes asynchronously flushed drawing", 255, 0, 255);
+    compareImage("Flush followed by synchronous readback");
 }
 
 void checkRecordingWorkers(unsigned workerCount)
@@ -498,12 +729,14 @@ void run(SDL_Window *window, unsigned workerCount)
     require(vulkanPresent(), "present rendered image");
 
     orderingAndBarriers();
+    consecutivePresents();
     streamRollover();
 
     // Exhaust a descriptor pool without a readback or explicit finish. This
     // catches accidental reuse of descriptors/vertices while the GPU reads them.
     state.scissorTest = true;
     state.scissor[2] = state.scissor[3] = 1;
+    require(vulkanPresent(), "queue a frame before descriptor rollover");
     for (unsigned i = 0; i < 16400; ++i)
     {
         state.scissor[0] = i % 64;
@@ -527,6 +760,12 @@ void run(SDL_Window *window, unsigned workerCount)
     triangle(state, 0.f, 0.f, 1.f);
     pixel("vsync swapchain recreation", 0, 0, 255);
     require(vulkanPresent(), "present after changing vsync");
+    require(vulkanResize(0, 0), "suspend a zero-sized render target with submitted frames");
+    require(vulkanPresent(), "presentation tolerates a suspended render target");
+    require(vulkanResize(96, 96), "restore the render target after suspension");
+    triangle(state, 0.f, 1.f, 1.f);
+    pixel("restored render target after suspension", 0, 255, 255, 80, 80);
+    compareImage("suspend and restore with submitted frames", 96, 96);
     vulkanDeleteTexture(1);
     checkRecordingWorkers(workerCount);
     vulkanDestroy();
@@ -687,10 +926,90 @@ void workerFailures(SDL_Window *window)
     std::puts("SKIP: worker Vulkan failure injection requires the Linux test linker wrappers");
 #endif
 }
+
+void submissionFailures(SDL_Window *window)
+{
+#ifdef VULKAN_BACKEND_TEST_WRAP
+    for (unsigned failure = 1; failure <= 4; ++failure)
+    {
+        require(vulkanCreate(window, 96, 96, 0), "create renderer before injected submission/acquire/present result");
+        VulkanDrawState const state = defaults(96, 96);
+        for (unsigned frame = 0; frame < 4; ++frame)
+        {
+            triangle(state, 1.f, 0.f, 0.f);
+            require(vulkanPresent(), "queue frames before injected submission/acquire/present result");
+        }
+        char const *label = failure == 1 ? "queue submit failure" : failure == 2 ? "image acquire failure" :
+                            failure == 3 ? "out-of-date image acquire" : "suboptimal presentation";
+        std::printf("Checking %s with earlier submitted frames\n", label);
+        submissionFailureObserved.store(false);
+        injectedSubmissionFailure.store(failure);
+        triangle(state, 0.f, 0.f, 1.f);
+        bool const presented = vulkanPresent();
+        require(submissionFailureObserved.load(), "requested Vulkan submission/presentation result was injected");
+        require(vulkanActive(), "submission or presentation failure retains native ownership");
+        if (failure <= 2)
+        {
+            require(!presented, "submit/acquire error propagates to the caller");
+            // A reset fence for a submission that failed must never be waited
+            // as though GPU work would eventually signal it.
+            vulkanDestroy();
+            require(vulkanCreate(window, 96, 96, 0), "recreate backend after submission/acquire failure");
+        }
+        else
+            require(presented, "out-of-date/suboptimal swapchain result is recovered");
+        triangle(state, 0.f, 1.f, 0.f);
+        pixel("rendering after injected submission/presentation result", 0, 255, 0);
+        require(vulkanPresent(), "presentation recovers after injected submission/presentation result");
+        vulkanDestroy();
+    }
+#else
+    (void)window;
+    std::puts("SKIP: submission/acquire/present result injection requires Linux test linker wrappers");
+#endif
+}
+
+void teardownIdleFailure(SDL_Window *window)
+{
+#ifdef VULKAN_BACKEND_TEST_WRAP
+    require(vulkanCreate(window, 96, 96, 0), "create renderer before injected teardown idle failure");
+    VulkanDrawState const state = defaults(96, 96);
+    for (unsigned frame = 0; frame < 4; ++frame)
+    {
+        for (unsigned draw = 0; draw < 96; ++draw) triangle(state, 1.f, 0.f, 0.f);
+        require(vulkanPresent(), "submit frames before teardown idle failure");
+    }
+    fenceAudit = FenceAudit();
+    fenceAudit.enabled = true;
+    submissionFailureObserved.store(false);
+    injectedSubmissionFailure.store(5);
+    std::puts("Checking teardown device-idle OOM with a real queue-idle fallback");
+    vulkanDestroy();
+    fenceAudit.enabled = false;
+    require(submissionFailureObserved.load(), "teardown device-idle OOM was injected");
+    require(fenceAudit.deviceIdles == 1 && fenceAudit.queueIdles == 1,
+            "failed device-idle wait falls back to exactly one real queue-idle wait");
+    require(!vulkanActive(), "completed fallback permits safe renderer teardown");
+    require(vulkanCreate(window, 96, 96, 0), "recreate renderer after teardown idle fallback");
+    triangle(state, 1.f, 0.f, 1.f);
+    pixel("rendering recovers after teardown idle fallback", 255, 0, 255);
+    require(vulkanPresent(), "presentation recovers after teardown idle fallback");
+    vulkanDestroy();
+#else
+    (void)window;
+    std::puts("SKIP: teardown idle failure injection requires Linux test linker wrappers");
+#endif
+}
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    bool const teardownOnly = argc == 2 && std::strcmp(argv[1], "--teardown-idle-only") == 0;
+    if (argc > 1 && !teardownOnly)
+    {
+        std::fprintf(stderr, "Usage: %s [--teardown-idle-only]\n", argv[0]);
+        return 2;
+    }
     if (SDL_Init(SDL_INIT_VIDEO))
     {
         std::fprintf(stderr, "SDL video initialization failed: %s\n", SDL_GetError());
@@ -705,8 +1024,19 @@ int main()
         SDL_Quit();
         return 1;
     }
+    if (teardownOnly)
+    {
+        SDL_SetWindowSize(window, 96, 96);
+        SDL_PumpEvents();
+        teardownIdleFailure(window);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::puts("PASS: targeted Vulkan teardown idle failure check");
+        return 0;
+    }
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "1", 1) == 0, "configure synchronous recording reference");
-    std::puts("Testing one synchronous recording worker");
+    require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", "1", 1) == 0, "configure one-slot submission reference");
+    std::puts("Testing one synchronous recorder and one submission slot");
     run(window, 1);
     recordReference = false;
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "5", 1) == 0, "configure caller plus parallel recording workers");
@@ -718,8 +1048,32 @@ int main()
         std::puts("SKIP: recording overlap requires at least two available CPU cores");
     run(window, parallelWorkers);
     require(comparisonIndex == referenceImages.size(), "every reference image was compared");
+    unsigned const slotConfigurations[] = { 3, 2 };
+    for (unsigned slots : slotConfigurations)
+    {
+        comparisonIndex = 0;
+        expectedFramesInFlight = slots;
+        if (slots == 3)
+            require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", "3", 1) == 0, "configure three submission slots");
+        else
+        {
+#ifdef _WIN32
+            require(_putenv_s("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", "") == 0, "select default submission slot count");
+#else
+            require(unsetenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT") == 0, "select default submission slot count");
+#endif
+        }
+        SDL_SetWindowSize(window, 64, 64);
+        SDL_PumpEvents();
+        std::printf("Testing parallel recording with %u fence-protected submission slots%s\n",
+                    slots, slots == 2 ? " (default)" : "");
+        run(window, parallelWorkers);
+        require(comparisonIndex == referenceImages.size(), "every image matches the one-slot reference across slot counts");
+    }
     automaticWorkers(window);
     workerFailures(window);
+    submissionFailures(window);
+    teardownIdleFailure(window);
     SDL_DestroyWindow(window);
     SDL_Quit();
     std::puts("PASS: all native Vulkan backend regression checks");

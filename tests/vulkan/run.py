@@ -116,7 +116,7 @@ def arguments():
     parser.add_argument('--search-path', action='append', type=Path, default=[], help='Additional asset search directory; repeat as needed')
     parser.add_argument('--output', type=Path, help='New evidence directory; defaults to a temporary directory')
     parser.add_argument('--map', action='append', dest='maps', help='Repeat for additional scenes; default E1M1')
-    parser.add_argument('--mode', choices=('opengl', 'vulkan', 'compare', 'switch', 'bridge', 'all'), default='compare')
+    parser.add_argument('--mode', choices=('opengl', 'vulkan', 'compare', 'switch', 'bridge', 'lifecycle', 'all'), default='compare')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--timeout', type=float, default=120)
@@ -130,6 +130,10 @@ def arguments():
                         help='Total Vulkan recorders including caller; sets NBLOOD_VULKAN_WORKERS (omitted uses environment/auto)')
     parser.add_argument('--require-parallel', action='store_true',
                         help='Require Vulkan caller recording to overlap a distinct background recorder')
+    parser.add_argument('--frames-in-flight', type=int, choices=(1, 2, 3),
+                        help='Vulkan submission slots; sets NBLOOD_VULKAN_FRAMES_IN_FLIGHT (omitted uses environment/default 2)')
+    parser.add_argument('--require-inflight', action='store_true',
+                        help='Require at least two submitted fences observed unfinished together')
     parser.add_argument('--validation', action='store_true', help='Enable installed Khronos Vulkan validation layer')
     parser.add_argument('--disable-opengl', action='store_true',
                         help='Require Vulkan to render while OpenGL library loading is deliberately disabled')
@@ -148,7 +152,7 @@ def build_input_driver(output):
     return library
 
 
-def write_console_files(runtime, map_name, sequence):
+def write_console_files(runtime, map_name, sequence, final_capture_only=False):
     # The first binding executes only after ordinary -map startup. Calling map
     # synchronously again and then pause freezes the identical reset world before
     # another simulation tick, regardless of driver initialization duration.
@@ -167,7 +171,8 @@ def write_console_files(runtime, map_name, sequence):
         f'map "{map_name}"\npause\necho RENDER_TEST_FROZEN\n')
     capture_count = len(sequence)
     for index in range(capture_count):
-        commands = ['screenshot', f'echo RENDER_TEST_CAPTURE_{index}']
+        commands = [] if final_capture_only and index + 1 < capture_count else ['screenshot']
+        commands += [f'echo RENDER_TEST_CAPTURE_{index}']
         if index + 1 < capture_count:
             commands += [f'setrendermode {sequence[index + 1]}']
         else:
@@ -288,12 +293,65 @@ def recording_evidence(log, uses_vulkan, requested_workers=None, require_paralle
     return lifetimes, errors
 
 
-def run_case(args, output, library, map_name, renderer, switching=False, bridge=False):
+def submission_evidence(log, uses_vulkan, requested_frames=None, require_inflight=False):
+    """Distinguish submitted/unretired work from fences actually polled unfinished."""
+    lifetimes, errors = [], []
+    configuration = None
+    configuration_pattern = re.compile(r'Vulkan submission configuration: frames_in_flight=(\d+)')
+    fields = ('frames_in_flight', 'submissions', 'completed', 'pending', 'max_pending',
+              'max_observed_unsignaled', 'presents', 'fence_waits', 'slot_reuse_waits',
+              'finish_waits', 'readback_waits', 'queue_idle_waits', 'device_idle_waits',
+              'retired_images', 'pending_retired_images')
+    summary_pattern = re.compile('Vulkan submission stats: ' + ' '.join(
+        name + r'=(\d+)' for name in fields))
+    for line in log.splitlines():
+        if startup := configuration_pattern.search(line):
+            if uses_vulkan and configuration is not None:
+                errors.append('Vulkan submission startup lacks matching teardown statistics')
+            configuration = {'frames_in_flight': int(startup.group(1))}
+        elif summary := summary_pattern.search(line):
+            stats = dict(zip(fields, map(int, summary.groups())))
+            stats['configuration'] = configuration
+            configuration = None
+            stats['observed_multiple_unfinished'] = (stats['max_pending'] >= 2
+                                                     and stats['max_observed_unsignaled'] >= 2)
+            lifetimes.append(stats)
+    if uses_vulkan:
+        if configuration is not None:
+            errors.append('Vulkan submission startup lacks matching teardown statistics')
+        if not lifetimes:
+            errors.append('missing Vulkan submission statistics')
+        for stats in lifetimes:
+            config = stats['configuration']
+            slots = stats['frames_in_flight']
+            if not config:
+                errors.append('missing Vulkan submission startup configuration')
+            elif config['frames_in_flight'] != slots:
+                errors.append('Vulkan submission slot count differs between startup and teardown')
+            if slots not in (1, 2, 3) or (requested_frames is not None and slots != requested_frames):
+                errors.append('Vulkan submission slot count does not match the supported request')
+            if not 0 <= stats['max_observed_unsignaled'] <= stats['max_pending'] <= slots:
+                errors.append('Vulkan outstanding submission counters exceed the slot count')
+            if stats['completed'] != stats['submissions'] or stats['pending'] != 0:
+                errors.append('Vulkan submissions were not completely drained at teardown')
+            if stats['pending_retired_images'] != 0:
+                errors.append('Vulkan retired images remain pending at teardown')
+            if stats['max_pending'] > stats['submissions'] or stats['presents'] > stats['submissions']:
+                errors.append('Vulkan pending/presentation counts exceed submitted work')
+            if stats['queue_idle_waits'] != 0:
+                errors.append('Vulkan used a queue-idle wait during submission')
+        if require_inflight and not any(stats['observed_multiple_unfinished'] for stats in lifetimes):
+            errors.append('Vulkan did not observe at least two submitted fences unfinished together')
+    return lifetimes, errors
+
+
+def run_case(args, output, library, map_name, renderer, switching=False, bridge=False, lifecycle=False):
     label = re.sub(r'[^a-zA-Z0-9_.-]', '_', map_name)
-    runtime = output / f'{label}-{"bridge" if bridge else "switch" if switching else renderer}'
+    runtime = output / f'{label}-{"lifecycle" if lifecycle else "bridge" if bridge else "switch" if switching else renderer}'
     runtime.mkdir()
-    sequence = [3, 0, 5, 0, 3] if bridge else [3, 5, 3] if switching else [renderer]
-    captures = write_console_files(runtime, map_name, sequence)
+    sequence = [5, 0, 5, 3, 5] if lifecycle else [3, 0, 5, 0, 3] if bridge else [3, 5, 3] if switching else [renderer]
+    captures = write_console_files(runtime, map_name, sequence, final_capture_only=lifecycle)
+    expected_screenshots = 1 if lifecycle else captures
     (runtime / 'render-test.cfg').write_text(
         '[Setup]\nForceSetup = 0\nNoAutoLoad = 1\n\n[Screen Setup]\n'
         f'Renderer = {renderer}\nScreenMode = 0\nScreenBPP = 32\n'
@@ -305,8 +363,12 @@ def run_case(args, output, library, map_name, renderer, switching=False, bridge=
                RENDER_TEST_PRESSES=str(captures + 1))
     requested_workers = getattr(args, 'vulkan_workers', None)
     require_parallel = getattr(args, 'require_parallel', False)
+    requested_frames = getattr(args, 'frames_in_flight', None)
+    require_inflight = getattr(args, 'require_inflight', False)
     if requested_workers is not None:
         env['NBLOOD_VULKAN_WORKERS'] = str(requested_workers)
+    if requested_frames is not None:
+        env['NBLOOD_VULKAN_FRAMES_IN_FLIGHT'] = str(requested_frames)
     env['LD_PRELOAD'] = str(library) + (' ' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
     if args.validation:
         env['VK_INSTANCE_LAYERS'] = 'VK_LAYER_KHRONOS_validation'
@@ -350,7 +412,7 @@ def run_case(args, output, library, map_name, renderer, switching=False, bridge=
                                and str(missing_gl) in line and line.endswith('; all OpenGL modes are unavailable.'))
         if expected_gl_failure:
             missing_gl_lines += 1
-        elif re.search(r'\b(?:ERROR|FATAL)\||Validation Error|VUID-|unknown (?:command|symbol)|not a (?:valid|recognized)', line, re.I):
+        elif re.search(r'\b(?:ERROR|FATAL)\||Validation Error|VUID-|SYNC-HAZARD|unknown (?:command|symbol)|not a (?:valid|recognized)', line, re.I):
             errors.append(line.strip())
     if args.disable_opengl and missing_gl_lines != 1:
         errors.append('expected exactly one deliberate OpenGL library loading failure')
@@ -365,35 +427,47 @@ def run_case(args, output, library, map_name, renderer, switching=False, bridge=
         errors.append('missing native API context evidence')
     else:
         contexts = dict(zip(('gl_attempts', 'gl_contexts', 'vulkan_surfaces'), map(int, context_match.groups())))
-        if renderer == 5 and (contexts['gl_attempts'] != 0 or contexts['vulkan_surfaces'] < 1):
+        if renderer == 5 and not lifecycle and (contexts['gl_attempts'] != 0 or contexts['vulkan_surfaces'] < 1):
             errors.append('Vulkan-only run did not prove a Vulkan surface with zero OpenGL context attempts')
         if renderer == 3 and contexts['gl_contexts'] < 1:
             errors.append('OpenGL reference did not create an OpenGL context')
-        if switching and (contexts['gl_contexts'] < 2 or contexts['vulkan_surfaces'] < 1):
+        if lifecycle and (contexts['gl_contexts'] < 1 or contexts['vulkan_surfaces'] < 3):
+            errors.append('5 -> 0 -> 5 -> 3 -> 5 did not recreate all native contexts')
+        if switching and not lifecycle and (contexts['gl_contexts'] < 2 or contexts['vulkan_surfaces'] < 1):
             errors.append('3 -> 5 -> 3 did not recreate both native contexts')
     recording_stats, recording_errors = recording_evidence(
         log, 5 in sequence, requested_workers, require_parallel)
     errors.extend(recording_errors)
+    submission_stats, submission_errors = submission_evidence(
+        log, 5 in sequence, requested_frames, require_inflight)
+    errors.extend(submission_errors)
+    if submission_stats and contexts and len(submission_stats) != contexts['vulkan_surfaces']:
+        errors.append('Vulkan submission lifetime count does not match the created native surfaces')
     screenshots = sorted(runtime.rglob('blud*.png'))
-    if len(screenshots) != captures:
-        errors.append(f'expected {captures} screenshots, found {len(screenshots)}')
+    if len(screenshots) != expected_screenshots:
+        errors.append(f'expected {expected_screenshots} screenshots, found {len(screenshots)}')
     for screenshot in screenshots:
         try:
             inspect_image(screenshot, (args.width, args.height))
         except (OSError, ValueError) as error:
             errors.append(str(error))
     saved = (runtime / 'render-test.cfg').read_text(errors='replace')
-    expected_final = 3 if switching else renderer
+    expected_final = sequence[-1]
     if not re.search(rf'^Renderer\s*=\s*{expected_final}\s*$', saved, re.M):
         errors.append('saved renderer does not match the requested final renderer')
     if not re.search(r'^ScreenBPP\s*=\s*32\s*$', saved, re.M):
         errors.append('renderer fell back from 32-bit video')
     result = {'map': map_name, 'renderer': renderer, 'switching': switching,
-              'renderer_sequence': sequence,
+              'renderer_sequence': sequence, 'lifecycle': lifecycle,
+              'final_capture_only': lifecycle,
               'vulkan_workers_requested': requested_workers,
               'vulkan_workers_environment': env.get('NBLOOD_VULKAN_WORKERS'),
               'parallel_required': require_parallel and 5 in sequence,
               'vulkan_recording': recording_stats,
+              'frames_in_flight_requested': requested_frames,
+              'frames_in_flight_environment': env.get('NBLOOD_VULKAN_FRAMES_IN_FLIGHT'),
+              'inflight_required': require_inflight and 5 in sequence,
+              'vulkan_submission': submission_stats,
               'opengl_disabled': args.disable_opengl, 'expected_gl_loading_failures': missing_gl_lines,
               'features': args.manifest.get('features', {}).get(map_name, []),
               'command': command, 'exit_code': exit_code, 'contexts': contexts,
@@ -490,11 +564,11 @@ def main():
             if args.mode in ('compare', 'all'):
                 reference = run_case(args, output, library, map_name, 3)
                 cases.append(reference)
-            native = run_case(args, output, library, map_name, 5)
-            cases.append(native)
-            if reference and reference['passed'] and native['passed']:
-                comparisons.append(compare_images(reference['screenshots'][0], native['screenshots'][0],
-                    Path(native['log']).parent / 'difference-from-gl.png', args.max_mean_error,
+            native_case = run_case(args, output, library, map_name, 5)
+            cases.append(native_case)
+            if reference and reference['passed'] and native_case['passed']:
+                comparisons.append(compare_images(reference['screenshots'][0], native_case['screenshots'][0],
+                    Path(native_case['log']).parent / 'difference-from-gl.png', args.max_mean_error,
                     args.max_changed_fraction))
         if args.mode in ('switch', 'all'):
             switched = run_case(args, output, library, map_name, 3, switching=True)
@@ -516,12 +590,20 @@ def main():
                                             (software, software_after, 'software-restored')):
                     comparisons.append(compare_images(first, second, directory / f'difference-bridge-{name}.png',
                         args.max_mean_error, args.max_changed_fraction))
+        if args.mode in ('lifecycle', 'all'):
+            lifecycle = run_case(args, output, library, map_name, 5, switching=True, lifecycle=True)
+            cases.append(lifecycle)
+            if args.mode == 'all' and native_case['passed'] and lifecycle['passed']:
+                comparisons.append(compare_images(native_case['screenshots'][0], lifecycle['screenshots'][0],
+                    Path(lifecycle['log']).parent / 'difference-lifecycle-restored.png',
+                    args.max_mean_error, args.max_changed_fraction))
     effects, feature_parity = check_feature_effects(args, output, cases)
     comparisons += feature_parity
     passed = (all(case['passed'] for case in cases) and all(item['passed'] for item in comparisons)
               and all(item['passed'] for item in effects))
     result = {'passed': passed, 'binary_source': str(binary_source), 'binary_sha256': binary_sha256,
               'vulkan_workers_requested': args.vulkan_workers, 'parallel_required': args.require_parallel,
+              'frames_in_flight_requested': args.frames_in_flight, 'inflight_required': args.require_inflight,
               'cases': cases, 'comparisons': comparisons,
               'feature_effects': effects,
               'scope': 'Paused supplied maps only; this does not establish full renderer parity or demo determinism.'}

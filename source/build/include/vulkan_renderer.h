@@ -74,6 +74,17 @@ struct VulkanRecordingStats
     std::vector<uint64_t> workerDraws, workerThreadIds, workerRecordNanoseconds;
 };
 
+// Submission slots bound CPU/GPU resource reuse; they do not imply that the GPU
+// rasterizes multiple frames simultaneously. Fence observations are diagnostics.
+struct VulkanSubmissionStats
+{
+    uint32_t framesInFlight, pendingSubmissions, maxPendingSubmissions, maxObservedUnsignaled;
+    uint32_t pendingRetiredImages;
+    uint64_t submissions, completedSubmissions, presents;
+    uint64_t fenceWaits, slotReuseWaits, finishWaits, readbackWaits;
+    uint64_t deviceIdleWaits, queueIdleWaits, retiredImages;
+};
+
 #ifdef USE_VULKAN
 bool vulkanCreate(SDL_Window *window, int width, int height, int vsync);
 void vulkanDestroy();
@@ -83,6 +94,7 @@ bool vulkanResize(int width, int height);
 void vulkanSetVsync(int vsync);
 bool vulkanPresent();
 void vulkanFinish();
+void vulkanFlush();
 void vulkanDraw(const VulkanVertex *vertices, unsigned count, const VulkanDrawState &state);
 void vulkanClear(uint32_t mask, const float color[4], float depth, uint32_t stencil,
                  const VulkanDrawState &state);
@@ -95,6 +107,7 @@ int vulkanMaxTextureSize();
 float vulkanMaxAnisotropy();
 bool vulkanDepthClampSupported();
 void vulkanGetRecordingStats(VulkanRecordingStats *stats);
+void vulkanGetSubmissionStats(VulkanSubmissionStats *stats);
 unsigned vulkanAvailableRecordingCores();
 
 // The frontend adapter owns virtual texture/buffer IDs and material state.

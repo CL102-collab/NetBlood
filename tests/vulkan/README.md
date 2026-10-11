@@ -21,8 +21,11 @@ source /workspace/netblood-env/activate-vulkan.sh
 `--mode opengl` checks fixture loading in the reference renderer, `vulkan` checks
 Vulkan startup/rendering, `compare` compares OpenGL mode 3
 with Vulkan mode 5, `switch` checks 3 → 5 → 3 in one process, and `bridge` checks
-3 → 0 → 5 → 0 → 3, including software renderer restoration. `all` runs comparisons
-and both switching sequences. `--map E1M1 --map E2M1` adds scenes. Each invocation
+3 → 0 → 5 → 0 → 3, including software renderer restoration. `lifecycle` switches
+5 → 0 → 5 → 3 → 5 without intermediate screenshots and captures only the final
+restored frame. This lets pending GPU work reach renderer teardown without a
+preceding readback draining it. `all` runs comparisons and all three switching
+sequences, comparing the lifecycle result with the standalone Vulkan image. `--map E1M1 --map E2M1` adds scenes. Each invocation
 creates a new evidence directory; use `--output /path/to/new-directory` to select
 it explicitly.
 
@@ -78,6 +81,34 @@ captured frame, and do not establish a performance improvement.
 python3 tests/vulkan/run.py --assets /path/to/blood121 \
   --mode compare --vulkan-workers 5 --require-parallel --validation
 ```
+
+`--frames-in-flight 1`, `2`, or `3` sets `NBLOOD_VULKAN_FRAMES_IN_FLIGHT`;
+omitting it preserves the environment or the default of two submission slots.
+The evidence retains each backend lifetime's configuration, submitted/completed
+counts, pending high-water mark, unfinished-fence observations, presentation
+count, fence/slot-reuse/finish/readback waits, queue/device-idle waits, and retired
+image counts. Checks reject mismatched slot counts, inconsistent counters,
+queue-idle waits, incomplete teardown, and unreclaimed retired images. Device-idle
+waits are reported separately because teardown and resizing can require them.
+
+`--require-inflight` requires at least one lifetime with `max_pending >= 2` and
+`max_observed_unsignaled >= 2`: two submitted fences were actually polled
+unfinished together. Submitted work that has not yet been checked for completion
+alone cannot pass. This proves outstanding GPU submissions, not simultaneous GPU
+execution or a speedup. The assertion is optional because a fast driver can finish
+before polling observes overlap; OpenGL-only reference cases are exempt.
+
+```sh
+python3 tests/vulkan/run.py --assets /path/to/blood121 --mode all \
+  --frames-in-flight 2 --require-inflight --validation
+```
+
+Paused fixtures cover render state, texture/depth lifetimes, and restoration, but
+not continuous game simulation. A separate deterministic demo harness can compare
+every simulation step and capture selected frame checkpoints against a reference.
+Leave intervals between captures: screenshot readbacks drain work, so capturing
+every frame cannot establish multiple frames in flight. Delirium's accumulation
+blur also currently requires a framebuffer readback while active.
 
 Comparisons disable texture compression and its disk cache in both renderers
 (`r_texcompr 0`, `r_texcache 0`), so OpenGL DXT quantization does not alter source
@@ -137,3 +168,14 @@ thread creation, the automatic CPU policy, oversized request clamping, and recov
 after injected worker failures on Linux. Affinity checks exercise one-core and
 three-core configurations when available. These API checks complement the game
 screenshots and simulation tests.
+
+Frame-slot checks compare exact images with a one-slot reference for parallel
+recording with one, two, and three slots. They present 48 consecutive partial
+frames without readback or Finish, audit real Vulkan calls for fence reuse and
+steady-state queue/device-idle waits, and report unfinished-fence observations
+separately. Queued texture changes/deletion/ID reuse, stream and descriptor
+rollover, Flush/readback/Finish drains, resize/vsync/suspension restoration, and
+injected submission/acquisition failures exercise resource ownership and recovery.
+`backend-test.sh --teardown-idle-only` isolates the exceptional device-idle error
+recovery test, which requires a queue-idle fallback before freeing resources.
+Healthy-path game checks continue to require zero queue-idle waits.

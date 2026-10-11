@@ -86,17 +86,36 @@ struct RecordingContext
     VulkanVertex const *vertices;
 };
 
-struct RecordingWorker
+struct RecordingResources
 {
-    SDL_Thread *thread = nullptr;
-    SDL_sem *start = nullptr, *done = nullptr;
-    bool stop = false, caller = false;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorPool> descriptorPools;
     size_t descriptorPoolIndex = 0;
     uint32_t descriptorSetsUsed = 0;
     std::vector<VkCommandBuffer> commands;
     size_t commandsUsed = 0;
+};
+
+struct SubmissionSlot
+{
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkSemaphore acquired = VK_NULL_HANDLE;
+    Buffer stream;
+    VkDeviceSize streamOffset = 0;
+    uint32_t descriptorCount = 0;
+    uint64_t serial = 0;
+    bool pending = false, prepared = false;
+    std::vector<RecordingResources *> recorders;
+};
+
+struct RecordingWorker
+{
+    SDL_Thread *thread = nullptr;
+    SDL_sem *start = nullptr, *done = nullptr;
+    bool stop = false, caller = false;
+    RecordingResources *resources = nullptr;
     RecordingContext context = {};
     size_t first = 0, count = 0;
     VkCommandBuffer result = VK_NULL_HANDLE;
@@ -104,6 +123,9 @@ struct RecordingWorker
     char const *operation = nullptr;
     uint64_t threadId = 0, elapsedNanoseconds = 0;
 };
+
+struct RetiredImage { Image image; uint64_t serial; };
+struct RetiredBuffer { Buffer buffer; uint64_t serial; };
 
 struct Backend
 {
@@ -123,10 +145,9 @@ struct Backend
     VkExtent2D extent = {};
     std::vector<VkImage> swapImages;
     std::vector<bool> swapInitialized;
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    VkSemaphore acquired = VK_NULL_HANDLE;
-    VkSemaphore rendered = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> presentationSemaphores;
+    std::vector<SubmissionSlot *> slots;
+    size_t slotIndex = 0;
     VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
@@ -134,9 +155,6 @@ struct Backend
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     VkShaderModule vertexShader = VK_NULL_HANDLE, fragmentShader = VK_NULL_HANDLE;
     Image color, depth;
-    Buffer stream;
-    VkDeviceSize streamOffset = 0;
-    uint32_t descriptorCount = 0;
     std::map<uint32_t, Image> textures;
     std::map<PipelineKey, VkPipeline> pipelines;
     std::map<SamplerKey, VkSampler> samplers;
@@ -144,6 +162,9 @@ struct Backend
     std::vector<VulkanVertex> vertices;
     std::vector<RecordingWorker *> workers;
     VulkanRecordingStats recordingStats = {};
+    VulkanSubmissionStats submissionStats = {};
+    std::vector<RetiredImage> retiredImages;
+    std::vector<RetiredBuffer> retiredBuffers;
     VkSubpassContents renderPassContents = VK_SUBPASS_CONTENTS_INLINE;
     bool recording = false, inRenderPass = false, failed = false, ready = false;
     bool suspended = false;
@@ -168,6 +189,8 @@ std::atomic<uint32_t> recordingParticipants(0), batchPeakRecorders(0);
 std::atomic<bool> batchCallerOverlap(false);
 
 bool flushDrawPackets();
+
+SubmissionSlot &currentSlot() { return *g.slots[g.slotIndex]; }
 
 bool check(VkResult result, char const *operation)
 {
@@ -271,6 +294,120 @@ bool createImage(Image &image, uint32_t width, uint32_t height, uint32_t levels,
     return check(vkCreateImageView(g.device, &view, nullptr, &image.view), "create image view");
 }
 
+void collectRetiredResources()
+{
+    for (size_t i = 0; i < g.retiredImages.size(); )
+    {
+        if (g.retiredImages[i].serial > g.submissionStats.completedSubmissions) { ++i; continue; }
+        destroyImage(g.retiredImages[i].image);
+        g.retiredImages.erase(g.retiredImages.begin() + i);
+    }
+    for (size_t i = 0; i < g.retiredBuffers.size(); )
+    {
+        if (g.retiredBuffers[i].serial > g.submissionStats.completedSubmissions) { ++i; continue; }
+        destroyBuffer(g.retiredBuffers[i].buffer);
+        g.retiredBuffers.erase(g.retiredBuffers.begin() + i);
+    }
+    g.submissionStats.pendingRetiredImages = static_cast<uint32_t>(g.retiredImages.size());
+}
+
+void markCompleted(uint64_t serial)
+{
+    // All submissions use the same queue. Completion of this fence covers all
+    // earlier serials, including resources shared across submission slots.
+    g.submissionStats.completedSubmissions = std::max(g.submissionStats.completedSubmissions, serial);
+    for (auto *slot : g.slots)
+        if (slot->pending && slot->serial <= g.submissionStats.completedSubmissions)
+        {
+            slot->pending = false;
+            --g.submissionStats.pendingSubmissions;
+        }
+    collectRetiredResources();
+}
+
+bool pollCompletions()
+{
+    for (auto *slot : g.slots)
+        if (slot->pending)
+        {
+            VkResult const result = vkGetFenceStatus(g.device, slot->fence);
+            if (result == VK_SUCCESS) markCompleted(slot->serial);
+            else if (result != VK_NOT_READY) return check(result, "query submission fence");
+        }
+    // These are observed unsignaled fences, not evidence of simultaneous GPU
+    // rasterization. Already-completed serials discovered later in the poll are
+    // removed before recording the high-water mark.
+    g.submissionStats.maxObservedUnsignaled = std::max(g.submissionStats.maxObservedUnsignaled,
+                                                       g.submissionStats.pendingSubmissions);
+    return true;
+}
+
+enum class WaitReason { SlotReuse, Finish, Readback };
+
+bool waitForSerial(uint64_t serial, WaitReason reason)
+{
+    if (serial <= g.submissionStats.completedSubmissions) return true;
+    if (!pollCompletions()) return false;
+    if (serial <= g.submissionStats.completedSubmissions) return true;
+    SubmissionSlot *target = nullptr;
+    for (auto *slot : g.slots)
+        if (slot->pending && slot->serial >= serial && (!target || slot->serial < target->serial)) target = slot;
+    if (!target) return fail("No fence covers an outstanding submission");
+    ++g.submissionStats.fenceWaits;
+    if (reason == WaitReason::SlotReuse) ++g.submissionStats.slotReuseWaits;
+    else if (reason == WaitReason::Finish) ++g.submissionStats.finishWaits;
+    else ++g.submissionStats.readbackWaits;
+    if (!check(vkWaitForFences(g.device, 1, &target->fence, VK_TRUE, UINT64_MAX), "wait for submission fence")) return false;
+    markCompleted(target->serial);
+    return true;
+}
+
+bool prepareCurrentSlot()
+{
+    if (g.failed) return false;
+    auto &slot = currentSlot();
+    if (slot.prepared) return true;
+    if (!waitForSerial(slot.serial, WaitReason::SlotReuse)) return false;
+    if (!check(vkResetCommandPool(g.device, slot.commandPool, 0), "reset submission command pool")) return false;
+    // Every CPU job was joined before submission, and the slot fence covers
+    // every secondary and descriptor page before any pool or mapped byte reuse.
+    for (auto *resources : slot.recorders)
+    {
+        size_t const usedPages = resources->descriptorPoolIndex + (resources->descriptorSetsUsed != 0);
+        while (resources->descriptorPools.size() > std::max<size_t>(1, usedPages))
+        {
+            vkDestroyDescriptorPool(g.device, resources->descriptorPools.back(), nullptr);
+            resources->descriptorPools.pop_back();
+        }
+        size_t const keepCommands = std::max<size_t>(1, resources->commandsUsed);
+        if (resources->commands.size() > keepCommands)
+        {
+            vkFreeCommandBuffers(g.device, resources->commandPool,
+                static_cast<uint32_t>(resources->commands.size() - keepCommands), resources->commands.data() + keepCommands);
+            resources->commands.resize(keepCommands);
+        }
+        if (!check(vkResetCommandPool(g.device, resources->commandPool, 0), "reset recorder command pool")) return false;
+        for (auto pool : resources->descriptorPools)
+            if (!check(vkResetDescriptorPool(g.device, pool, 0), "reset recorder descriptor page")) return false;
+        resources->descriptorPoolIndex = resources->descriptorSetsUsed = 0;
+        resources->commandsUsed = 0;
+    }
+    if (!slot.stream.handle && !createBuffer(slot.stream, kStreamBytes,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return false;
+    slot.streamOffset = 0;
+    slot.descriptorCount = 0;
+    slot.prepared = true;
+    return true;
+}
+
+void retireImage(Image &image)
+{
+    ++g.submissionStats.retiredImages;
+    g.retiredImages.push_back({ image, g.submissionStats.submissions });
+    image = Image();
+    collectRetiredResources();
+}
+
 void imageBarrier(VkImage image, VkImageAspectFlags aspect, uint32_t levels,
                   VkImageLayout oldLayout, VkImageLayout newLayout,
                   VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
@@ -286,17 +423,18 @@ void imageBarrier(VkImage image, VkImageAspectFlags aspect, uint32_t levels,
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
     barrier.subresourceRange = { aspect, 0, levels, 0, 1 };
-    vkCmdPipelineBarrier(g.command, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(currentSlot().command, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 bool beginCommands()
 {
     if (g.failed) return false;
     if (g.recording) return true;
+    if (!prepareCurrentSlot()) return false;
     VkCommandBufferBeginInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (!check(vkBeginCommandBuffer(g.command, &info), "begin command buffer")) return false;
+    if (!check(vkBeginCommandBuffer(currentSlot().command, &info), "begin command buffer")) return false;
     g.recording = true;
     return true;
 }
@@ -305,7 +443,7 @@ void closeRenderPass()
 {
     if (g.inRenderPass)
     {
-        vkCmdEndRenderPass(g.command);
+        vkCmdEndRenderPass(currentSlot().command);
         g.inRenderPass = false;
     }
 }
@@ -317,20 +455,23 @@ bool endRenderPass()
     return true;
 }
 
-// Queue completion also bounds every streamed allocation and resource lifetime.
-// Transfers can interrupt a render pass without submitting or losing its contents.
-bool submit(VkSemaphore wait = VK_NULL_HANDLE, VkSemaphore signal = VK_NULL_HANDLE)
+// Submission advances the ring without waiting. Slot preparation waits only
+// when that slot's previous GPU use has not completed; explicit Finish/readback
+// and resize/teardown provide their stronger completion guarantees separately.
+bool submit(VkSemaphore wait = VK_NULL_HANDLE, VkSemaphore signal = VK_NULL_HANDLE, uint64_t *submittedSerial = nullptr)
 {
+    if (submittedSerial) *submittedSerial = 0;
     if (g.failed) return false;
     if (!flushDrawPackets()) return false;
-    if (!g.recording) return true;
+    if (!g.recording) return pollCompletions();
     closeRenderPass();
-    if (!check(vkEndCommandBuffer(g.command), "end command buffer")) return false;
+    auto &slot = currentSlot();
+    if (!check(vkEndCommandBuffer(slot.command), "end command buffer")) return false;
     VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     info.commandBufferCount = 1;
-    info.pCommandBuffers = &g.command;
+    info.pCommandBuffers = &slot.command;
     if (wait)
     {
         info.waitSemaphoreCount = 1;
@@ -342,59 +483,43 @@ bool submit(VkSemaphore wait = VK_NULL_HANDLE, VkSemaphore signal = VK_NULL_HAND
         info.signalSemaphoreCount = 1;
         info.pSignalSemaphores = &signal;
     }
-    if (!check(vkQueueSubmit(g.queue, 1, &info, VK_NULL_HANDLE), "submit rendering")) return false;
-    if (!check(vkQueueWaitIdle(g.queue), "wait for rendering")) return false;
+    // Reset only immediately before a real submit. An acquire-out-of-date or
+    // failed submit must never leave a pending slot waiting on an unsignaled
+    // fence that the queue will not signal.
+    if (!check(vkResetFences(g.device, 1, &slot.fence), "reset submission fence")) return false;
+    if (!check(vkQueueSubmit(g.queue, 1, &info, slot.fence), "submit rendering")) return false;
+    slot.serial = ++g.submissionStats.submissions;
+    slot.pending = true;
+    slot.prepared = false;
+    ++g.submissionStats.pendingSubmissions;
+    g.submissionStats.maxPendingSubmissions = std::max(g.submissionStats.maxPendingSubmissions,
+                                                       g.submissionStats.pendingSubmissions);
+    if (submittedSerial) *submittedSerial = slot.serial;
     g.recording = false;
-    if (!check(vkResetCommandPool(g.device, g.commandPool, 0), "reset command pool")) return false;
-    // No recording jobs remain, and queue completion covers every secondary
-    // from every batch in this primary before any worker resource is reused.
-    for (auto *worker : g.workers)
-    {
-        // Retain only this submission's high-water mark. A past unbalanced
-        // workload must not leave every worker holding a full frame's pages.
-        size_t const usedPages = worker->descriptorPoolIndex + (worker->descriptorSetsUsed != 0);
-        while (worker->descriptorPools.size() > std::max<size_t>(1, usedPages))
-        {
-            vkDestroyDescriptorPool(g.device, worker->descriptorPools.back(), nullptr);
-            worker->descriptorPools.pop_back();
-        }
-        size_t const keepCommands = std::max<size_t>(1, worker->commandsUsed);
-        if (worker->commands.size() > keepCommands)
-        {
-            vkFreeCommandBuffers(g.device, worker->commandPool,
-                static_cast<uint32_t>(worker->commands.size() - keepCommands), worker->commands.data() + keepCommands);
-            worker->commands.resize(keepCommands);
-        }
-        if (!check(vkResetCommandPool(g.device, worker->commandPool, 0), "reset worker command pool")) return false;
-        for (auto pool : worker->descriptorPools)
-            if (!check(vkResetDescriptorPool(g.device, pool, 0), "reset worker descriptor pool")) return false;
-        worker->descriptorPoolIndex = 0;
-        worker->descriptorSetsUsed = 0;
-        worker->commandsUsed = 0;
-    }
-    g.streamOffset = 0;
-    g.descriptorCount = 0;
-    return true;
+    g.slotIndex = (g.slotIndex + 1) % g.slots.size();
+    return pollCompletions();
 }
 
 bool reserveStream(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize &offset)
 {
-    if (g.failed) return false;
-    VkDeviceSize aligned = (g.streamOffset + alignment - 1) & ~(alignment - 1);
-    if (aligned + bytes > g.stream.size || g.descriptorCount == kDescriptorSets)
+    if (!prepareCurrentSlot()) return false;
+    VkDeviceSize aligned = (currentSlot().streamOffset + alignment - 1) & ~(alignment - 1);
+    if (aligned + bytes > currentSlot().stream.size || currentSlot().descriptorCount == kDescriptorSets)
     {
-        if (!submit()) return false;
+        if (!submit() || !prepareCurrentSlot()) return false;
         aligned = 0;
     }
-    if (bytes > g.stream.size)
+    auto &slot = currentSlot();
+    if (bytes > slot.stream.size)
     {
-        destroyBuffer(g.stream);
-        if (!createBuffer(g.stream, std::max(bytes, kStreamBytes),
+        // This slot is fence-complete and its previous commands were reset.
+        destroyBuffer(slot.stream);
+        if (!createBuffer(slot.stream, std::max(bytes, kStreamBytes),
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
             return false;
     }
     offset = aligned;
-    g.streamOffset = aligned + bytes;
+    slot.streamOffset = aligned + bytes;
     return beginCommands();
 }
 
@@ -408,7 +533,7 @@ bool beginRenderPass(VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE)
     info.renderPass = g.renderPass;
     info.framebuffer = g.framebuffer;
     info.renderArea.extent = g.extent;
-    vkCmdBeginRenderPass(g.command, &info, contents);
+    vkCmdBeginRenderPass(currentSlot().command, &info, contents);
     g.renderPassContents = contents;
     g.inRenderPass = true;
     return true;
@@ -701,12 +826,12 @@ bool workerCheck(RecordingWorker &worker, VkResult result, char const *operation
 
 bool allocateWorkerDescriptor(RecordingWorker &worker, VkDescriptorSet &set)
 {
-    if (worker.descriptorSetsUsed == kWorkerDescriptorPageSets)
+    if (worker.resources->descriptorSetsUsed == kWorkerDescriptorPageSets)
     {
-        ++worker.descriptorPoolIndex;
-        worker.descriptorSetsUsed = 0;
+        ++worker.resources->descriptorPoolIndex;
+        worker.resources->descriptorSetsUsed = 0;
     }
-    if (worker.descriptorPoolIndex == worker.descriptorPools.size())
+    if (worker.resources->descriptorPoolIndex == worker.resources->descriptorPools.size())
     {
         VkDescriptorPoolSize sizes[] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kWorkerDescriptorPageSets },
                                         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kWorkerDescriptorPageSets * 5 } };
@@ -717,34 +842,34 @@ bool allocateWorkerDescriptor(RecordingWorker &worker, VkDescriptorSet &set)
         info.pPoolSizes = sizes;
         VkDescriptorPool pool;
         if (!workerCheck(worker, vkCreateDescriptorPool(worker.context.device, &info, nullptr, &pool), "create worker descriptor page")) return false;
-        worker.descriptorPools.push_back(pool);
+        worker.resources->descriptorPools.push_back(pool);
     }
     VkDescriptorSetAllocateInfo allocate = {};
     allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocate.descriptorPool = worker.descriptorPools[worker.descriptorPoolIndex];
+    allocate.descriptorPool = worker.resources->descriptorPools[worker.resources->descriptorPoolIndex];
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &worker.context.descriptorLayout;
     if (!workerCheck(worker, vkAllocateDescriptorSets(worker.context.device, &allocate, &set), "allocate worker draw descriptors")) return false;
-    ++worker.descriptorSetsUsed;
+    ++worker.resources->descriptorSetsUsed;
     return true;
 }
 
 bool recordWorkerCommands(RecordingWorker &worker)
 {
     auto const &context = worker.context;
-    if (worker.commandsUsed == worker.commands.size())
+    if (worker.resources->commandsUsed == worker.resources->commands.size())
     {
         VkCommandBufferAllocateInfo allocate = {};
         allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate.commandPool = worker.commandPool;
+        allocate.commandPool = worker.resources->commandPool;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
         allocate.commandBufferCount = 1;
         VkCommandBuffer command;
         if (!workerCheck(worker, vkAllocateCommandBuffers(context.device, &allocate, &command), "allocate secondary command buffer"))
             return false;
-        worker.commands.push_back(command);
+        worker.resources->commands.push_back(command);
     }
-    worker.result = worker.commands[worker.commandsUsed++];
+    worker.result = worker.resources->commands[worker.resources->commandsUsed++];
     VkCommandBufferInheritanceInfo inheritance = {};
     inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
     inheritance.renderPass = context.renderPass;
@@ -877,11 +1002,6 @@ bool ensureRecordingWorkers(size_t count)
         if (!worker) return fail("Could not allocate a recording worker");
         worker->caller = index == 0;
         g.workers.push_back(worker);
-        VkCommandPoolCreateInfo pool = {};
-        pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        pool.queueFamilyIndex = g.queueFamily;
-        if (!check(vkCreateCommandPool(g.device, &pool, nullptr, &worker->commandPool), "create worker command pool")) return false;
         if (!worker->caller)
         {
             worker->start = SDL_CreateSemaphore(0);
@@ -897,6 +1017,18 @@ bool ensureRecordingWorkers(size_t count)
         g.recordingStats.workerDraws.push_back(0);
         g.recordingStats.workerThreadIds.push_back(0);
         g.recordingStats.workerRecordNanoseconds.push_back(0);
+    }
+    auto &slot = currentSlot();
+    while (slot.recorders.size() < count)
+    {
+        auto *resources = new (std::nothrow) RecordingResources;
+        if (!resources) return fail("Could not allocate slot recorder resources");
+        slot.recorders.push_back(resources);
+        VkCommandPoolCreateInfo pool = {};
+        pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pool.queueFamilyIndex = g.queueFamily;
+        if (!check(vkCreateCommandPool(g.device, &pool, nullptr, &resources->commandPool), "create slot recorder command pool")) return false;
     }
     return true;
 }
@@ -915,8 +1047,6 @@ void destroyRecordingWorkers()
         }
         if (worker->start) SDL_DestroySemaphore(worker->start);
         if (worker->done) SDL_DestroySemaphore(worker->done);
-        if (worker->commandPool) vkDestroyCommandPool(g.device, worker->commandPool, nullptr);
-        for (auto pool : worker->descriptorPools) vkDestroyDescriptorPool(g.device, pool, nullptr);
         delete worker;
     }
     g.workers.clear();
@@ -933,13 +1063,14 @@ bool flushDrawPackets()
     if (!count || !ensureRecordingWorkers(count)) return false;
     if (!beginRenderPass(VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS)) return false;
     RecordingContext context = { g.device, g.renderPass, g.framebuffer, g.pipelineLayout, g.descriptorLayout,
-        g.stream.handle, static_cast<uint8_t *>(g.stream.mapped), g.packets.data(), g.vertices.data() };
+        currentSlot().stream.handle, static_cast<uint8_t *>(currentSlot().stream.mapped), g.packets.data(), g.vertices.data() };
     uint64_t const start = SDL_GetPerformanceCounter();
     batchPeakRecorders.store(0);
     batchCallerOverlap.store(false);
     for (size_t index = 0; index < count; ++index)
     {
         auto &worker = *g.workers[index];
+        worker.resources = currentSlot().recorders[index];
         worker.context = context;
         worker.first = g.packets.size() * index / count;
         worker.count = g.packets.size() * (index + 1) / count - worker.first;
@@ -977,7 +1108,7 @@ bool flushDrawPackets()
     if (g.failed) return false;
     // Contiguous ranges execute in original frontend order, never completion
     // order. This preserves blending, depth/stencil updates and masked clears.
-    vkCmdExecuteCommands(g.command, static_cast<uint32_t>(count), commands.data());
+    vkCmdExecuteCommands(currentSlot().command, static_cast<uint32_t>(count), commands.data());
     g.packets.clear();
     g.vertices.clear();
     return true;
@@ -1032,15 +1163,65 @@ bool createRenderPass()
     return check(vkCreateRenderPass(g.device, &info, nullptr, &g.renderPass), "create render pass");
 }
 
-bool createSemaphores()
+bool createSubmissionSlots()
 {
-    if (g.acquired) vkDestroySemaphore(g.device, g.acquired, nullptr);
-    if (g.rendered) vkDestroySemaphore(g.device, g.rendered, nullptr);
-    g.acquired = g.rendered = VK_NULL_HANDLE;
-    VkSemaphoreCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    if (!check(vkCreateSemaphore(g.device, &info, nullptr, &g.acquired), "create acquire semaphore")) return false;
-    return check(vkCreateSemaphore(g.device, &info, nullptr, &g.rendered), "create present semaphore");
+    unsigned count = 2;
+    char const *option = SDL_getenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT");
+    if (option && *option)
+    {
+        char *end = nullptr;
+        errno = 0;
+        long const requested = std::strtol(option, &end, 10);
+        if (errno || end == option || !end || *end || requested < 1 || requested > 3)
+            return fail("NBLOOD_VULKAN_FRAMES_IN_FLIGHT must be 1, 2 or 3");
+        count = static_cast<unsigned>(requested);
+    }
+    g.submissionStats.framesInFlight = count;
+    std::fprintf(stderr, "Vulkan submission configuration: frames_in_flight=%u\n", count);
+    for (unsigned index = 0; index < count; ++index)
+    {
+        auto *slot = new (std::nothrow) SubmissionSlot;
+        if (!slot) return fail("Could not allocate submission slot");
+        g.slots.push_back(slot);
+        VkCommandPoolCreateInfo pool = {};
+        pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pool.queueFamilyIndex = g.queueFamily;
+        if (!check(vkCreateCommandPool(g.device, &pool, nullptr, &slot->commandPool), "create submission command pool")) return false;
+        VkCommandBufferAllocateInfo command = {};
+        command.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        command.commandPool = slot->commandPool;
+        command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command.commandBufferCount = 1;
+        if (!check(vkAllocateCommandBuffers(g.device, &command, &slot->command), "allocate submission command buffer")) return false;
+        VkFenceCreateInfo fence = {};
+        fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        if (!check(vkCreateFence(g.device, &fence, nullptr, &slot->fence), "create submission fence")) return false;
+        VkSemaphoreCreateInfo semaphore = {};
+        semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (!check(vkCreateSemaphore(g.device, &semaphore, nullptr, &slot->acquired), "create slot acquire semaphore")) return false;
+    }
+    return true;
+}
+
+void destroySubmissionSlots()
+{
+    for (auto *slot : g.slots)
+    {
+        for (auto *resources : slot->recorders)
+        {
+            if (resources->commandPool) vkDestroyCommandPool(g.device, resources->commandPool, nullptr);
+            for (auto pool : resources->descriptorPools) vkDestroyDescriptorPool(g.device, pool, nullptr);
+            delete resources;
+        }
+        destroyBuffer(slot->stream);
+        if (slot->acquired) vkDestroySemaphore(g.device, slot->acquired, nullptr);
+        if (slot->fence) vkDestroyFence(g.device, slot->fence, nullptr);
+        if (slot->commandPool) vkDestroyCommandPool(g.device, slot->commandPool, nullptr);
+        delete slot;
+    }
+    g.slots.clear();
 }
 
 void destroyTargets()
@@ -1053,6 +1234,9 @@ void destroyTargets()
     g.swapchain = VK_NULL_HANDLE;
     g.swapImages.clear();
     g.swapInitialized.clear();
+    for (auto semaphore : g.presentationSemaphores)
+        if (semaphore) vkDestroySemaphore(g.device, semaphore, nullptr);
+    g.presentationSemaphores.clear();
 }
 
 bool createTargets(int width, int height)
@@ -1128,6 +1312,14 @@ bool createTargets(int width, int height)
     g.swapImages.resize(imageCount);
     g.swapInitialized.assign(imageCount, false);
     if (!check(vkGetSwapchainImagesKHR(g.device, g.swapchain, &imageCount, g.swapImages.data()), "get swapchain images")) return false;
+    // A frame fence does not prove the presentation engine consumed its wait
+    // semaphore. Reuse presentation semaphores only when that IMAGE is acquired
+    // again, rather than when a submission slot becomes fence-complete.
+    g.presentationSemaphores.resize(imageCount, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphore = {};
+    semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (auto &handle : g.presentationSemaphores)
+        if (!check(vkCreateSemaphore(g.device, &semaphore, nullptr, &handle), "create image presentation semaphore")) return false;
     g.extent = extent;
     g.surfaceFormat = format.format;
     g.swapchainVsync = g.vsync;
@@ -1153,7 +1345,7 @@ bool createTargets(int width, int height)
     VkClearColorValue black = {};
     black.float32[3] = 1.f;
     VkImageSubresourceRange colorRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdClearColorImage(g.command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &colorRange);
+    vkCmdClearColorImage(currentSlot().command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &colorRange);
     imageBarrier(g.color.handle, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -1162,7 +1354,7 @@ bool createTargets(int width, int height)
                  0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkClearDepthStencilValue clearDepth = { 1.f, 0 };
     VkImageSubresourceRange depthRange = { aspects, 0, 1, 0, 1 };
-    vkCmdClearDepthStencilImage(g.command, g.depth.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearDepth, 1, &depthRange);
+    vkCmdClearDepthStencilImage(currentSlot().command, g.depth.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearDepth, 1, &depthRange);
     imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
@@ -1330,18 +1522,6 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
         }
     }
     if (g.depthFormat == VK_FORMAT_UNDEFINED) return fail("No depth/stencil attachment format is available");
-    VkCommandPoolCreateInfo commandPool = {};
-    commandPool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    commandPool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    commandPool.queueFamilyIndex = g.queueFamily;
-    if (!check(vkCreateCommandPool(g.device, &commandPool, nullptr, &g.commandPool), "create command pool")) return false;
-    VkCommandBufferAllocateInfo command = {};
-    command.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    command.commandPool = g.commandPool;
-    command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    command.commandBufferCount = 1;
-    if (!check(vkAllocateCommandBuffers(g.device, &command, &g.command), "allocate command buffer")) return false;
-    if (!createSemaphores()) return false;
     VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1375,9 +1555,9 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
     shader.codeSize = sizeof(vulkan_polymost_frag_spv);
     shader.pCode = vulkan_polymost_frag_spv;
     if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.fragmentShader), "create fragment shader")) return false;
-    if (!createBuffer(g.stream, kStreamBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return false;
     if (!createRenderPass()) return false;
     if (!createRecordingWorkers()) return false;
+    if (!createSubmissionSlots()) return false;
     if (!createTargets(width, height)) return false;
     g.ready = true;
     uint8_t const white[] = { 255, 255, 255, 255 };
@@ -1402,8 +1582,33 @@ void vulkanDestroy()
     if (g.device)
     {
         if (g.ready && !g.failed) submit();
-        vkDeviceWaitIdle(g.device);
+        ++g.submissionStats.deviceIdleWaits;
+        VkResult idleResult = vkDeviceWaitIdle(g.device);
+        if (idleResult != VK_SUCCESS && idleResult != VK_ERROR_DEVICE_LOST)
+        {
+            std::fprintf(stderr, "Vulkan: teardown device wait failed (VkResult %d); waiting for the queue\n",
+                         static_cast<int>(idleResult));
+            ++g.submissionStats.queueIdleWaits;
+            idleResult = vkQueueWaitIdle(g.queue);
+        }
+        if (idleResult == VK_SUCCESS) markCompleted(g.submissionStats.submissions);
+        else if (idleResult != VK_ERROR_DEVICE_LOST)
+        {
+            // An allocation error does not establish completion or device loss.
+            // Stop without running destructors that could free pending objects.
+            std::fprintf(stderr, "Vulkan: fatal teardown wait failure (VkResult %d); GPU resource completion is unknown\n",
+                         static_cast<int>(idleResult));
+            std::fflush(stderr);
+            std::_Exit(EXIT_FAILURE);
+        }
         destroyRecordingWorkers();
+        // A terminal device/queue error can leave retirements outstanding. The
+        // device is now idle or lost; none of these resources are reused.
+        for (auto &retired : g.retiredImages) destroyImage(retired.image);
+        for (auto &retired : g.retiredBuffers) destroyBuffer(retired.buffer);
+        g.retiredImages.clear();
+        g.retiredBuffers.clear();
+        g.submissionStats.pendingRetiredImages = 0;
         auto const &stats = g.recordingStats;
         if (stats.workerCount)
         {
@@ -1419,20 +1624,28 @@ void vulkanDestroy()
                     static_cast<unsigned>(i), static_cast<unsigned long long>(stats.workerThreadIds[i]),
                     static_cast<unsigned long long>(stats.workerDraws[i]), static_cast<unsigned long long>(stats.workerRecordNanoseconds[i]));
         }
+        auto const &submissions = g.submissionStats;
+        if (submissions.framesInFlight)
+            std::fprintf(stderr, "Vulkan submission stats: frames_in_flight=%u submissions=%llu completed=%llu pending=%u max_pending=%u max_observed_unsignaled=%u presents=%llu fence_waits=%llu slot_reuse_waits=%llu finish_waits=%llu readback_waits=%llu queue_idle_waits=%llu device_idle_waits=%llu retired_images=%llu pending_retired_images=%u\n",
+                submissions.framesInFlight, static_cast<unsigned long long>(submissions.submissions),
+                static_cast<unsigned long long>(submissions.completedSubmissions), submissions.pendingSubmissions,
+                submissions.maxPendingSubmissions, submissions.maxObservedUnsignaled,
+                static_cast<unsigned long long>(submissions.presents), static_cast<unsigned long long>(submissions.fenceWaits),
+                static_cast<unsigned long long>(submissions.slotReuseWaits), static_cast<unsigned long long>(submissions.finishWaits),
+                static_cast<unsigned long long>(submissions.readbackWaits), static_cast<unsigned long long>(submissions.queueIdleWaits),
+                static_cast<unsigned long long>(submissions.deviceIdleWaits), static_cast<unsigned long long>(submissions.retiredImages),
+                submissions.pendingRetiredImages);
+        destroySubmissionSlots();
         for (auto const &pipeline : g.pipelines) vkDestroyPipeline(g.device, pipeline.second, nullptr);
         for (auto const &sampler : g.samplers) vkDestroySampler(g.device, sampler.second, nullptr);
         for (auto &texture : g.textures) destroyImage(texture.second);
         destroyTargets();
-        destroyBuffer(g.stream);
         if (g.vertexShader) vkDestroyShaderModule(g.device, g.vertexShader, nullptr);
         if (g.fragmentShader) vkDestroyShaderModule(g.device, g.fragmentShader, nullptr);
         if (g.pipelineCache) vkDestroyPipelineCache(g.device, g.pipelineCache, nullptr);
         if (g.pipelineLayout) vkDestroyPipelineLayout(g.device, g.pipelineLayout, nullptr);
         if (g.renderPass) vkDestroyRenderPass(g.device, g.renderPass, nullptr);
         if (g.descriptorLayout) vkDestroyDescriptorSetLayout(g.device, g.descriptorLayout, nullptr);
-        if (g.acquired) vkDestroySemaphore(g.device, g.acquired, nullptr);
-        if (g.rendered) vkDestroySemaphore(g.device, g.rendered, nullptr);
-        if (g.commandPool) vkDestroyCommandPool(g.device, g.commandPool, nullptr);
         vkDestroyDevice(g.device, nullptr);
     }
     if (g.surface) vkDestroySurfaceKHR(g.instance, g.surface, nullptr);
@@ -1450,7 +1663,7 @@ bool vulkanSupported()
     return vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) == VK_SUCCESS && count != 0;
 }
 
-bool vulkanResize(int width, int height)
+static bool resizeTargets(int width, int height, bool force)
 {
     if (!vulkanActive() || g.failed) return false;
     if (width <= 0 || height <= 0)
@@ -1459,16 +1672,17 @@ bool vulkanResize(int width, int height)
         g.suspended = true;
         return true;
     }
-    if (!g.suspended && static_cast<uint32_t>(width) == g.extent.width &&
+    if (!force && !g.suspended && static_cast<uint32_t>(width) == g.extent.width &&
         static_cast<uint32_t>(height) == g.extent.height && g.vsync == g.swapchainVsync) return true;
     if (!submit()) return false;
+    ++g.submissionStats.deviceIdleWaits;
     if (!check(vkDeviceWaitIdle(g.device), "wait for resize")) return false;
+    markCompleted(g.submissionStats.submissions);
     destroyTargets();
-    // An out-of-date presentation can leave a binary present semaphore's
-    // consumption implementation-dependent; new swapchains get fresh sync.
-    if (!createSemaphores()) return false;
     return createTargets(width, height);
 }
+
+bool vulkanResize(int width, int height) { return resizeTargets(width, height, false); }
 
 void vulkanSetVsync(int vsync)
 {
@@ -1481,8 +1695,11 @@ void vulkanSetVsync(int vsync)
 
 void vulkanFinish()
 {
-    if (vulkanActive() && !g.failed) submit();
+    if (vulkanActive() && !g.failed && submit())
+        waitForSerial(g.submissionStats.submissions, WaitReason::Finish);
 }
+
+void vulkanFlush() { if (vulkanActive() && !g.failed) submit(); }
 
 bool vulkanPresent()
 {
@@ -1492,15 +1709,17 @@ bool vulkanPresent()
         int width, height;
         SDL_Vulkan_GetDrawableSize(g.window, &width, &height);
         if (width <= 0 || height <= 0) return submit();
-        return vulkanResize(width, height);
+        return resizeTargets(width, height, true);
     }
+    if (!prepareCurrentSlot()) return false;
+    VkSemaphore const acquired = currentSlot().acquired;
     uint32_t index;
-    VkResult acquire = vkAcquireNextImageKHR(g.device, g.swapchain, UINT64_MAX, g.acquired, VK_NULL_HANDLE, &index);
+    VkResult acquire = vkAcquireNextImageKHR(g.device, g.swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
     if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
     {
         int width, height;
         SDL_Vulkan_GetDrawableSize(g.window, &width, &height);
-        return vulkanResize(width, height);
+        return resizeTargets(width, height, true);
     }
     if (acquire != VK_SUBOPTIMAL_KHR && !check(acquire, "acquire swapchain image")) return false;
     if (!beginCommands()) return false;
@@ -1518,7 +1737,7 @@ bool vulkanPresent()
     blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     blit.dstSubresource = blit.srcSubresource;
     blit.srcOffsets[1] = blit.dstOffsets[1] = { static_cast<int32_t>(g.extent.width), static_cast<int32_t>(g.extent.height), 1 };
-    vkCmdBlitImage(g.command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.swapImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    vkCmdBlitImage(currentSlot().command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.swapImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1, &blit, VK_FILTER_NEAREST);
     imageBarrier(g.swapImages[index], VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                  VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1526,21 +1745,23 @@ bool vulkanPresent()
                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     g.swapInitialized[index] = true;
-    if (!submit(g.acquired, g.rendered)) return false;
+    // Capture these handles before submit advances the resource-slot cursor.
+    VkSemaphore const rendered = g.presentationSemaphores[index];
+    if (!submit(acquired, rendered)) return false;
     VkPresentInfoKHR present = {};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &g.rendered;
+    present.pWaitSemaphores = &rendered;
     present.swapchainCount = 1;
     present.pSwapchains = &g.swapchain;
     present.pImageIndices = &index;
     VkResult result = vkQueuePresentKHR(g.queue, &present);
-    if (!check(vkQueueWaitIdle(g.queue), "wait for presentation")) return false;
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) ++g.submissionStats.presents;
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || acquire == VK_SUBOPTIMAL_KHR)
     {
         int width, height;
         SDL_Vulkan_GetDrawableSize(g.window, &width, &height);
-        return vulkanResize(width, height);
+        return resizeTargets(width, height, true);
     }
     return check(result, "present swapchain image");
 }
@@ -1586,7 +1807,7 @@ void vulkanDraw(VulkanVertex const *vertices, unsigned count, VulkanDrawState co
     packet.vertexCount = count;
     g.vertices.insert(g.vertices.end(), vertices, vertices + count);
     g.packets.push_back(packet);
-    ++g.descriptorCount;
+    ++currentSlot().descriptorCount;
     if (g.packets.size() == kDrawBatchSize || vertexBytes > kDrawBatchVertexBytes)
         flushDrawPackets();
 }
@@ -1666,7 +1887,7 @@ void vulkanClear(uint32_t mask, float const color[4], float depth, uint32_t sten
         ++count;
     }
     VkClearRect clearRect = { rect, 0, 1 };
-    vkCmdClearAttachments(g.command, count, attachments, 1, &clearRect);
+    vkCmdClearAttachments(currentSlot().command, count, attachments, 1, &clearRect);
 }
 
 void vulkanUploadTexture(uint32_t texture, int level, int width, int height, uint8_t const *rgba)
@@ -1689,7 +1910,7 @@ void vulkanUploadTexture(uint32_t texture, int level, int width, int height, uin
         if (existing != g.textures.end())
         {
             if (!submit()) return;
-            destroyImage(existing->second);
+            retireImage(existing->second);
             g.textures.erase(existing);
         }
         uint32_t levels = 1;
@@ -1709,7 +1930,7 @@ void vulkanUploadTexture(uint32_t texture, int level, int width, int height, uin
         VkClearColorValue white = {};
         for (float &channel : white.float32) channel = 1.f;
         VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1 };
-        vkCmdClearColorImage(g.command, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &range);
+        vkCmdClearColorImage(currentSlot().command, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &range);
         imageBarrier(image.handle, VK_IMAGE_ASPECT_COLOR_BIT, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
@@ -1744,7 +1965,7 @@ void vulkanUploadTextureRegion(uint32_t texture, int level, int x, int y, int wi
         VkDeviceSize const bytes = rowBytes * rows;
         VkDeviceSize offset;
         if (!reserveStream(bytes, 4, offset)) return;
-        std::memcpy(static_cast<uint8_t *>(g.stream.mapped) + offset,
+        std::memcpy(static_cast<uint8_t *>(currentSlot().stream.mapped) + offset,
                     rgba + static_cast<size_t>(rowBytes) * row, static_cast<size_t>(bytes));
         if (!endRenderPass()) return;
         imageBarrier(image.handle, VK_IMAGE_ASPECT_COLOR_BIT, image.levels, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1754,7 +1975,7 @@ void vulkanUploadTextureRegion(uint32_t texture, int level, int x, int y, int wi
         copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, static_cast<uint32_t>(level), 0, 1 };
         copy.imageOffset = { x, y + static_cast<int32_t>(row), 0 };
         copy.imageExtent = { static_cast<uint32_t>(width), rows, 1 };
-        vkCmdCopyBufferToImage(g.command, g.stream.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        vkCmdCopyBufferToImage(currentSlot().command, currentSlot().stream.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         imageBarrier(image.handle, VK_IMAGE_ASPECT_COLOR_BIT, image.levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         row += rows;
@@ -1767,7 +1988,7 @@ void vulkanDeleteTexture(uint32_t texture)
     auto existing = g.textures.find(texture);
     if (existing == g.textures.end()) return;
     if (!submit()) return;
-    destroyImage(existing->second);
+    retireImage(existing->second);
     g.textures.erase(existing);
 }
 
@@ -1795,7 +2016,7 @@ bool vulkanReadPixels(int x, int y, int width, int height, uint8_t *rgba)
     copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     copy.imageOffset = { x0, static_cast<int32_t>(g.extent.height) - y1, 0 };
     copy.imageExtent = { clippedWidth, clippedHeight, 1 };
-    vkCmdCopyImageToBuffer(g.command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle, 1, &copy);
+    vkCmdCopyImageToBuffer(currentSlot().command, g.color.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle, 1, &copy);
     imageBarrier(g.color.handle, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -1806,8 +2027,17 @@ bool vulkanReadPixels(int x, int y, int width, int height, uint8_t *rgba)
     host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     host.buffer = readback.handle;
     host.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(g.command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
-    if (!submit()) { destroyBuffer(readback); return false; }
+    vkCmdPipelineBarrier(currentSlot().command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
+    uint64_t serial = 0;
+    if (!submit(VK_NULL_HANDLE, VK_NULL_HANDLE, &serial) || !waitForSerial(serial, WaitReason::Readback))
+    {
+        // A successful enqueue followed by a fence/query failure still owns
+        // this buffer on the GPU. Retain it for terminal device-idle teardown.
+        if (serial > g.submissionStats.completedSubmissions)
+            g.retiredBuffers.push_back({ readback, serial });
+        else destroyBuffer(readback);
+        return false;
+    }
     for (uint32_t row = 0; row < clippedHeight; ++row)
         std::memcpy(rgba + (static_cast<size_t>(y0 - y + row) * width + x0 - x) * 4,
                     static_cast<uint8_t const *>(readback.mapped) + static_cast<size_t>(clippedHeight - 1 - row) * clippedWidth * 4,
@@ -1823,6 +2053,11 @@ bool vulkanDepthClampSupported() { return g.features.depthClamp != VK_FALSE; }
 void vulkanGetRecordingStats(VulkanRecordingStats *stats)
 {
     if (stats) *stats = g.recordingStats;
+}
+
+void vulkanGetSubmissionStats(VulkanSubmissionStats *stats)
+{
+    if (stats) *stats = g.submissionStats;
 }
 
 unsigned vulkanAvailableRecordingCores()
