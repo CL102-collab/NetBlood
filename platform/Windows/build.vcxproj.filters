@@ -161,6 +161,12 @@
     <ClCompile Include="..\..\source\build\src\voxmodel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\source\build\src\vulkan_frontend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\source\build\src\wiibits.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -516,6 +522,20 @@
     <CustomBuild Include="..\..\source\build\src\polymost1Vert.glsl">
       <Filter>Source Files</Filter>
     </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\source\build\include\vulkan_renderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\build\src\vulkan_polymost_spv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <None Include="..\..\source\build\src\vulkan_polymost.vert">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="..\..\source\build\src\vulkan_polymost.frag">
+      <Filter>Source Files</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\..\source\build\src\a.masm">

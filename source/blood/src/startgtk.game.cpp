@@ -62,6 +62,8 @@ static struct
     GtkWidget *tabs;
     GtkWidget *configtlayout;
     GtkWidget *displayvlayout;
+    GtkWidget *rendererlabel;
+    GtkWidget *renderercombo;
     GtkWidget *vmode3dlabel;
     GtkWidget *vmode3dcombo;
     GtkWidget *fullscreencheck;
@@ -93,15 +95,35 @@ static struct
 {
     char *gamedir;
     ud_setup_t shared;
-#ifdef POLYMER
-    int polymer;
-#endif
+    int renderer;
 } settings;
 
 static int32_t retval = -1, mode = TAB_MESSAGES;
 extern int32_t gtkenabled;
 static void PopulateForm(unsigned char pgs);
 
+static const struct { const char *name; int mode; } renderers[] = {
+    { "Software", REND_CLASSIC },
+#ifdef USE_OPENGL
+    { "OpenGL", REND_POLYMOST },
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Vulkan", REND_VULKAN },
+#endif
+#ifdef POLYMER
+    { "OpenGL (Polymer)", REND_POLYMER },
+#endif
+#endif
+};
+
+static void on_renderercombo_changed(GtkComboBox *combobox, gpointer user_data)
+{
+    UNREFERENCED_PARAMETER(user_data);
+    GtkTreeIter iter;
+    if (!gtk_combo_box_get_active_iter(combobox, &iter)) return;
+    gtk_tree_model_get(gtk_combo_box_get_model(combobox), &iter, 1, &settings.renderer, -1);
+    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
+    PopulateForm(POPULATE_VIDEO);
+}
 
 // -- EVENT CALLBACKS AND CREATION STUFF --------------------------------------
 
@@ -262,6 +284,21 @@ static unsigned char GetModsDirNames(GtkListStore *list)
 
 static void PopulateForm(unsigned char pgs)
 {
+    if (pgs == ALL)
+    {
+        auto list = GTK_LIST_STORE(gtk_combo_box_get_model(GTK_COMBO_BOX(stwidgets.renderercombo)));
+        g_signal_handlers_block_by_func(stwidgets.renderercombo, (gpointer)on_renderercombo_changed, NULL);
+        gtk_list_store_clear(list);
+        for (auto const &renderer : renderers)
+        {
+            GtkTreeIter iter;
+            gtk_list_store_append(list, &iter);
+            gtk_list_store_set(list, &iter, 0, renderer.name, 1, renderer.mode, -1);
+            if (settings.renderer == renderer.mode)
+                gtk_combo_box_set_active_iter(GTK_COMBO_BOX(stwidgets.renderercombo), &iter);
+        }
+        g_signal_handlers_unblock_by_func(stwidgets.renderercombo, (gpointer)on_renderercombo_changed, NULL);
+    }
     if ((pgs == ALL) || (pgs == POPULATE_VIDEO))
     {
         int32_t mode3d, i;
@@ -269,6 +306,11 @@ static void PopulateForm(unsigned char pgs)
         GtkTreeIter iter;
         char buf[64];
 
+#ifdef USE_OPENGL
+        // Validate the pending choice without committing it before Start.
+        int const previousRenderer = glrendmode;
+        glrendmode = settings.renderer;
+#endif
         mode3d = videoCheckMode(&settings.shared.xdim, &settings.shared.ydim, settings.shared.bpp, settings.shared.fullscreen, 1);
         if (mode3d < 0)
         {
@@ -277,12 +319,16 @@ static void PopulateForm(unsigned char pgs)
             for (i=0; cd[i];) { if (cd[i] >= settings.shared.bpp) i++; else break; }
             for (; cd[i]; i++)
             {
+                if ((cd[i] == 8) != (settings.renderer == REND_CLASSIC)) continue;
                 mode3d = videoCheckMode(&settings.shared.xdim, &settings.shared.ydim, cd[i], settings.shared.fullscreen, 1);
                 if (mode3d < 0) continue;
                 settings.shared.bpp = cd[i];
                 break;
             }
         }
+#ifdef USE_OPENGL
+        glrendmode = previousRenderer;
+#endif
 
         modes3d = GTK_LIST_STORE(gtk_combo_box_get_model(GTK_COMBO_BOX(stwidgets.vmode3dcombo)));
         gtk_list_store_clear(modes3d);
@@ -290,9 +336,9 @@ static void PopulateForm(unsigned char pgs)
         for (i=0; i<validmodecnt; i++)
         {
             if (validmode[i].fs != settings.shared.fullscreen) continue;
+            if ((validmode[i].bpp == 8) != (settings.renderer == REND_CLASSIC)) continue;
 
-            // all modes get added to the 3D mode list
-            Bsprintf(buf, "%dx%d %s", validmode[i].xdim, validmode[i].ydim, validmode[i].bpp == 8 ? "software" : "OpenGL");
+            Bsprintf(buf, "%dx%d", validmode[i].xdim, validmode[i].ydim);
             gtk_list_store_append(modes3d, &iter);
             gtk_list_store_set(modes3d, &iter, 0,buf, 1,i, -1);
             if (i == mode3d)
@@ -437,13 +483,27 @@ static GtkWidget *create_window(void)
     gtk_container_set_border_width(GTK_CONTAINER(stwidgets.tabs), 4);
 
     // layout table of config page
-    stwidgets.configtlayout = gtk_table_new(6, 3, FALSE);
+    stwidgets.configtlayout = gtk_table_new(7, 3, FALSE);
     gtk_container_add(GTK_CONTAINER(stwidgets.tabs), stwidgets.configtlayout);
+
+    stwidgets.rendererlabel = gtk_label_new_with_mnemonic("_Renderer:");
+    gtk_misc_set_alignment(GTK_MISC(stwidgets.rendererlabel), 0.3, 0);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.rendererlabel, 0,1, 0,1, GTK_FILL, (GtkAttachOptions)0, 4, 7);
+    {
+        auto list = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_INT);
+        stwidgets.renderercombo = gtk_combo_box_new_with_model(GTK_TREE_MODEL(list));
+        g_object_unref(G_OBJECT(list));
+        auto cell = gtk_cell_renderer_text_new();
+        gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(stwidgets.renderercombo), cell, FALSE);
+        gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(stwidgets.renderercombo), cell, "text", 0, NULL);
+    }
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.renderercombo, 1,3, 0,1,
+        (GtkAttachOptions)(GTK_EXPAND | GTK_FILL), (GtkAttachOptions)0, 4, 0);
 
     // 3D video mode LabelText
     stwidgets.vmode3dlabel = gtk_label_new_with_mnemonic("_Video mode:");
     gtk_misc_set_alignment(GTK_MISC(stwidgets.vmode3dlabel), 0.3, 0);
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.vmode3dlabel, 0,1, 0,1, GTK_FILL, (GtkAttachOptions)0, 4, 7);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.vmode3dlabel, 0,1, 1,2, GTK_FILL, (GtkAttachOptions)0, 4, 7);
 
     // 3D video mode combo
     {
@@ -458,12 +518,12 @@ static GtkWidget *create_window(void)
         gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(stwidgets.vmode3dcombo), cell, "text", 0, NULL);
     }
 
-   gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.vmode3dcombo, 1,2, 0,1,
+   gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.vmode3dcombo, 1,2, 1,2,
        (GtkAttachOptions)(GTK_EXPAND | GTK_FILL), (GtkAttachOptions)0, 4, 0);
 
     // Fullscreen checkbox
     stwidgets.displayvlayout = gtk_vbox_new(TRUE, 0);
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.displayvlayout, 2,3, 0,1, GTK_FILL, (GtkAttachOptions)0, 4, 0);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.displayvlayout, 2,3, 1,2, GTK_FILL, (GtkAttachOptions)0, 4, 0);
 
     stwidgets.fullscreencheck = gtk_check_button_new_with_mnemonic("_Fullscreen");
     gtk_box_pack_start(GTK_BOX(stwidgets.displayvlayout), stwidgets.fullscreencheck, FALSE, FALSE, 0);
@@ -471,7 +531,7 @@ static GtkWidget *create_window(void)
     // Input devices LabelText
     stwidgets.inputdevlabel = gtk_label_new_with_mnemonic("_Input devices:");
     gtk_misc_set_alignment(GTK_MISC(stwidgets.inputdevlabel), 0.3, 0);
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.inputdevlabel, 0,1, 1,2, GTK_FILL, (GtkAttachOptions)0, 4, 0);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.inputdevlabel, 0,1, 2,3, GTK_FILL, (GtkAttachOptions)0, 4, 0);
 
     // Input devices combo
     {
@@ -485,13 +545,13 @@ static GtkWidget *create_window(void)
         gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(stwidgets.inputdevcombo), cell, FALSE);
         gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(stwidgets.inputdevcombo), cell, "text", 0, NULL);
     }
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.inputdevcombo, 1,2, 1,2,
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.inputdevcombo, 1,2, 2,3,
         (GtkAttachOptions)(GTK_EXPAND | GTK_FILL), (GtkAttachOptions)0, 4, 0);
 
     // Custom mod LabelText
     stwidgets.custommodlabel = gtk_label_new_with_mnemonic("Custom _game:");
     gtk_misc_set_alignment(GTK_MISC(stwidgets.custommodlabel), 0.3, 0);
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.custommodlabel, 0,1, 2,3, GTK_FILL, (GtkAttachOptions)0, 4, 7);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.custommodlabel, 0,1, 3,4, GTK_FILL, (GtkAttachOptions)0, 4, 7);
 
     // Custom mod combo
     {
@@ -505,21 +565,21 @@ static GtkWidget *create_window(void)
         gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(stwidgets.custommodcombo), cell, FALSE);
         gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(stwidgets.custommodcombo), cell, "text", 0, NULL);
     }
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.custommodcombo, 1,2, 2,3,
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.custommodcombo, 1,2, 3,4,
         (GtkAttachOptions)(GTK_EXPAND | GTK_FILL), (GtkAttachOptions)0, 4, 7);
 
     // Empty horizontal layout
     stwidgets.emptyhlayout = gtk_hbox_new(TRUE, 0);
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.emptyhlayout, 0,3, 3,4, (GtkAttachOptions)0,
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.emptyhlayout, 0,3, 4,5, (GtkAttachOptions)0,
         (GtkAttachOptions)(GTK_EXPAND | GTK_FILL), 4, 0);
 
     // Autoload checkbox
     stwidgets.autoloadcheck = gtk_check_button_new_with_mnemonic("_Enable \"autoload\" folder");
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.autoloadcheck, 0,3, 4,5, GTK_FILL, (GtkAttachOptions)0, 2, 2);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.autoloadcheck, 0,3, 5,6, GTK_FILL, (GtkAttachOptions)0, 2, 2);
 
     // Always show config checkbox
     stwidgets.alwaysshowcheck = gtk_check_button_new_with_mnemonic("_Always show this window at startup");
-    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.alwaysshowcheck, 0,3, 5,6, GTK_FILL, (GtkAttachOptions)0, 2, 2);
+    gtk_table_attach(GTK_TABLE(stwidgets.configtlayout), stwidgets.alwaysshowcheck, 0,3, 6,7, GTK_FILL, (GtkAttachOptions)0, 2, 2);
 
     // Configuration tab
     stwidgets.configtab = gtk_label_new("Configuration");
@@ -586,6 +646,7 @@ static GtkWidget *create_window(void)
     gtk_box_pack_start(GTK_BOX(stwidgets.startbuttonlayout), stwidgets.startbuttonlabel, FALSE, FALSE, 0);
 
     // Wire up the signals
+    g_signal_connect((gpointer) stwidgets.renderercombo, "changed", G_CALLBACK(on_renderercombo_changed), NULL);
     g_signal_connect((gpointer) stwidgets.startwin, "delete_event",
                      G_CALLBACK(on_startwin_delete_event),
                      NULL);
@@ -615,6 +676,7 @@ static GtkWidget *create_window(void)
                      NULL);
 
     // Associate labels with their controls
+    gtk_label_set_mnemonic_widget(GTK_LABEL(stwidgets.rendererlabel), stwidgets.renderercombo);
     gtk_label_set_mnemonic_widget(GTK_LABEL(stwidgets.vmode3dlabel), stwidgets.vmode3dcombo);
     gtk_label_set_mnemonic_widget(GTK_LABEL(stwidgets.inputdevlabel), stwidgets.inputdevcombo);
     gtk_label_set_mnemonic_widget(GTK_LABEL(stwidgets.custommodlabel), stwidgets.custommodcombo);
@@ -734,9 +796,12 @@ int32_t startwin_run(void)
     settings.shared = gSetup;
     settings.gamedir = g_modDir;
     //settings.grp = g_selectedGrp;
-#ifdef POLYMER
-    settings.polymer = 0;
+#ifdef USE_OPENGL
+    settings.renderer = gSetup.bpp == 8 ? REND_CLASSIC : glrendmode;
+#else
+    settings.renderer = REND_CLASSIC;
 #endif
+    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
     PopulateForm(ALL);
 
     gtk_main();
@@ -745,8 +810,9 @@ int32_t startwin_run(void)
     if (retval) // launch the game with these parameters
     {
         gSetup = settings.shared;
-#ifdef POLYMER
-        glrendmode = (settings.polymer) ? REND_POLYMER : REND_POLYMOST;
+#ifdef USE_OPENGL
+        if (settings.renderer != REND_CLASSIC)
+            glrendmode = settings.renderer;
 #endif
         //g_selectedGrp = settings.grp;
 

@@ -195,6 +195,11 @@ void clearskins(int32_t type)
                     glDeleteTextures(1, &v->texid[j]);
                     v->texid[j] = 0;
                 }
+            if (v->texid8bit)
+            {
+                glDeleteTextures(1, &v->texid8bit);
+                v->texid8bit = 0;
+            }
         }
         else if ((m->mdnum == 2 || m->mdnum == 3) && type == INVALIDATE_ALL)
         {

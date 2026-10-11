@@ -319,7 +319,8 @@ void scrInit(void)
 {
     LOG_F(INFO, "Initializing engine");
 #ifdef USE_OPENGL
-    glrendmode = REND_POLYMOST;
+    if (glrendmode != REND_VULKAN)
+        glrendmode = REND_POLYMOST;
 #endif
     engineInit();
     curPalette = 0;

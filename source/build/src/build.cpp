@@ -1518,7 +1518,7 @@ void editinput(void)
             }
 
 #ifdef USE_OPENGL
-            if (videoGetRenderMode() == REND_POLYMOST)
+            if (videoUsesPolymost())
                 hit = polymost_hitdata;
             else
 #endif

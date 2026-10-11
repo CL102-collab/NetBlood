@@ -410,11 +410,9 @@ void voxvboalloc(voxmodel_t *vm)
 
 void voxvbofree(voxmodel_t *vm)
 {
-    if (!vm->vbo)
-        return;
     glDeleteBuffers(1, &vm->vbo);
     glDeleteBuffers(1, &vm->vboindex);
-    vm->vbo = 0;
+    vm->vbo = vm->vboindex = 0;
 }
 #endif
 

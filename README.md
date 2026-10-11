@@ -96,6 +96,81 @@ A port of several BUILD Engine games derived from the Duke Nukem 3D codebase, ba
 ## Building from source
 See: https://wiki.eduke32.com/wiki/Main_Page
 
+### Native Vulkan rendering
+
+NBlood offers **Vulkan** in the startup renderer selector and the in-game Video
+Mode menu. You can also enter `setrendermode 5` in the console, or set
+`Renderer = 5` under `[Screen Setup]` in `nblood.cfg`. The selection is saved;
+`setrendermode 3` selects OpenGL Polymost again.
+
+Vulkan needs SDL **2.0.6 or newer**, the Vulkan loader, and a Vulkan-capable device
+and driver. On macOS, provide a Vulkan loader and MoltenVK through your SDK/runtime
+installation. The native backend shares Polymost's scene and material handling
+for world geometry, sprites, models, voxels, maphacks, palettes, shading, fog and
+the HUD.
+It submits rendering and texture operations directly to Vulkan and creates no
+OpenGL context. Polymer remains a separate renderer.
+Vulkan currently uses uncompressed GPU textures, so large texture packs can use
+more graphics memory than OpenGL with texture compression enabled.
+
+Vulkan records commands on the calling thread and up to four background threads.
+The automatic background count is `min(4, available CPUs - 1)`, so three CPUs
+use the caller plus two background workers; five or more use the caller plus
+four. Linux CPU affinity is respected. Background workers receive their chunks
+before the caller records its own, and draw batches retain their original
+execution order. Small batches run entirely on the caller; background threads
+are created only when needed.
+
+`NBLOOD_VULKAN_WORKERS` sets the total recorder count, including the caller. Set
+it to `1` for synchronous recording, or a positive integer to lower the automatic
+total of `max(1, min(5, available CPUs))`. Requests above that limit are clamped;
+`0` or an unset variable selects the automatic count:
+
+```sh
+NBLOOD_VULKAN_WORKERS=1 ./nblood
+```
+
+Worker threads prepare descriptors, copy draw data, and record Vulkan commands.
+Polymost scene traversal, pipeline creation, and GPU submission remain serial.
+The backend still waits for GPU completion before reusing submission resources;
+this change does not enable multiple frames in flight. Startup and shutdown
+logs report the configured worker count and actual recording activity.
+
+For GNU Make, install the SDL2 and Vulkan development packages. Vulkan is enabled
+automatically when `pkg-config --exists vulkan` succeeds; it can be requested or
+disabled explicitly:
+
+```sh
+make -j4 blood USE_VULKAN=1 SDL_TARGET=2
+# To build without Vulkan:
+make -j4 blood USE_VULKAN=0
+```
+
+Keep the default `USE_OPENGL=1` build setting: it includes the shared Polymost
+frontend. SDL 1.2, non-SDL builds, and `USE_OPENGL=0` disable Vulkan. Rebuild cleanly
+when changing these compile-time feature flags.
+
+For Visual Studio, install the LunarG Vulkan SDK **before starting Visual Studio**
+so it inherits `VULKAN_SDK`. Vulkan enables automatically for x64 when the SDK has
+`Include/vulkan/vulkan.h` and `Lib/vulkan-1.lib`; Win32 requires `Lib32/vulkan-1.lib`.
+MSBuild's `/p:UseVulkan=true` requires the SDK, while `/p:UseVulkan=false` disables
+Vulkan. ARM64 Visual Studio configurations currently exclude Vulkan.
+
+Ordinary builds use the checked-in SPIR-V header. After editing
+`source/build/src/vulkan_polymost.vert` or `.frag`, regenerate it with Python 3,
+`glslangValidator`, and `spirv-val` on `PATH`:
+
+```sh
+python3 tests/vulkan/generate-shaders.py
+python3 tests/vulkan/generate-shaders.py --check
+```
+
+[Rendering checks](tests/vulkan/README.md) cover native backend operations,
+OpenGL/Vulkan scene comparisons and switching renderers. Those checks cover
+selected scenes and fixtures; they do not establish complete Polymost parity or
+coverage of every platform and driver. Use the demo suite below separately to
+check simulation regressions.
+
 ### Demo regression validation
 
 The DOS Blood 1.21 demo regression suite is available through `-validate`.

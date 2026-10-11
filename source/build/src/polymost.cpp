@@ -172,12 +172,16 @@ static GLint fogRangeLoc = -1;
 static GLint fogColorLoc = -1;
 #endif // POLYMOST2
 
-#define PALSWAP_TEXTURE_SIZE 2048
+#define PALSWAP_TEXTURE_WIDTH 2048
+static int32_t palswapTextureHeight = 2048;
 static GLuint tilesheetTexIDs[MAXTILESHEETS];
+static int numTilesheets = 0;
 static GLint tilesheetSize = 0;
 static float tilesheetSizeRecip;
 static vec2f_t tilesheetHalfTexelSize = { 0.f, 0.f };
 static int32_t lastbasepal = -1;
+static uint32_t lastPalswapIndex;
+static int32_t lastShade, lastNumShades;
 static GLuint paletteTextureIDs[MAXBASEPALS];
 static GLuint palswapTextureID = 0;
 extern char const *polymost1Frag;
@@ -496,7 +500,7 @@ static GLuint polymost2_compileShader(GLenum shaderType, const char* const sourc
 void polymost_glreset()
 {
     buildgl_resetStateAccounting();
-    if (!nogl)
+    if (!nogl || videoGetRenderMode() == REND_VULKAN)
         buildgl_activeTexture(GL_TEXTURE0);
 
     for (bssize_t i=0; i<=MAXPALOOKUPS-1; i++)
@@ -555,10 +559,106 @@ void polymost_glreset()
     // texcache_freeptrs();
     texcache_syncmemcache();
 
-    if (!nogl)
+    if (!nogl || videoGetRenderMode() == REND_VULKAN)
         polymost_initdrawpoly();
 
     DVLOG_F(LOG_DEBUG, "polymost_glreset()");
+}
+
+void polymost_contextReset()
+{
+    // Texture-cache entries and model/voxel buffers must already have been
+    // released by polymost_glreset() and the video-mode teardown. These names
+    // belong to the old context: glIsTexture/glIsProgram cannot distinguish
+    // them from unrelated objects allocated with the same names in a new one.
+    buildgl_useShaderProgram(0);
+    if (polymost1BasicShaderProgramID)
+        glDeleteProgram(polymost1BasicShaderProgramID);
+    if (polymost1ExtendedShaderProgramID)
+        glDeleteProgram(polymost1ExtendedShaderProgramID);
+    polymost1CurrentShaderProgramID = 0;
+    polymost1BasicShaderProgramID = 0;
+    polymost1ExtendedShaderProgramID = 0;
+
+#ifdef POLYMOST2
+    if (polymost2BasicShaderProgramID)
+        glDeleteProgram(polymost2BasicShaderProgramID);
+    polymost2BasicShaderProgramID = 0;
+    texSamplerLoc = fullBrightSamplerLoc = projMatrixLoc = mvMatrixLoc = -1;
+    texOffsetLoc = texScaleLoc = tintLoc = alphaLoc = fogRangeLoc = fogColorLoc = -1;
+#endif
+
+    glDeleteTextures(MAXTILESHEETS, tilesheetTexIDs);
+    glDeleteTextures(MAXBASEPALS, paletteTextureIDs);
+    glDeleteTextures(1, &palswapTextureID);
+    glDeleteTextures(1, &polymosttext);
+    Bmemset(tilesheetTexIDs, 0, sizeof(tilesheetTexIDs));
+    Bmemset(paletteTextureIDs, 0, sizeof(paletteTextureIDs));
+    palswapTextureID = polymosttext = 0;
+    palswapTextureHeight = 2048;
+
+    glDeleteBuffers(1, &drawpolyVertsID);
+    glDeleteBuffers(1, &quadVertsID);
+    drawpolyVertsID = quadVertsID = 0;
+    for (auto &sync : drawpolyVertsSync)
+    {
+        if (sync)
+            glDeleteSync(sync);
+        sync = nullptr;
+    }
+    drawpolyVerts = defaultDrawpolyVertsArray;
+    drawpolyVertsOffset = drawpolyVertsCnt = drawpolyVertsSubBufferIndex = 0;
+    persistentStreamBuffer = false;
+
+    // Sampler names are shared with buildgl but have the same context lifetime.
+    if (glinfo.samplerobjects)
+        glDeleteSamplers(NUM_SAMPLERS - 1, samplerObjectIDs + 1);
+    Bmemset(samplerObjectIDs, 0, sizeof(samplerObjectIDs));
+
+    // Different backends/devices may expose different maximum image sizes.
+    // Repack from the current ART dimensions when the next context starts.
+    tilepacker_reset();
+    numTilesheets = tilesheetSize = 0;
+    tilesheetSizeRecip = 0.f;
+    tilesheetHalfTexelSize = { 0.f, 0.f };
+
+    GLint *const locations[] = {
+        &polymost1TexSamplerLoc, &polymost1PalSwapSamplerLoc, &polymost1PaletteSamplerLoc,
+        &polymost1DetailSamplerLoc, &polymost1GlowSamplerLoc, &polymost1TexturePosSizeLoc,
+        &polymost1HalfTexelSizeLoc, &polymost1PalswapPosLoc, &polymost1PalswapSizeLoc,
+        &polymost1ClampLoc, &polymost1ShadeLoc, &polymost1NumShadesLoc, &polymost1VisFactorLoc,
+        &polymost1FogEnabledLoc, &polymost1UseColorOnlyLoc, &polymost1UsePaletteLoc,
+        &polymost1UseDetailMappingLoc, &polymost1UseGlowMappingLoc, &polymost1NPOTEmulationLoc,
+        &polymost1BrightnessLoc, &polymost1RotMatrixLoc, &polymost1ShadeInterpolateLoc,
+        &polymost1ColorCorrectionLoc,
+    };
+    for (auto location : locations)
+        *location = -1;
+
+    polymost1TexturePosSize = { 0.f, 0.f, 1.f, 1.f };
+    polymost1HalfTexelSize = polymost1PalswapPos = polymost1PalswapSize = polymost1PalswapInnerSize = { 0.f, 0.f };
+    polymost1Clamp = { 0.f, 0.f };
+    polymost1Shade = 0.f;
+    polymost1NumShades = { 64.f, 1.f / 64.f };
+    polymost1VisFactor = 128.f;
+    polymost1FogEnabled = polymost1UsePalette = polymost1Brightness = polymost1ShadeInterpolate = 1.f;
+    polymost1UseColorOnly = polymost1UseDetailMapping = polymost1UseGlowMapping = 0.f;
+    polymost1NPOTEmulation = { 0.f, 1.f, 0.f, 1.f };
+    Bmemset(polymost1RotMatrix, 0, sizeof(polymost1RotMatrix));
+    for (int i = 0; i < 4; ++i)
+        polymost1RotMatrix[i * 5] = 1.f;
+    lastbasepal = -1;
+    lastPalswapIndex = UINT32_MAX;
+    lastShade = INT32_MIN;
+    lastNumShades = 0;
+    polymost2d = 0;
+    drawpoly_srepeat = drawpoly_trepeat = 0;
+#ifndef EDUKE32_GLES
+    lastglpolygonmode = -1;
+#endif
+
+    buildgl_resetStateAccounting();
+    buildgl_activeTexture(GL_TEXTURE0);
 }
 
 #if defined EDUKE32_GLES
@@ -598,7 +698,7 @@ void polymost_resetState()
 
 void polymost_disableProgram()
 {
-    if (videoGetRenderMode() != REND_POLYMOST)
+    if (!videoUsesPolymost())
         return;
 
     buildgl_outputDebugMessage(3, "polymost_disableProgram()");
@@ -608,7 +708,7 @@ void polymost_disableProgram()
 
 void polymost_resetProgram()
 {
-    if (videoGetRenderMode() != REND_POLYMOST)
+    if (!videoUsesPolymost())
         return;
 
     buildgl_outputDebugMessage(3, "polymost_resetProgram()");
@@ -711,16 +811,14 @@ void polymost_setHalfTexelSize(vec2f_t const &halfTexelSize)
 
 static void polymost_setPalswap(uint32_t index)
 {
-    static uint32_t lastPalswapIndex;
-
     if (gl.currentShaderProgramID != polymost1CurrentShaderProgramID || index == lastPalswapIndex)
         return;
 
     lastPalswapIndex = index;
     polymost1PalswapPos.x = index*polymost1PalswapSize.x;
     polymost1PalswapPos.y = floorf(polymost1PalswapPos.x);
-    polymost1PalswapPos = { polymost1PalswapPos.x - polymost1PalswapPos.y + (0.5f/PALSWAP_TEXTURE_SIZE),
-                            polymost1PalswapPos.y * polymost1PalswapSize.y + (0.5f/PALSWAP_TEXTURE_SIZE) };
+    polymost1PalswapPos = { polymost1PalswapPos.x - polymost1PalswapPos.y + (0.5f/PALSWAP_TEXTURE_WIDTH),
+                            polymost1PalswapPos.y * polymost1PalswapSize.y + (0.5f/palswapTextureHeight) };
     glUniform2f(polymost1PalswapPosLoc, polymost1PalswapPos.x, polymost1PalswapPos.y);
 }
 
@@ -729,11 +827,11 @@ static void polymost_setPalswapSize(uint32_t width, uint32_t height)
     if (gl.currentShaderProgramID != polymost1CurrentShaderProgramID)
         return;
 
-    polymost1PalswapSize = { width*(1.f/PALSWAP_TEXTURE_SIZE),
-                             height*(1.f/PALSWAP_TEXTURE_SIZE) };
+    polymost1PalswapSize = { width*(1.f/PALSWAP_TEXTURE_WIDTH),
+                             height*(1.f/palswapTextureHeight) };
 
-    polymost1PalswapInnerSize = { (width-1)*(1.f/PALSWAP_TEXTURE_SIZE),
-                                  (height-1)*(1.f/PALSWAP_TEXTURE_SIZE) };
+    polymost1PalswapInnerSize = { (width-1)*(1.f/PALSWAP_TEXTURE_WIDTH),
+                                  (height-1)*(1.f/palswapTextureHeight) };
 
     glUniform2f(polymost1PalswapSizeLoc, polymost1PalswapInnerSize.x, polymost1PalswapInnerSize.y);
 }
@@ -761,9 +859,6 @@ static void polymost_setShade(int32_t shade)
 
     if (polymost_usetileshades() != TS_SHADETABLE)
         shade = 0;
-
-    static int32_t lastShade;
-    static int32_t lastNumShades;
 
     if (shade != lastShade)
     {
@@ -959,6 +1054,18 @@ void polymost_glinit()
 {
     buildgl_resetStateAccounting();
 
+    // Eight palette tables fit side by side. Include each table's black
+    // sentinel row: Blood's 64 shades need 32 * 65 = 2080 rows, not 2048.
+    int const palswapColumns = PALSWAP_TEXTURE_WIDTH / 256;
+    int const palswapRows = (MAXPALOOKUPS + palswapColumns - 1) / palswapColumns;
+    palswapTextureHeight = max(2048, nextPow2(palswapRows * (numshades + 1)));
+    if (PALSWAP_TEXTURE_WIDTH > glinfo.maxTextureSize || palswapTextureHeight > glinfo.maxTextureSize)
+    {
+        LOG_F(ERROR, "Palette atlas needs %dx%d texels; GPU texture limit is %d.",
+              PALSWAP_TEXTURE_WIDTH, palswapTextureHeight, glinfo.maxTextureSize);
+        Bexit(1);
+    }
+
     glHint(GL_FOG_HINT, GL_NICEST);
     glFogi(GL_FOG_MODE, (r_usenewshading < 2) ? GL_EXP2 : GL_LINEAR);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -977,6 +1084,13 @@ void polymost_glinit()
     //POGOTODO: require a max texture size >= 2048
     tilesheetSize = glinfo.maxTextureSize;
 
+#ifdef USE_VULKAN
+    // The native backend expands indexed texels to RGBA. Keep atlas memory
+    // bounded without reducing the device limit for standalone/hires textures.
+    if (videoGetRenderMode() == REND_VULKAN)
+        tilesheetSize = min(tilesheetSize, 4096);
+#endif
+
 #if (defined _MSC_VER) || (!defined BITNESS64)
     if (tilesheetSize > 8192)
         tilesheetSize = 8192;
@@ -989,14 +1103,17 @@ void polymost_glinit()
 
     vec2_t maxTexDimensions = { tilesheetSize, tilesheetSize };
     char allPacked = false;
-    static int numTilesheets = 0;
-    //POGO: only pack the tilesheets once
+    // Pack once per GPU context; context reset discards the old packing.
     if (numTilesheets == 0)
     {
         // add a blank texture for tileUID 0
         tilepacker_addTile(0, 2, 2);
         for (int picnum = 0; picnum < MAXTILES; ++picnum)
         {
+            // Oversized tiles use gloadtile_art_indexed's standalone texture
+            // fallback; queuing them here would fill every sheet with rejects.
+            if (tilesiz[picnum].x > tilesheetSize || tilesiz[picnum].y > tilesheetSize)
+                continue;
             tilepacker_addTile(picnum+1, (uint32_t) tilesiz[picnum].y, (uint32_t) tilesiz[picnum].x);
         }
 
@@ -1992,13 +2109,13 @@ void uploadpalswap(int32_t palookupnum)
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, PALSWAP_TEXTURE_SIZE, PALSWAP_TEXTURE_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, PALSWAP_TEXTURE_WIDTH, palswapTextureHeight, 0, GL_RED, GL_UNSIGNED_BYTE, NULL);
     }
 
-    int32_t column = palookupnum%(PALSWAP_TEXTURE_SIZE/256);
-    int32_t row = palookupnum/(PALSWAP_TEXTURE_SIZE/256);
+    int32_t column = palookupnum%(PALSWAP_TEXTURE_WIDTH/256);
+    int32_t row = palookupnum/(PALSWAP_TEXTURE_WIDTH/256);
     int32_t rowOffset = (numshades+1)*row;
-    if (rowOffset > PALSWAP_TEXTURE_SIZE)
+    if (rowOffset < 0 || rowOffset + numshades + 1 > palswapTextureHeight)
     {
         LOG_F(ERROR, "palswap data too large for tilesheet!");
         return;
@@ -3019,7 +3136,7 @@ static void polymost2_drawVBO(GLenum mode,
 
 void polymost_updatePalette()
 {
-    if (videoGetRenderMode() != REND_POLYMOST)
+    if (!videoUsesPolymost())
         return;
 
     polymost_setPalswap(globalpal);
@@ -3317,7 +3434,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 
     buildgl_outputDebugMessage(3, "polymost_drawpoly(dpxy:%p, n:%d, method_:%X), method: %X", dpxy, n, method_, method);
 
-    pthtyp *pth = our_texcache_fetch(method | (videoGetRenderMode() == REND_POLYMOST && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
+    pthtyp *pth = our_texcache_fetch(method | (videoUsesPolymost() && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
 
     if (!pth)
     {
@@ -3347,10 +3464,10 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 
     Bassert(pth);
 
-    // If we aren't rendmode 3, we're in Polymer, which means this code is
-    // used for rotatesprite only. Polymer handles all the material stuff,
-    // just submit the geometry and don't mess with textures.
-    if (videoGetRenderMode() == REND_POLYMOST)
+    // The Polymost scene frontend binds textures for both its OpenGL and Vulkan
+    // backends. Polymer uses this path only for rotatesprite and handles its
+    // own materials.
+    if (videoUsesPolymost())
     {
         polymost_bindPth(pth);
 
@@ -3392,7 +3509,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 #ifdef USE_GLEXT
     int32_t texunits = GL_TEXTURE0;
 
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
     {
         polymost_updatePalette();
         texunits += 4;
@@ -3408,7 +3525,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
             detailpth->hicr && detailpth->hicr->palnum == DETAILPAL)
         {
             polymost_useDetailMapping(true);
-            int const unit = videoGetRenderMode() == REND_POLYMOST ? GL_TEXTURE3 : ++texunits;
+            int const unit = videoUsesPolymost() ? GL_TEXTURE3 : ++texunits;
             polymost_setupdetailtexture(unit, detailpth->glpic, detailpth->flags);
             glMatrixMode(GL_TEXTURE);
             glLoadIdentity();
@@ -3433,7 +3550,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
             glowpth->hicr && (glowpth->hicr->palnum == GLOWPAL))
         {
             polymost_useGlowMapping(true);
-            int const unit = videoGetRenderMode() == REND_POLYMOST ? GL_TEXTURE4 : ++texunits;
+            int const unit = videoUsesPolymost() ? GL_TEXTURE4 : ++texunits;
             polymost_setupglowtexture(unit, glowpth->glpic, glowpth->flags);
         }
     }
@@ -3665,7 +3782,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 
     }
 
-    if (videoGetRenderMode() != REND_POLYMOST)
+    if (!videoUsesPolymost())
     {
 #ifdef USE_GLEXT
         while (texunits > GL_TEXTURE0)
@@ -9079,7 +9196,7 @@ void polymost_dorotatespritemodel(int32_t sx, int32_t sy, int32_t z, int16_t a, 
     else
         buildgl_setViewport(0, 0, xdim, ydim);
 
-    if (videoGetRenderMode() < REND_POLYMER)
+    if (videoGetRenderMode() != REND_POLYMER)
     {
         glMatrixMode(GL_PROJECTION);
         Bmemset(m, 0, sizeof(m));
@@ -9136,7 +9253,7 @@ void polymost_dorotatespritemodel(int32_t sx, int32_t sy, int32_t z, int16_t a, 
 
     tspriteptr[maxspritesonscreen] = &tspr;
 
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
         polymost_mddraw(&tspr);
 # ifdef POLYMER
     else
@@ -9659,7 +9776,7 @@ void polymost_fillpolygon(int32_t npoints)
 
     if (!polymost2d) polymostSet2dView(); //disables blending, texturing, and depth testing
     buildgl_setEnabled(GL_ALPHA_TEST);
-    pthtyp const * const pth = our_texcache_fetch(DAMETH_NOMASK | (videoGetRenderMode() == REND_POLYMOST && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
+    pthtyp const * const pth = our_texcache_fetch(DAMETH_NOMASK | (videoUsesPolymost() && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
 
     if (pth)
     {
@@ -9739,7 +9856,7 @@ int32_t polymost_drawtilescreen(int32_t tilex, int32_t tiley, int32_t tilenum, i
 
     int32_t const ousehightile = usehightile;
     usehightile = usehitile && usehightile;
-    pth = texcache_fetch(tilenum, 0, 0, DAMETH_CLAMPED | (videoGetRenderMode() == REND_POLYMOST && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
+    pth = texcache_fetch(tilenum, 0, 0, DAMETH_CLAMPED | (videoUsesPolymost() && polymost_useindexedtextures() ? DAMETH_INDEXED : 0));
     if (usehightile)
         bitmap_set(loadedhitile, tilenum);
     usehightile = ousehightile;

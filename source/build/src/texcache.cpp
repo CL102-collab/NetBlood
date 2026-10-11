@@ -180,7 +180,7 @@ pthtyp *texcache_fetch(int32_t dapicnum, int32_t dapalnum, int32_t dashade, int3
         if ((si = hicfindskybox(dapicnum, dapalnum)) == NULL)
             return NULL;
 
-    if (polymost_usetileshades() != TS_TEXTURE || videoGetRenderMode() != REND_POLYMOST)
+    if (polymost_usetileshades() != TS_TEXTURE || !videoUsesPolymost())
         dashade = 0;
 
     if (!si)

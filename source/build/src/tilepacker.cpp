@@ -33,6 +33,16 @@ TreeNode rejectQueue[MAX_REJECTS];
 uint32_t rejectQueueHeadIndex = 0;
 uint32_t numRejected = 0;
 
+void tilepacker_reset()
+{
+    Bmemset(nodes, 0, sizeof(nodes));
+    Bmemset(tiles, 0, sizeof(tiles));
+    Bmemset(rejectQueue, 0, sizeof(rejectQueue));
+    heapNodes = 0;
+    nextTreeNodeIndex = NUM_NON_ROOT_NODES - 1;
+    rejectQueueHeadIndex = numRejected = 0;
+}
+
 #if 0
 static void maxheap_bubbleUp(uint32_t nodeIndex)
 {

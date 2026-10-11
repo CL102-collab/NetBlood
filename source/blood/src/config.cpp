@@ -808,6 +808,32 @@ int CONFIG_ReadSetup(void)
     SCRIPT_GetNumber(scripthandle, "Screen Setup", "Polymer", &rendmode);
     glrendmode = (rendmode > 0) ? REND_POLYMER : REND_POLYMOST;
 #endif
+#ifdef USE_OPENGL
+    // Older configurations encode the renderer through ScreenBPP and Polymer.
+    int32_t renderer = gSetup.bpp == 8 ? REND_CLASSIC : glrendmode;
+    if (!SCRIPT_GetNumber(scripthandle, "Screen Setup", "Renderer", &renderer))
+    {
+        switch (renderer)
+        {
+        case REND_CLASSIC:
+            gSetup.bpp = 8;
+            break;
+        case REND_POLYMOST:
+#ifdef POLYMER
+        case REND_POLYMER:
+#endif
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+        case REND_VULKAN:
+#endif
+            glrendmode = renderer;
+            gSetup.bpp = 32;
+            break;
+        default:
+            LOG_F(WARNING, "Renderer %d is unavailable in this build; using the previous video settings.", renderer);
+            break;
+        }
+    }
+#endif
 
     //SCRIPT_GetNumber(scripthandle, "Misc", "Executions", &ud.executions);
 
@@ -891,6 +917,9 @@ void CONFIG_WriteSetup(uint32_t flags)
 
 #ifdef POLYMER
     SCRIPT_PutNumber(scripthandle, "Screen Setup", "Polymer", glrendmode == REND_POLYMER, FALSE, FALSE);
+#endif
+#ifdef USE_OPENGL
+    SCRIPT_PutNumber(scripthandle, "Screen Setup", "Renderer", gSetup.bpp == 8 ? REND_CLASSIC : glrendmode, FALSE, FALSE);
 #endif
 
     SCRIPT_PutNumber(scripthandle, "Screen Setup", "ScreenBPP", gSetup.bpp, FALSE, FALSE);

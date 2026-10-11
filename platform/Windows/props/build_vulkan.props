@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Install the LunarG Vulkan SDK before starting Visual Studio so its
+       VULKAN_SDK environment variable is inherited by every project.
+       /p:UseVulkan=false disables Vulkan; /p:UseVulkan=true requires the SDK.
+       Shader binaries are checked in, so ordinary builds need no shader tool. -->
+  <PropertyGroup>
+    <VulkanIncludeDirectory>$(VULKAN_SDK)\Include</VulkanIncludeDirectory>
+    <VulkanLibraryDirectory Condition="'$(Platform)'=='x64'">$(VULKAN_SDK)\Lib</VulkanLibraryDirectory>
+    <VulkanLibraryDirectory Condition="'$(Platform)'=='Win32'">$(VULKAN_SDK)\Lib32</VulkanLibraryDirectory>
+    <UseVulkan Condition="'$(UseVulkan)'=='' and '$(VULKAN_SDK)'!='' and ('$(Platform)'=='x64' or '$(Platform)'=='Win32') and Exists('$(VulkanIncludeDirectory)\vulkan\vulkan.h') and Exists('$(VulkanLibraryDirectory)\vulkan-1.lib')">true</UseVulkan>
+    <UseVulkan Condition="'$(UseVulkan)'==''">false</UseVulkan>
+    <!-- Vulkan shares the SDL2 Polymost frontend, including its compile-time
+         USE_OPENGL interfaces, but never creates an OpenGL context. -->
+    <BuildVulkanEnabled>false</BuildVulkanEnabled>
+    <BuildVulkanEnabled Condition="('$(UseVulkan)'=='true' or '$(UseVulkan)'=='1') and '$(NOOPENGL)'!='1' and '$(NOOPENGL)'!='true' and '$(UseOpenGL)'!='false' and '$(UseOpenGL)'!='0' and '$(USE_OPENGL)'!='false' and '$(USE_OPENGL)'!='0' and '$(SDL_TARGET)'!='1' and ('$(RENDERTYPE)'=='' or '$(RENDERTYPE)'=='SDL')">true</BuildVulkanEnabled>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(BuildVulkanEnabled)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>USE_VULKAN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(VulkanIncludeDirectory);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(VulkanLibraryDirectory);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateVulkanSdk" BeforeTargets="PrepareForBuild" Condition="'$(BuildVulkanEnabled)'=='true'">
+    <Error Condition="'$(Platform)'!='x64' and '$(Platform)'!='Win32'" Text="Native Vulkan currently supports the x64 and Win32 Visual Studio configurations. Set UseVulkan=false for this platform." />
+    <Error Condition="'$(VULKAN_SDK)'=='' or !Exists('$(VulkanIncludeDirectory)\vulkan\vulkan.h') or !Exists('$(VulkanLibraryDirectory)\vulkan-1.lib')" Text="UseVulkan requires a Vulkan SDK with headers and vulkan-1.lib for $(Platform). Set VULKAN_SDK to the SDK root (Lib for x64, Lib32 for Win32), or set UseVulkan=false." />
+  </Target>
+</Project>

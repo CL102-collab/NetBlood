@@ -2438,9 +2438,9 @@ static void Menu_Pre(MenuID_t cm)
         {
             //POGOTODO: allow setting anisotropy again while r_useindexedcolortextures is set when support is added down the line
             // don't allow setting anisotropy or changing palette emulation while in POLYMOST and r_useindexedcolortextures is enabled
-            MenuEntry_DisableOnCondition(&ME_DISPLAYSETUP_ANISOTROPY, videoGetRenderMode() == REND_POLYMOST && r_useindexedcolortextures);
+            MenuEntry_DisableOnCondition(&ME_DISPLAYSETUP_ANISOTROPY, videoUsesPolymost() && r_useindexedcolortextures);
 #ifdef EDUKE32_SIMPLE_MENU
-            MenuEntry_DisableOnCondition(&ME_DISPLAYSETUP_PALETTEEMULATION, videoGetRenderMode() == REND_POLYMOST && r_useindexedcolortextures);
+            MenuEntry_DisableOnCondition(&ME_DISPLAYSETUP_PALETTEEMULATION, videoUsesPolymost() && r_useindexedcolortextures);
 #endif
 
             for (i = (int32_t) ARRAY_SIZE(MEOSV_DISPLAYSETUP_ANISOTROPY) - 1; i >= 0; --i)

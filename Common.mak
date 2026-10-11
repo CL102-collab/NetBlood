@@ -336,6 +336,9 @@ STARTUP_WINDOW ?= 1
 RETAIL_MENU ?= 0
 POLYMER ?= 1
 USE_OPENGL := 1
+# Native Vulkan uses the shared Polymost scene frontend. Auto-enable when the
+# SDK is available; USE_VULKAN=0 preserves builds without Vulkan development files.
+USE_VULKAN ?= $(shell $(PKG_CONFIG) --exists vulkan 2>/dev/null && echo 1 || echo 0)
 SDL_STATIC ?= 0
 
 NOONE_EXTENSIONS ?= 1
@@ -401,6 +404,14 @@ endif
 ifeq (0,$(USE_OPENGL))
     override POLYMER := 0
     override USE_LIBVPX := 0
+    override USE_VULKAN := 0
+endif
+
+ifneq ($(RENDERTYPE),SDL)
+    override USE_VULKAN := 0
+endif
+ifeq ($(SDL_TARGET),1)
+    override USE_VULKAN := 0
 endif
 
 ifeq ($(RELEASE),0)
@@ -846,6 +857,20 @@ ifneq (0,$(STANDALONE))
 endif
 ifneq (0,$(USE_OPENGL))
     COMPILERFLAGS += -DUSE_OPENGL
+endif
+ifneq (0,$(USE_VULKAN))
+    VULKAN_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags vulkan 2>/dev/null)
+    VULKAN_LIBS ?= $(shell $(PKG_CONFIG) --libs vulkan 2>/dev/null)
+    COMPILERFLAGS += -DUSE_VULKAN $(VULKAN_CFLAGS)
+    ifneq (,$(strip $(VULKAN_LIBS)))
+        LIBS += $(VULKAN_LIBS)
+    else
+    ifeq ($(PLATFORM),WINDOWS)
+        LIBS += -lvulkan-1
+    else
+        LIBS += -lvulkan
+    endif
+    endif
 endif
 ifneq (0,$(POLYMER))
     COMPILERFLAGS += -DPOLYMER

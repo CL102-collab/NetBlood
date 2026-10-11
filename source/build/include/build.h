@@ -37,7 +37,8 @@ extern "C" {
 enum rendmode_t {
     REND_CLASSIC,
     REND_POLYMOST = 3,
-    REND_POLYMER
+    REND_POLYMER,
+    REND_VULKAN
 };
 
 #define PI 3.14159265358979323846
@@ -1089,6 +1090,12 @@ static FORCE_INLINE int32_t videoGetRenderMode(void)
 #endif
 }
 
+// OpenGL and Vulkan share Polymost's scene traversal and material preparation.
+static FORCE_INLINE bool videoUsesPolymost(void)
+{
+    return videoGetRenderMode() == REND_POLYMOST || videoGetRenderMode() == REND_VULKAN;
+}
+
 extern int32_t bloodhack;
 enum
 {
@@ -1655,7 +1662,7 @@ static FORCE_INLINE int tilehasmodelorvoxel(int const tilenume, int pal)
 #ifdef USE_OPENGL
     (videoGetRenderMode() >= REND_POLYMOST && mdinited && usemodels && tile2model[Ptile2tile(tilenume, pal)].modelid != -1) ||
 #endif
-    (videoGetRenderMode() <= REND_POLYMOST && usevoxels && tiletovox[tilenume] != -1);
+    ((videoGetRenderMode() == REND_CLASSIC || videoUsesPolymost()) && usevoxels && tiletovox[tilenume] != -1);
 }
 
 int32_t md_defineframe(int32_t modelid, const char *framename, int32_t tilenume,

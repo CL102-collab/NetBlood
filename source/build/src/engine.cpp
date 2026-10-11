@@ -29,6 +29,7 @@
 #include "scriptfile.h"
 #include "softsurface.h"
 #include "vfs.h"
+#include "vulkan_renderer.h"
 
 #ifdef USE_OPENGL
 # include "glad/glad.h"
@@ -1129,7 +1130,7 @@ void yax_drawrooms(void (*SpriteAnimFunc)(int32_t,int32_t,int32_t,int32_t,int32_
 #endif
 
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
     {
         glClear(GL_DEPTH_BUFFER_BIT);
         yax_polymostclearzbuffer = 0;
@@ -1251,7 +1252,7 @@ void yax_drawrooms(void (*SpriteAnimFunc)(int32_t,int32_t,int32_t,int32_t,int32_
     }
 #endif
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
         yax_polymostclearzbuffer = 1;
 #endif
 }
@@ -7172,7 +7173,7 @@ static void renderDrawSprite(int32_t snum)
         buildgl_setEnabled(GL_ALPHA_TEST);
         buildgl_setEnabled(GL_BLEND);
 
-        if (videoGetRenderMode() == REND_POLYMOST)
+        if (videoUsesPolymost())
             polymost_drawsprite(snum);
 # ifdef POLYMER
         else polymer_drawsprite(snum);
@@ -7199,7 +7200,7 @@ static void renderDrawMaskedWall(int16_t damaskwallcnt)
         buildgl_setEnabled(GL_ALPHA_TEST);
         buildgl_setEnabled(GL_BLEND);
 
-        if (videoGetRenderMode() == REND_POLYMOST)
+        if (videoUsesPolymost())
             polymost_drawmaskwall(damaskwallcnt);
 # ifdef POLYMER
         else polymer_drawmaskwall(damaskwallcnt);
@@ -9496,6 +9497,7 @@ int32_t renderDrawRoomsQ16(int32_t daposx, int32_t daposy, int32_t daposz,
         break;
 #ifdef USE_OPENGL
     case REND_POLYMOST:
+    case REND_VULKAN:
         // NOTE: In Polymost, the fragment depth depends on the x screen size!
         if (r_usenewshading == 4)
             globalvisibility = g_visibility * xdimen;
@@ -9918,7 +9920,7 @@ static inline int comparetsprites(int const k, int const l)
     auto const *const lspr = tspriteptr[l];
 
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
     {
         if ((kspr->cstat & CSTAT_SPRITE_ALIGNMENT) != (lspr->cstat & CSTAT_SPRITE_ALIGNMENT))
             return (kspr->cstat & CSTAT_SPRITE_ALIGNMENT) - (lspr->cstat & CSTAT_SPRITE_ALIGNMENT);
@@ -10202,7 +10204,7 @@ void renderDrawMasks(void)
 {
     MICROPROFILE_SCOPEI("Engine", EDUKE32_FUNCTION, MP_AUTO);
 
-    bool const isPolymost = (videoGetRenderMode() == REND_POLYMOST);
+    bool const isPolymost = (videoUsesPolymost());
 
 #ifdef DEBUG_MASK_DRAWING
     static struct {
@@ -11996,7 +11998,11 @@ extern char videomodereset;
 int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daupscaledydim, int32_t dabpp, int32_t daupscalefactor)
 {
 #ifdef USE_OPENGL
-    if (nogl) dabpp = 8;
+    if (nogl && glrendmode != REND_VULKAN) dabpp = 8;
+#ifdef USE_VULKAN
+    if ((dabpp > 8 && glrendmode == REND_VULKAN) != vulkanActive())
+        videoResetMode();
+#endif
 #endif
     daupscaledxdim = max(640, daupscaledxdim);
     daupscaledydim = max(400, daupscaledydim);
@@ -12014,6 +12020,14 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
 
     g_lastpalettesum = 0;
 #ifdef USE_OPENGL
+#ifdef POLYMER
+    if (videoGetRenderMode() == REND_POLYMER && (dabpp == 8 || glrendmode != REND_POLYMER))
+    {
+        engineClearLightsFromMHK();
+        G_Polymer_UnInit();
+        polymer_uninit();
+    }
+#endif
     PolymostFreeVBOs();
 #endif
     if (videoSetMode(daupscaledxdim,daupscaledydim,dabpp,davidoption) < 0) return -1;
@@ -12064,7 +12078,7 @@ int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daups
         polymost_glreset();
         polymost_glinit();
 
-        if (videoGetRenderMode() == REND_POLYMOST)
+        if (videoUsesPolymost())
             PolymostProcessVoxels();
     }
 # ifdef POLYMER
@@ -14168,7 +14182,7 @@ void renderPrepareMirror(int32_t dax, int32_t day, int32_t daz, fix16_t daang, f
     inpreparemirror = 1;
 
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
         polymost_prepareMirror(dax, day, daz, daang, dahoriz, dawall);
 #else
     UNREFERENCED_PARAMETER(daz);
@@ -14183,7 +14197,7 @@ void renderPrepareMirror(int32_t dax, int32_t day, int32_t daz, fix16_t daang, f
 void renderCompleteMirror(void)
 {
 #ifdef USE_OPENGL
-    if (videoGetRenderMode() == REND_POLYMOST)
+    if (videoUsesPolymost())
         polymost_completeMirror();
 #endif
 
@@ -15008,6 +15022,41 @@ static void PolymerProcessModels(void)
 int32_t videoSetRenderMode(int32_t renderer)
 {
 #ifdef USE_OPENGL
+    if (renderer != REND_CLASSIC && renderer != REND_POLYMOST
+#ifdef POLYMER
+        && renderer != REND_POLYMER
+#endif
+#ifdef USE_VULKAN
+        && renderer != REND_VULKAN
+#endif
+    )
+        return -1;
+
+#ifdef USE_VULKAN
+    if (renderer == REND_VULKAN && !vulkanSupported())
+        return -1;
+    // Two accelerated backends can have identical resolution and pixel depth.
+    // Changing the API still requires a new window, device and resource cache.
+    if (bpp > 8 && renderer != REND_CLASSIC && (renderer == REND_VULKAN) != vulkanActive())
+    {
+        int const previous = glrendmode;
+        int const oldWidth = xres, oldHeight = yres, oldDepth = bpp, oldScale = upscalefactor;
+        char const oldFullscreen = fullscreen;
+        glrendmode = renderer;
+        videoResetMode();
+        if (videoSetGameMode(fullscreen, xres, yres, bpp, upscalefactor) < 0)
+        {
+            glrendmode = previous;
+            videoResetMode();
+            if (videoSetGameMode(oldFullscreen, oldWidth, oldHeight, oldDepth, oldScale) < 0)
+            {
+                LOG_F(ERROR, "Could not restore the previous renderer after a video mode failure.");
+                Bexit(EXIT_FAILURE);
+            }
+            return -1;
+        }
+    }
+#endif
     buildgl_resetStateAccounting();
 
     if (bpp == 8)
@@ -15019,46 +15068,30 @@ int32_t videoSetRenderMode(int32_t renderer)
         }
         renderer = REND_CLASSIC;
     }
-# ifdef POLYMER
-    else
-        renderer = clamp(renderer, REND_POLYMOST, REND_POLYMER);
-
+#ifdef POLYMER
     if (renderer == REND_POLYMER)
     {
         PolymerProcessModels();
-
         if (!polymer_init())
             renderer = REND_POLYMOST;
     }
-    else if (videoGetRenderMode() == REND_POLYMER)  // going from Polymer to another renderer
+    else if (videoGetRenderMode() == REND_POLYMER)
     {
         engineClearLightsFromMHK();
         G_Polymer_UnInit();
         polymer_uninit();
     }
-# else
-    else
-        renderer = REND_POLYMOST;
-# endif
-
-    // Fixes mirror glitches that occur when changing the renderer.
-    // Including: mirrored player view in Polymost, black screen in Classic
+#endif
     inpreparemirror = 0;
-
     basepalreset = 1;
-
     rendmode = renderer;
-    if (videoGetRenderMode() >= REND_POLYMOST)
-        glrendmode = rendmode;
-
-    if (renderer == REND_POLYMOST)
-    {
+    if (renderer >= REND_POLYMOST)
+        glrendmode = renderer;
+    if (videoUsesPolymost())
         polymost_init();
-    }
 #else
     UNREFERENCED_PARAMETER(renderer);
 #endif
-
     return 0;
 }
 

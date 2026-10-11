@@ -3904,7 +3904,7 @@ RORHACK:
 #ifdef USE_OPENGL
             else
             {
-                if (videoGetRenderMode() == REND_POLYMOST && gDeliriumBlur)
+                if (videoUsesPolymost() && gDeliriumBlur)
                 {
                     if (!bDeliriumOld)
                     {

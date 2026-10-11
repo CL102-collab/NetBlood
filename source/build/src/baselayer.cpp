@@ -641,7 +641,7 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
 #else
         "software (x86 ASM)",
 #endif
-        nullptr, nullptr, "Polymost", "Polymer (for great justice)"
+        nullptr, nullptr, "Polymost", "Polymer (for great justice)", "Vulkan"
     };
 
     if (parm->numparms != 1)
@@ -649,7 +649,11 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
 
     int32_t m = Bstrtol(parm->parms[0], NULL, 10);
 
-    if (m != REND_CLASSIC && m != REND_POLYMOST && m != REND_POLYMER)
+    if (m != REND_CLASSIC && m != REND_POLYMOST && m != REND_POLYMER
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+        && m != REND_VULKAN
+#endif
+       )
         return OSDCMD_SHOWHELP;
 
     if (videoGetRenderMode() == m)
@@ -658,6 +662,9 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
     if ((m==REND_CLASSIC) != (bpp==8) && baselayer_osdcmd_vidmode_func)
     {
         // Mismatch between video mode and requested renderer, do auto switch.
+        int const previousAcceleratedRenderer = glrendmode;
+        if (m != REND_CLASSIC)
+            glrendmode = m;
         osdfuncparm_t parm;
         char arg[4];
 
@@ -677,9 +684,19 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
         parm.parms = ptrptr;
 
         baselayer_osdcmd_vidmode_func(&parm);
+        if ((m == REND_CLASSIC) != (bpp == 8))
+        {
+            glrendmode = previousAcceleratedRenderer;
+            LOG_F(ERROR, "Could not create a video mode for %s rendering.", modes[m]);
+            return OSDCMD_OK;
+        }
     }
 
-    videoSetRenderMode(m);
+    if (videoSetRenderMode(m) < 0)
+    {
+        LOG_F(ERROR, "Could not switch to %s rendering.", modes[m]);
+        return OSDCMD_OK;
+    }
     VLOG_F(LOG_GFX, "Rendering method changed to %s.", modes[videoGetRenderMode()]);
 
     return OSDCMD_OK;
@@ -838,6 +855,9 @@ int32_t baselayer_init(void)
                          "Mode numbers are:\n"
                          "   0 - Classic Build software\n"
                          "   3 - Polygonal OpenGL\n"
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+                         "   5 - Native Vulkan\n"
+#endif
 #ifdef POLYMER
                          "   4 - Great justice renderer (Polymer)\n"
 #endif

@@ -492,12 +492,18 @@ CGameMenuItemChain itemOptionsDisplayPolymost("POLYMOST SETUP", 3, 66, 180, 180,
 
 const char *pzRendererStrings[] = {
     "CLASSIC",
-    "POLYMOST"
+    "OPENGL",
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "VULKAN",
+#endif
 };
 
 const int nRendererValues[] = {
     REND_CLASSIC,
-    REND_POLYMOST
+    REND_POLYMOST,
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_VULKAN,
+#endif
 };
 
 const char *pzVSyncStrings[] = {
@@ -545,7 +551,7 @@ void PreDrawVideoModeMenu(CGameMenuItem *);
 
 CGameMenuItemTitle itemOptionsDisplayModeTitle("VIDEO MODE", 1, 160, 20, 2038);
 CGameMenuItemZCycle itemOptionsDisplayModeResolution("RESOLUTION:", 3, 66, 60, 180, 0, NULL, NULL, 0, 0, true);
-CGameMenuItemZCycle itemOptionsDisplayModeRenderer("RENDERER:", 3, 66, 70, 180, 0, NULL, pzRendererStrings, 2, 0);
+CGameMenuItemZCycle itemOptionsDisplayModeRenderer("RENDERER:", 3, 66, 70, 180, 0, NULL, pzRendererStrings, ARRAY_SIZE(pzRendererStrings), 0);
 CGameMenuItemZBool itemOptionsDisplayModeFullscreen("FULLSCREEN:", 3, 66, 80, 180, 0, NULL, NULL, NULL);
 CGameMenuItemZCycle itemOptionsDisplayModeVSync("VSYNC:", 3, 66, 90, 180, 0, NULL, pzVSyncStrings, ARRAY_SSIZE(pzVSyncStrings), 0);
 CGameMenuItemZCycle itemOptionsDisplayModeFrameLimit("FRAMERATE LIMIT:", 3, 66, 100, 180, 0, UpdateVideoModeMenuFrameLimit, pzFrameLimitStrings, 8, 0);
@@ -1965,16 +1971,29 @@ void SetVideoMode(CGameMenuItemChain *pItem)
     resolution_t p = { xres, yres, fullscreen, bpp, 0 };
     int32_t prend = videoGetRenderMode();
     int32_t pvsync = vsync;
+#ifdef USE_OPENGL
+    int32_t previousAcceleratedRenderer = glrendmode;
+#endif
 
     int32_t nResolution = itemOptionsDisplayModeResolution.m_nFocus;
     resolution_t n = { gResolution[nResolution].xdim, gResolution[nResolution].ydim,
                        (gResolution[nResolution].flags & RES_FS) ? itemOptionsDisplayModeFullscreen.at20 : 0,
                        (nRendererValues[itemOptionsDisplayModeRenderer.m_nFocus] == REND_CLASSIC) ? 8 : gResolution[nResolution].bppmax, 0 };
-    int32_t UNUSED(nrend) = nRendererValues[itemOptionsDisplayModeRenderer.m_nFocus];
+    int32_t nrend = nRendererValues[itemOptionsDisplayModeRenderer.m_nFocus];
     int32_t nvsync = nVSyncValues[itemOptionsDisplayModeVSync.m_nFocus];
 
+#ifdef USE_OPENGL
+    if (nrend != REND_CLASSIC)
+        glrendmode = nrend;
+    if (nrend != prend)
+        videoResetMode();
+#endif
     if (videoSetGameMode(n.flags, n.xdim, n.ydim, n.bppmax, upscalefactor) < 0)
     {
+#ifdef USE_OPENGL
+        glrendmode = previousAcceleratedRenderer;
+#endif
+        videoResetMode();
         if (videoSetGameMode(p.flags, p.xdim, p.ydim, p.bppmax, upscalefactor) < 0)
         {
             videoSetRenderMode(prend);
@@ -1982,11 +2001,16 @@ void SetVideoMode(CGameMenuItemChain *pItem)
         }
         else
         {
+            videoSetRenderMode(prend);
             onvideomodechange(p.bppmax > 8);
-            vsync = videoSetVsync(pvsync);
+            nvsync = pvsync;
         }
     }
-    else onvideomodechange(n.bppmax > 8);
+    else
+    {
+        videoSetRenderMode(nrend);
+        onvideomodechange(n.bppmax > 8);
+    }
 
     viewResizeView(gViewSize);
     vsync = videoSetVsync(nvsync);
@@ -2019,7 +2043,7 @@ void SetupVideoModeMenu(CGameMenuItemChain *pItem)
     }
     itemOptionsDisplayModeFullscreen.at20 = gSetup.fullscreen;
 #ifdef USE_OPENGL
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < ARRAY_SSIZE(nRendererValues); i++)
     {
         if (videoGetRenderMode() == nRendererValues[i])
         {

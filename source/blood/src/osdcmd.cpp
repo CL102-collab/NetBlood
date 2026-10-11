@@ -55,6 +55,23 @@ static inline int osdcmd_quit(osdcmdptr_t UNUSED(parm))
     return OSDCMD_OK;
 }
 
+static int osdcmd_pause(osdcmdptr_t parm)
+{
+    if (parm->numparms != 0)
+        return OSDCMD_SHOWHELP;
+
+    if (!gGameStarted || gGameOptions.nGameType != kGameTypeSinglePlayer || numplayers != 1 || gDemo.at0 || gDemo.at1)
+    {
+        OSD_Printf("pause: requires a single-player game without demo recording or playback.\n");
+        return OSDCMD_OK;
+    }
+
+    // Pause a console-loaded map before its next simulation step for inspection.
+    gPaused = !gPaused;
+    OSD_Printf("%s at simulation frame %d.\n", gPaused ? "Paused" : "Resumed", gLevelTime);
+    return OSDCMD_OK;
+}
+
 static int osdcmd_changelevel(osdcmdptr_t parm)
 {
     int32_t volume,level;
@@ -329,10 +346,12 @@ static int osdcmd_vidmode(osdcmdptr_t parm)
         if (videoSetGameMode(gSetup.fullscreen, gSetup.xdim, gSetup.ydim, gSetup.bpp, upscalefactor))
             ThrowError("vidmode: Reset failed!\n");
     }
-    gSetup.bpp = newbpp;
-    gSetup.xdim = newwidth;
-    gSetup.ydim = newheight;
-    gSetup.fullscreen = newfs;
+    // A failed request can restore the previous mode, or mode validation can
+    // adjust its dimensions. Persist the mode that actually became active.
+    gSetup.bpp = bpp;
+    gSetup.xdim = xres;
+    gSetup.ydim = yres;
+    gSetup.fullscreen = fullscreen;
     onvideomodechange(gSetup.bpp>8);
     viewResizeView(gViewSize);
     return OSDCMD_OK;
@@ -1130,6 +1149,7 @@ int32_t registerosdcommands(void)
     OSD_RegisterFunction("changelevel","changelevel <volume> <level>: warps to the given level", osdcmd_changelevel);
     OSD_RegisterFunction("map","map <mapfile>: loads the given user map", osdcmd_map);
     OSD_RegisterFunction("restartmap","restarts current map", osdcmd_restartmap);
+    OSD_RegisterFunction("pause","pause: toggles pause in a single-player game without demo recording or playback", osdcmd_pause);
     OSD_RegisterFunction("demo","demo <demofile or demonum>: starts the given demo", osdcmd_demo);
 //    }
 //

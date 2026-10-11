@@ -304,6 +304,10 @@ engine_excl := \
     startwin.editor.cpp \
     $(engine_editor_objs) \
 
+ifeq (0,$(USE_VULKAN))
+    engine_excl += vulkan_renderer.cpp vulkan_frontend.cpp
+endif
+
 ifeq (1,$(USE_OPENGL))
     engine_deps += glad
 else

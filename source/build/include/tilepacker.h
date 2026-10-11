@@ -23,6 +23,9 @@ typedef struct
     TileRect rect;
 } Tile;
 
+// Discard every tilesheet, tile assignment, and queued tile before repacking.
+void tilepacker_reset();
+
 // Initialize the specified tilesheet
 // tilesheetId must be less than MAXTILESHEETS
 // Re-initializing an existing tilesheet will discard all of its contents

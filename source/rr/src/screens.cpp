@@ -701,7 +701,7 @@ static void G_PrintCoords(int32_t snum)
 
         if (rendmode >= 3)
         {
-            if (rendmode==3)
+            if (videoUsesPolymost())
                 printcoordsline("r_usenewshading = %d", r_usenewshading);
 # ifdef POLYMER
             else

@@ -75,6 +75,8 @@ float* multiplyMatrix4f(float m0[4*4], const float m1[4*4]);
 void polymost_initdrawpoly(void);
 void polymost_glinit(void);
 void polymost_glreset(void);
+// After polymost_glreset(), while the old GPU context is still current.
+void polymost_contextReset(void);
 
 void polymost_init(void);
 
@@ -148,7 +150,7 @@ static FORCE_INLINE int32_t eligible_for_tileshades(int32_t const picnum, int32_
 
 static FORCE_INLINE int polymost_useindexedtextures(void)
 {
-    return videoGetRenderMode() == REND_POLYMOST && r_useindexedcolortextures && gltexfiltermode == 0 && !duke64;
+    return videoUsesPolymost() && r_useindexedcolortextures && gltexfiltermode == 0 && !duke64;
 }
 
 static FORCE_INLINE int polymost_usetileshades(void)
@@ -167,7 +169,7 @@ static inline float getshadefactor(int32_t const shade, int32_t const pal)
 {
     // 8-bit tiles, i.e. non-hightiles and non-models, don't get additional
     // glColor() shading with r_usetileshades!
-    if (videoGetRenderMode() == REND_POLYMOST && polymost_usetileshades() != TS_NONE && eligible_for_tileshades(globalpicnum, globalpal))
+    if (videoUsesPolymost() && polymost_usetileshades() != TS_NONE && eligible_for_tileshades(globalpicnum, globalpal))
         return 1.f;
 
     float const fshade = fogfactor[pal] != 0.f ? (float)shade / fogfactor[pal] : 0.f;
