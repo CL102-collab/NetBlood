@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "compat.h"
 #include "build.h"
 #include "common_game.h"
+#include "demo.h"
 #include "globals.h"
 #include "resource.h"
 #include "renderlayer.h"
@@ -58,6 +59,8 @@ void _ThrowError(const char *pzFormat, ...)
     va_start(args, pzFormat);
     vsprintf(buffer, pzFormat, args);
     LOG_F(ERROR, "%s(%i): %s", _module, _line, buffer);
+    if (gDemoRunValidation)
+        DemoValidationError(buffer);
 
     // NOTE: if NDEBUG is defined, this is a no-op (handled in build/include/compat.h)
     debug_break();
@@ -85,6 +88,8 @@ void _consoleSysMsg(const char* pzFormat, ...) {
 void __dassert(const char * pzExpr, const char * pzFile, int nLine)
 {
     LOG_F(ERROR, "Assertion failed: %s in file %s at line %i", pzExpr, pzFile, nLine);
+    if (gDemoRunValidation)
+        DemoValidationError(pzExpr);
 
     // NOTE: if NDEBUG is defined, this is a no-op (handled in build/include/compat.h)
     debug_break();

@@ -96,6 +96,12 @@ A port of several BUILD Engine games derived from the Duke Nukem 3D codebase, ba
 ## Building from source
 See: https://wiki.eduke32.com/wiki/Main_Page
 
+### Demo regression validation
+
+The DOS Blood 1.21 demo regression suite is available through `-validate`.
+See [tests/demo-validation](tests/demo-validation/README.md) for the headless
+runner, required game data, and expected results.
+
 ## Acknowledgments
   See AUTHORS.md
 

@@ -214,7 +214,7 @@ void ShutDown(void)
 void QuitGame(void)
 {
     ShutDown();
-    exit(0);
+    exit(gDemoRunValidation && !gDemoValidationPassed ? 1 : 0);
 }
 
 void PrecacheDude(spritetype *pSprite)
@@ -1258,6 +1258,7 @@ SWITCH switches[] = {
     { "conf", 43, 1 },
     { "noconsole", 43, 0 },
     { "s", 44, 1 },
+    { "validate", 45, 0 },
     { NULL, 0, 0 }
 };
 
@@ -1294,6 +1295,7 @@ void PrintHelp(void)
         "-skill\t\tSet player handicap; Range:0..4; Default:2; (NOT difficulty level.)\n"
         "-snd\t\tSpecify an RFF Sound file name\n"
         "-usecwd\t\tRead data and configuration from current directory\n"
+        "-validate\tRun the DOS 1.21 demo regression suite\n"
         ;
 #ifdef WM_MSGBOX_WINDOW
     Bsnprintf(tempbuf, sizeof(tempbuf), APPNAME " %s", s_buildRev);
@@ -1332,6 +1334,9 @@ void PrintHelp(void)
 
 void ParseOptions(void)
 {
+    // Determine validation mode before commands such as -record can touch files.
+    gDemoRunValidation = G_CheckCmdSwitch(margc, margv, "-validate")
+        || G_CheckCmdSwitch(margc, margv, "/validate");
     int option;
     while ((option = GetOptions(switches)) != -1)
     {
@@ -1423,12 +1428,16 @@ void ParseOptions(void)
             gGameOptions.nMonsterSettings = 0;
             break;
         case 6:
+            if (gDemoRunValidation)
+                DemoValidationError("-validate cannot be combined with explicit playback");
             if (OptArgc < 1)
                 gDemo.SetupPlayback(NULL);
             else
                 gDemo.SetupPlayback(OptArgv[0]);
             break;
         case 7:
+            if (gDemoRunValidation)
+                DemoValidationError("-validate cannot be combined with recording");
             if (OptArgc < 1)
                 gDemo.Create(NULL);
             else
@@ -1577,7 +1586,23 @@ void ParseOptions(void)
             gGameOptions.nDifficultyQuantity = gSkill;
             gGameOptions.nDifficultyHealth = gSkill;
             break;
+        case 45:
+            gDemoRunValidation = true;
+            break;
         }
+    }
+    if (gDemoRunValidation)
+    {
+        // Validation owns playback and game selection, regardless of option order.
+        if (bAddUserMap || gDemo.at0 || gDemo.at1 || gNetMode != NETWORK_NONE)
+            DemoValidationError("-validate cannot be combined with a map, recording, playback, or multiplayer");
+        bQuickStart = true;
+        bNoDemo = false;
+        bNoAutoLoad = true;
+        gNoSetup = true;
+        gCommandSetup = false;
+        levelOverrideINI("TEST.INI");
+        strcpy(g_modDir, "/validatedemos");
     }
 #if 0
     if (bAddUserMap)
@@ -1701,7 +1726,7 @@ int app_main(int argc, char const * const * argv)
     ScanINIFiles();
 
 #ifdef STARTUP_SETUP_WINDOW
-    if (readSetup < 0 || (!gNoSetup && (configversion != BYTEVERSION || gSetup.forcesetup)) || gCommandSetup)
+    if (!gDemoRunValidation && (readSetup < 0 || (!gNoSetup && (configversion != BYTEVERSION || gSetup.forcesetup)) || gCommandSetup))
     {
         if (quitevent || !startwin_run())
         {
@@ -1812,7 +1837,7 @@ int app_main(int argc, char const * const * argv)
             Bsnprintf(buffer, ARRAY_SIZE(buffer), "%s_cvars.cfg", SetupFilename);
     }
 
-    if (OSD_Exec(buffer))
+    if (!gDemoRunValidation && OSD_Exec(buffer))
     {
         // temporary fallback to unadorned "settings.cfg"
 
@@ -1853,7 +1878,8 @@ int app_main(int argc, char const * const * argv)
 
     InitVersionString();
 
-    OSD_Exec("autoexec.cfg");
+    if (!gDemoRunValidation)
+        OSD_Exec("autoexec.cfg");
 
     if (!bQuickStart)
         credLogosDos();
@@ -2097,7 +2123,7 @@ RESTART:
     }
     ShutDown();
 
-    return 0;
+    return gDemoRunValidation && !gDemoValidationPassed ? 1 : 0;
 }
 
 static int32_t S_DefineAudioIfSupported(char *fn, const char *name)

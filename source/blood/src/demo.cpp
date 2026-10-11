@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "blood.h"
 #include "controls.h"
 #include "demo.h"
+#include "demo_validate.h"
 #include "fire.h"
 #include "gamemenu.h"
 #include "globals.h"
@@ -43,7 +44,66 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "network.h"
 #include "player.h"
 #include "screen.h"
+#include "sound.h"
 #include "view.h"
+
+bool gDemoRunValidation = false;
+bool gDemoValidationPassed = false;
+
+static int nValidationPassed = 0;
+static int nValidationSkipped = 0;
+static uint32_t nValidationInputs = 0;
+
+EDUKE32_NORETURN void DemoValidationError(const char *message, const char *demoName)
+{
+    LOG_F(ERROR, "1.21 Validation Failed: %s%s%s", message, demoName ? ": " : "", demoName ? demoName : "");
+    ShutDown();
+    Bexit(1);
+}
+
+static const char *DemoValidationSkipReason(const char *name)
+{
+    // Preserve NotBlood's compiler exclusions; never derive skips from a failed run.
+#if !defined USING_LTO
+    if (!Bstrcasecmp(name, "/validatedemos/TEST038.DEM"))
+        return "upstream exclusion without LTO";
+#endif
+#if defined(__GNUC__) && __GNUC__ >= 15
+    if (!Bstrcasecmp(name, "/validatedemos/TEST085.DEM")
+        || !Bstrcasecmp(name, "/validatedemos/TEST096.DEM")
+        || !Bstrcasecmp(name, "/validatedemos/TEST098.DEM"))
+        return "upstream exclusion with GCC 15 or newer";
+#endif
+    UNREFERENCED_PARAMETER(name);
+    return NULL;
+}
+
+static const DEMOVALIDATE *DemoValidationInfo(const char *name)
+{
+    for (auto const &entry : gDemoValidate)
+        if (!Bstrcasecmp(name, entry.zName))
+            return &entry;
+    return NULL;
+}
+
+static void DemoValidationCheckHeader(const DEMOHEADER &header, int fileLength, const char *name)
+{
+    auto const *info = DemoValidationInfo(name);
+    if (!info)
+        DemoValidationError("No expected result for demo", name);
+    if (header.signature != 0x1a4d4544 || header.nVersion != BloodVersion)
+        DemoValidationError("Expected a DOS 1.21 demo", name);
+    if (header.nInputCount <= 0 || header.nInputCount != info->nInputTicks)
+        DemoValidationError("Recorded input count does not match baseline", name);
+    if (header.nNetPlayers != 1 || header.nMyConnectIndex != 0
+        || header.nConnectHead != 0 || header.connectPoints[0] != -1)
+        DemoValidationError("Expected a single-player demo", name);
+    // Some upstream fixtures intentionally shorten nInputCount to a checkpoint
+    // while retaining the remaining complete input records in the file.
+    int const inputBytes = fileLength - int(sizeof(DEMOHEADER) + sizeof(GAMEOPTIONSLEGACY));
+    if (inputBytes < 22 * header.nInputCount || inputBytes % 22 != 0)
+        DemoValidationError("Truncated demo inputs", name);
+}
 
 int nBuild = 0;
 
@@ -244,11 +304,18 @@ bool CDemo::SetupPlayback(const char *pzFile)
 {
     at0 = 0;
     at1 = 0;
+    const char *demoName = pzFile ? pzFile : (pCurrentDemo ? pCurrentDemo->zName : NULL);
+    if (gDemoRunValidation && !demoName)
+        DemoValidationError("No validation demo selected");
     if (pzFile)
     {
         hPFile = kopen4loadfrommod(pzFile, 0);
         if (hPFile == -1)
+        {
+            if (gDemoRunValidation)
+                DemoValidationError("Cannot open validation demo", demoName);
             return false;
+        }
     }
     else
     {
@@ -256,9 +323,15 @@ bool CDemo::SetupPlayback(const char *pzFile)
             return false;
         hPFile = kopen4loadfrommod(pCurrentDemo->zName, 0);
         if (hPFile == -1)
+        {
+            if (gDemoRunValidation)
+                DemoValidationError("Cannot open validation demo", demoName);
             return false;
+        }
     }
-    kread(hPFile, &atf, sizeof(DEMOHEADER));
+    int const headerBytes = kread(hPFile, &atf, sizeof(DEMOHEADER));
+    if (gDemoRunValidation && headerBytes != sizeof(DEMOHEADER))
+        DemoValidationError("Truncated demo header", demoName);
 #if B_BIG_ENDIAN == 1
     atf.signature = B_LITTLE32(atf.signature);
     atf.nVersion = B_LITTLE16(atf.nVersion);
@@ -270,6 +343,8 @@ bool CDemo::SetupPlayback(const char *pzFile)
     for (int i = 0; i < 8; i++)
         atf.connectPoints[i] = B_LITTLE16(atf.connectPoints[i]);
 #endif
+    if (gDemoRunValidation)
+        DemoValidationCheckHeader(atf, kfilelength(hPFile), demoName);
     // if (aimHeight.signature != '\x1aMED' && aimHeight.signature != '\x1aMDE')
     if (atf.signature != 0x1a4d4544 && atf.signature != 0x1a4d4445)
         return 0;
@@ -279,7 +354,21 @@ bool CDemo::SetupPlayback(const char *pzFile)
         GAMEOPTIONSLEGACY gameOptions;
         if (BloodVersion != atf.nVersion)
             return 0;
-        kread(hPFile, &gameOptions, sizeof(GAMEOPTIONSLEGACY));
+        int const optionsBytes = kread(hPFile, &gameOptions, sizeof(GAMEOPTIONSLEGACY));
+        if (gDemoRunValidation)
+        {
+            if (optionsBytes != sizeof(GAMEOPTIONSLEGACY))
+                DemoValidationError("Truncated game options", demoName);
+            if (!memchr(gameOptions.zLevelName, 0, sizeof(gameOptions.zLevelName))
+                || !memchr(gameOptions.zLevelSong, 0, sizeof(gameOptions.zLevelSong)))
+                DemoValidationError("Unterminated string in game options", demoName);
+            if (gameOptions.nGameType != kGameTypeSinglePlayer || unsigned(gameOptions.nDifficulty) > 4)
+                DemoValidationError("Invalid game options", demoName);
+            // DOS demos may leave these obsolete save-name fields uninitialized.
+            // NotBlood also ignores them when reading its validation fixtures.
+            gameOptions.szSaveGameName[0] = gameOptions.szUserGameName[0] = 0;
+            m_gameOptions = gSingleGameOptions;
+        }
         ReadGameOptionsLegacy(m_gameOptions, gameOptions);
     }
     else
@@ -304,6 +393,11 @@ bool CDemo::SetupPlayback(const char *pzFile)
 #endif
     at0 = 0;
     at1 = 1;
+    if (gDemoRunValidation)
+    {
+        timerInit(CLOCKTICKSPERSECOND * 500);
+        SoundToggle = MusicToggle = 0;
+    }
     return 1;
 }
 
@@ -366,17 +460,21 @@ void CDemo::ProcessKeys(void)
 
 void CDemo::Playback(void)
 {
+    const DEMOVALIDATE *pValidateInfo = NULL;
     CONTROL_BindsEnabled = false;
     ready2send = 0;
     int v4 = 0;
-    if (!CGameMenuMgr::m_bActive)
+    if (!gDemoRunValidation && !CGameMenuMgr::m_bActive)
     {
         gGameMenuMgr.Push(&menuMain, -1);
         at2 = 1;
     }
+    if (gDemoRunValidation)
+        gInputMode = INPUT_MODE_1;
     gNetFifoClock = totalclock;
     gViewMode = 3;
 _DEMOPLAYBACK:
+    pValidateInfo = NULL;
     while (at1 && !gQuitGame)
     {
         while (totalclock >= gNetFifoClock && !gQuitGame)
@@ -395,23 +493,39 @@ _DEMOPLAYBACK:
                 gNetFifoTail = 0;
                 //memcpy(connectpoint2, aimHeight.connectPoints, sizeof(aimHeight.connectPoints));
                 memcpy(&gGameOptions, &m_gameOptions, sizeof(GAMEOPTIONS));
+                if (gDemoRunValidation)
+                    gGameOptions.uGameFlags &= ~kGameFlagContinuing;
                 gGameOptions.nDifficultyQuantity = gGameOptions.nDifficulty;
                 gGameOptions.nDifficultyHealth = gGameOptions.nDifficulty;
                 gSkill = gGameOptions.nDifficulty;
                 for (int i = 0; i < 8; i++)
                     playerInit(i, 0);
+                // Legacy playback retains collision state across levels. Isolate
+                // validation cases without changing sprite allocation in gameplay.
+                if (gDemoRunValidation)
+                    memset(gSpriteHit, 0, sizeof(gSpriteHit));
                 StartLevel(&gGameOptions);
                 for (int i = 0; i < 8; i++)
                 {
                     gProfile[i].nAutoAim = 1;
                     gProfile[i].nWeaponSwitch = 1;
                 }
+                if (gDemoRunValidation)
+                {
+                    pValidateInfo = pCurrentDemo ? DemoValidationInfo(pCurrentDemo->zName) : NULL;
+                    if (!pValidateInfo || atf.nInputCount != pValidateInfo->nInputTicks)
+                        DemoValidationError("No matching expected result", pCurrentDemo ? pCurrentDemo->zName : NULL);
+                    gProfile[myconnectindex].nAutoAim = pValidateInfo->nAutoAim;
+                    LOG_F(INFO, "Validating demo: %s", pCurrentDemo->zName);
+                }
             }
             ready2send = 0;
-            OSD_DispatchQueued();
+            if (!gDemoRunValidation)
+                OSD_DispatchQueued();
             if (!gDemo.at1)
                 break;
-            ProcessKeys();
+            if (!gDemoRunValidation)
+                ProcessKeys();
             for (int p = connecthead; p >= 0; p = connectpoint2[p])
             {
                 if ((v4&1023) == 0)
@@ -419,6 +533,8 @@ _DEMOPLAYBACK:
                     unsigned int nSize = atb-v4;
                     if (nSize > kInputBufferSize)
                         nSize = kInputBufferSize;
+                    if (gDemoRunValidation && handleevents() && quitevent)
+                        DemoValidationError("Validation interrupted", pCurrentDemo->zName);
                     ReadInput(nSize);
                 }
                 memcpy(&gFifoInput[gNetFifoHead[p]&255], &at1aa[v4&1023], sizeof(GINPUT));
@@ -427,6 +543,48 @@ _DEMOPLAYBACK:
                 if (v4 >= atf.nInputCount)
                 {
                     ready2send = 0;
+                    if (gDemoRunValidation)
+                    {
+                        // Upstream baselines are sampled before processing the last input.
+                        // Moving these checks after ProcessFrame would invalidate every baseline.
+                        auto const *playerSprite = gPlayer[myconnectindex].pSprite;
+                        if (!pValidateInfo || !playerSprite || playerSprite->extra <= 0 || playerSprite->extra >= kMaxXSprites)
+                            DemoValidationError("Invalid player state", pCurrentDemo->zName);
+                        bool invalid = false;
+                        if (wrandomseed != pValidateInfo->wrandomseed)
+                        {
+                            LOG_F(ERROR, "Random seed desync: expected %08X, got %08X", pValidateInfo->wrandomseed, (uint32_t)wrandomseed);
+                            invalid = true;
+                        }
+                        if (playerSprite->x != pValidateInfo->xyz.x || playerSprite->y != pValidateInfo->xyz.y || playerSprite->z != pValidateInfo->xyz.z)
+                        {
+                            LOG_F(ERROR, "Player position desync: expected (%d, %d, %d), got (%d, %d, %d)",
+                                pValidateInfo->xyz.x, pValidateInfo->xyz.y, pValidateInfo->xyz.z,
+                                int(playerSprite->x), int(playerSprite->y), int(playerSprite->z));
+                            invalid = true;
+                        }
+                        uint32_t const health = xsprite[playerSprite->extra].health;
+                        if (health != pValidateInfo->health)
+                        {
+                            LOG_F(ERROR, "Player health desync: expected %u, got %u", pValidateInfo->health, health);
+                            invalid = true;
+                        }
+                        if (invalid)
+                            DemoValidationError("Demo desync", pCurrentDemo->zName);
+                        ++nValidationPassed;
+                        nValidationInputs += pValidateInfo->nInputTicks;
+                        LOG_F(INFO, "Demo Synced: %s", pCurrentDemo->zName);
+                        if (!pCurrentDemo->pNext)
+                        {
+                            if (nValidationPassed != nDemosFound || nValidationPassed + nValidationSkipped != ARRAY_SSIZE(gDemoValidate))
+                                DemoValidationError("Validation suite did not complete");
+                            gDemoValidationPassed = true;
+                            LOG_F(INFO, "1.21 Validation Successful! (%d passed, %d skipped)", nValidationPassed, nValidationSkipped);
+                            LOG_F(INFO, "Total Demo Hours: %02u:%02u", nValidationInputs / (kTicsPerSec * 60 * 60), nValidationInputs / (kTicsPerSec * 60) % 60);
+                            gQuitGame = true;
+                            break;
+                        }
+                    }
                     if (nDemosFound > 1)
                     {
                         v4 = 0;
@@ -452,12 +610,15 @@ _DEMOPLAYBACK:
         {
             if (handleevents() && quitevent)
             {
+                if (gDemoRunValidation)
+                    DemoValidationError("Validation interrupted", pCurrentDemo ? pCurrentDemo->zName : NULL);
                 KB_KeyDown[sc_Escape] = 1;
                 quitevent = 0;
             }
-            MUSIC_Update();
+            if (!gDemoRunValidation)
+                MUSIC_Update();
             viewDrawScreen();
-            if (gInputMode == INPUT_MODE_1 && CGameMenuMgr::m_bActive)
+            if (!gDemoRunValidation && gInputMode == INPUT_MODE_1 && CGameMenuMgr::m_bActive)
                 gGameMenuMgr.Draw();
             videoNextPage();
         }
@@ -468,6 +629,8 @@ _DEMOPLAYBACK:
         }
     }
     Close();
+    if (gDemoRunValidation && !gDemoValidationPassed)
+        DemoValidationError("Validation stopped before the suite completed");
 }
 
 void CDemo::StopPlayback(void)
@@ -477,6 +640,73 @@ void CDemo::StopPlayback(void)
 
 void CDemo::LoadDemoInfo(void)
 {
+    if (gDemoRunValidation)
+    {
+        gDemoValidationPassed = false;
+        nValidationPassed = nValidationSkipped = 0;
+        nValidationInputs = 0;
+        nDemosFound = 0;
+        auto pDemo = &pFirstDemo;
+        int const oldSearchMode = pathsearchmode;
+        pathsearchmode = 0;
+        auto const pList = klistpath("/validatedemos/", "*.dem", BUILDVFS_FIND_FILE);
+        const char *demoNames[ARRAY_SIZE(gDemoValidate)] = {};
+        for (auto it = pList; it; it = it->next)
+        {
+            char name[BMAX_PATH];
+            Bsnprintf(name, sizeof(name), "/validatedemos/%s", it->name);
+            auto const *info = DemoValidationInfo(name);
+            if (!info)
+                DemoValidationError("No expected result for demo", name);
+            size_t const index = info - gDemoValidate;
+            if (demoNames[index])
+                DemoValidationError("Duplicate validation demo", name);
+            demoNames[index] = it->name;
+        }
+        // Build the chain in baseline order, and require every non-excluded case.
+        // A partial or empty archive must never report a successful validation.
+        for (size_t index = 0; index < ARRAY_SIZE(gDemoValidate); ++index)
+        {
+            auto const &info = gDemoValidate[index];
+            if (auto const reason = DemoValidationSkipReason(info.zName))
+            {
+                LOG_F(INFO, "Demo Skipped: %s (%s)", info.zName, reason);
+                ++nValidationSkipped;
+                continue;
+            }
+            if (!demoNames[index])
+                DemoValidationError("Required validation demo missing", info.zName);
+            char name[BMAX_PATH];
+            Bsnprintf(name, sizeof(name), "/validatedemos/%s", demoNames[index]);
+            int const file = kopen4loadfrommod(name, 0);
+            if (file == -1)
+                DemoValidationError("Cannot open validation demo", name);
+            DEMOHEADER header;
+            if (kread(file, &header, sizeof(header)) != sizeof(header))
+                DemoValidationError("Truncated demo header", name);
+            header.signature = B_LITTLE32(header.signature);
+            header.nVersion = B_LITTLE16(header.nVersion);
+            header.nInputCount = B_LITTLE32(header.nInputCount);
+            header.nNetPlayers = B_LITTLE32(header.nNetPlayers);
+            header.nMyConnectIndex = B_LITTLE16(header.nMyConnectIndex);
+            header.nConnectHead = B_LITTLE16(header.nConnectHead);
+            header.connectPoints[0] = B_LITTLE16(header.connectPoints[0]);
+            DemoValidationCheckHeader(header, kfilelength(file), name);
+            kclose(file);
+            *pDemo = new DEMOCHAIN;
+            (*pDemo)->pNext = NULL;
+            Bstrncpy((*pDemo)->zName, name, BMAX_PATH);
+            pDemo = &(*pDemo)->pNext;
+            ++nDemosFound;
+        }
+        klistfree(pList);
+        pathsearchmode = oldSearchMode;
+        pCurrentDemo = pFirstDemo;
+        if (!nDemosFound)
+            DemoValidationError("No validation demos found");
+        LOG_F(INFO, "1.21 Validation Suite: %d demos, %d compiler exclusions", nDemosFound, nValidationSkipped);
+        return;
+    }
     auto pDemo = &pFirstDemo;
     const int opsm = pathsearchmode;
     nDemosFound = 0;
@@ -580,7 +810,9 @@ void CDemo::ReadInput(int nCount)
     if (m_bLegacy)
     {
         char pBuffer[nInputSizeLegacy*kInputBufferSize];
-        kread(hPFile, pBuffer, nInputSizeLegacy*nCount);
+        int const inputBytes = kread(hPFile, pBuffer, nInputSizeLegacy*nCount);
+        if (gDemoRunValidation && inputBytes != nInputSizeLegacy*nCount)
+            DemoValidationError("Truncated demo inputs", pCurrentDemo ? pCurrentDemo->zName : NULL);
         BitReader bitReader(pBuffer, sizeof(pBuffer));
         memset(at1aa, 0, nCount * sizeof(GINPUT));
         for (int i = 0; i < nCount; i++)

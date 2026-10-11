@@ -109,3 +109,7 @@ public:
 };
 
 extern CDemo gDemo;
+extern bool gDemoRunValidation;
+extern bool gDemoValidationPassed;
+
+EDUKE32_NORETURN void DemoValidationError(const char *message, const char *demoName = NULL);

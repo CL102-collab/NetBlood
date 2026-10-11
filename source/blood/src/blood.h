@@ -79,6 +79,7 @@ extern char gGameTitle[32];
 extern bool bVanilla;
 
 void QuitGame(void);
+void ShutDown(void);
 void PreloadCache(void);
 void StartLevel(GAMEOPTIONS *gameOptions);
 void ProcessFrame(void);
