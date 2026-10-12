@@ -2253,6 +2253,45 @@ spritetype *playerDropFlag(PLAYER *pPlayer, int a2)
     return pSprite;
 }
 
+bool playerChangeTeam(PLAYER *pPlayer, int team)
+{
+    if (!netIsLive() || !netIsServer() || gGameOptions.nGameType != kGameTypeTeams ||
+        !pPlayer || (unsigned)pPlayer->nPlayer >= kMaxPlayers || (unsigned)team > 1 || pPlayer->teamId == team ||
+        !pPlayer->pSprite || !pPlayer->pXSprite || !pPlayer->pDudeInfo || pPlayer->pXSprite->health != 0)
+        return false;
+    // Zero health also describes a kneeling player who can still revive, or
+    // the revival animation before its healing callback. Wait for final death.
+    if (playerSeqPlaying(pPlayer, 16) || playerSeqPlaying(pPlayer, 14))
+        return false;
+
+    // Unlike the legacy death drop, a failed allocation must leave the carried
+    // flag intact. Try balancing again once it can be dropped safely.
+    for (int flag = 0; flag < 2; ++flag)
+    {
+        if (!(pPlayer->hasFlag & (1 << flag)))
+            continue;
+        spritetype *pFlag = actDropObject(pPlayer->pSprite, flag ? kItemFlagB : kItemFlagA);
+        if (!pFlag)
+            return false;
+        pFlag->owner = pPlayer->used2[flag];
+        pPlayer->hasFlag &= ~(1 << flag);
+        pPlayer->used2[flag] = -1;
+        if (flag) gRedFlagDropped = true;
+        else gBlueFlagDropped = true;
+        char buffer[80];
+        Bsprintf(buffer, "%s dropped %s Flag", gProfile[pPlayer->nPlayer].name, flag ? "Red" : "Blue");
+        sndStartSample(flag ? 8004 : 8005, 255, 2, 0);
+        viewSetMessage(buffer);
+    }
+
+    pPlayer->teamId = team;
+    // This is the base palette, also used by dead players. Invisibility and
+    // disguise palettes are applied to render sprites without changing it.
+    if (pPlayer->pSprite)
+        pPlayer->pSprite->pal = 11 + team;
+    return true;
+}
+
 int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, int nDamage)
 {
     dassert(nSource < kMaxSprites);

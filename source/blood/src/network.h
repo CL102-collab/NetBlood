@@ -119,6 +119,7 @@ bool netServerBeginTick();
 void netServerEndTick();
 void netOnLevelStarted();
 void netOnLevelChanging();
+void netOnPlayerStarting(int player);
 void netClientPump();
 void netDrawConnectionStatus();
 void netPrintStatus();

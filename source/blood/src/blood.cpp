@@ -797,6 +797,7 @@ void StartLevel(GAMEOPTIONS *pOpt)
         }
         else if ((pOpt->nGameType == kGameTypeTeams) && !VanillaMode()) // if ctf mode and went to next level, reset scores
             playerResetScores(i);
+        netOnPlayerStarting(i);
         playerStart(i, 1);
         gChokeCounter[i] = 0;
     }

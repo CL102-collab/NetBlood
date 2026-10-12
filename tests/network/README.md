@@ -20,6 +20,10 @@ SANITIZE=1 tests/network/map-storage-test.sh
 tests/network/assets-test.sh
 SANITIZE=1 tests/network/assets-test.sh
 SANITIZE=1 tests/network/server-settings-test.sh
+tests/network/teams-test.sh
+SANITIZE=1 tests/network/teams-test.sh
+tests/network/player-team-test.sh
+SANITIZE=1 tests/network/player-team-test.sh
 ```
 
 The first script needs C/C++ compilers and uses the repository's LZ4 and ENet
@@ -204,6 +208,59 @@ profiles; the authoritative player profiles must keep the configured values.
 The output retains exact command lines, process logs, statuses and a binary
 hash in `result.json`. It tests console authority enforcement; the separate
 menu guards are not exercised by synthetic menu navigation.
+
+## Automatic team balancing
+
+In teams mode, an imbalance of at least two players selects the most recently
+joined player on the larger team for balancing. The server waits until that
+player dies, then transfers them before their next respawn. It does not move a
+living player or substitute an older dead teammate. Revivable kneeling and
+revival do not count as a final death. The server reevaluates
+the roster each tick: joins or departures that remove the imbalance cancel
+the pending move, and changes to the newest eligible player update the choice.
+This applies to dedicated and listen servers; Bloodbath and co-op are unchanged.
+
+Join age follows the player's current connection, rather than their player-slot
+number. Reconnecting starts a new age; advancing or restarting a map preserves
+the connected players' ages and assigned teams. Normal death handling, including
+frag/team scoring and carried-flag drops, happens on the original team. The
+transfer does not reset scores or respawn the player; their ordinary respawn
+uses the new team's color and team spawn points where the map defines them.
+The server announces the transfer to connected players; authoritative snapshots
+and packet demos retain the resulting team state.
+
+Exercise normal UDP joins, departures, a map change and offline packet playback:
+
+```sh
+python3 tests/network/team-balance.py \
+  --binary ./nblood \
+  --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-team-balance-evidence
+```
+
+This check needs the same X11 display and assets as the other graphical network
+tests. It generates two small valid maps with safe starting ledges facing a
+lethal drop, and kills players using ordinary forward movement. A 2:0 imbalance
+must wait for the newest player's death, even when their older teammate dies
+first. Joining or leaving to restore a one-player difference must cancel the
+pending move, including when the former candidate subsequently dies. A map
+change must retain team membership and session join age while leaving living
+players in place. A reused lower-numbered slot must receive a new join age and
+be selected over an older higher-numbered slot. Every client must observe the
+dead player's transferred team/color before normal Open-key respawn; death
+scoring must affect the original team without resetting scores. Canonical
+snapshot hashes, exact snapshot-installation round trips and a two-map packet
+recording's final playback snapshot must agree. Separate Bloodbath and co-op
+sessions verify that departures do not trigger balancing.
+The evidence directory retains logs, launch commands, the recording, its
+inventory, and `result.json` with the tested binary's hash.
+
+The standalone `teams-test.sh` checks the production roster-selection rules,
+including every roster/team arrangement up to eight players and join-order
+ties. `player-team-test.sh` exercises the production player-transfer helper,
+including live, dead, kneeling and reviving players, equipment/score preservation
+and carried-flag handling. These need no running game or game assets; add
+`SANITIZE=1` for sanitizer coverage.
 
 ## Player map votes
 

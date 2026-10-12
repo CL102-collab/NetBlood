@@ -84,6 +84,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netmap.h"
 #include "netpredict.h"
 #include "netprotocol.h"
+#include "netteams.h"
 #include "netvote.h"
 #include "netsnapshot.h"
 #include "timer.h"
@@ -130,11 +131,14 @@ struct ClientSlot
     netwire::CommandQueue commands;
     GINPUT                lastInput     = {};
     uint32_t              lastInputTime = 0;
+    uint64_t              joinOrder = 0;
+    int                   team = -1;
     netvote::Cooldown     voteCooldown;
     std::string           voteIdentity;
     uint32_t              voteRequestWindow = 0, voteRequests = 0;
 };
 ClientSlot                   slots[8];
+uint64_t                     nextJoinOrder = 0;
 uint32_t                     session = 0, mapGeneration = 0, sendSequence = 0, serverTick = 0, snapshotId = 0, commandSequence = 0;
 uint32_t                     clientSlotGeneration = 0, clientReceived[netwire::TypeCount] = {}, clientSnapshot = 0, clientMapCRC = 0, lastSnapshotTime = 0;
 uint32_t                     nextTickTime = 0, lastSnapshotTick = 0, playbackStart = 0;
@@ -345,6 +349,37 @@ void enforceServerProfiles()
     {
         profile.nAutoAim = serverAutoAim();
         profile.skill = serverPlayerSkill();
+    }
+}
+void balanceTeams()
+{
+    if (!netIsServer() || gGameOptions.nGameType != kGameTypeTeams || !ready2send || gStartNewGame)
+        return;
+    netteams::Roster roster{};
+    for (int p = 0; p < 8; ++p)
+    {
+        if (!slots[p].active || slots[p].pendingDrop) continue;
+        roster[p].active = true;
+        roster[p].team = unsigned(gPlayer[p].teamId);
+        roster[p].joinOrder = slots[p].joinOrder;
+        slots[p].team = gPlayer[p].teamId;
+    }
+    for (int p; (p = netteams::selectBalancePlayer(roster)) >= 0;)
+    {
+        int const previous = int(roster[p].team), team = 1 - previous;
+        // Select by join age before checking death: wait for this newest
+        // player, never substitute an older teammate who died first.
+        // Rebuilding the roster each tick cancels/reselects a pending move
+        // when joins or departures change which team needs balancing.
+        if (!playerChangeTeam(&gPlayer[p], team)) break;
+        roster[p].team = unsigned(team);
+        slots[p].team = team;
+        lastSnapshotTick = 0;
+        LOG_F(INFO, "NET team balance slot=%d from=%d to=%d join_order=%llu", p, previous, team,
+              (unsigned long long)slots[p].joinOrder);
+        char message[160];
+        Bsnprintf(message, sizeof(message), "%s moved to %s team to balance teams", gProfile[p].name, team ? "Red" : "Blue");
+        viewSetMessage(message, 10);
     }
 }
 netwire::ServerRules serverRules()
@@ -1407,6 +1442,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             sendReject(peer, "Map content mismatch");
             return;
         }
+        if (!c.active && !c.joinOrder) c.joinOrder = ++nextJoinOrder;
         c.pendingReady = true;
     }
     else if (h.type == netwire::SnapshotAck)
@@ -1608,6 +1644,7 @@ void netInitialize(bool bConsole)
         {
             slots[0].active = slots[0].ready = true;
             slots[0].generation = 1;
+            slots[0].joinOrder = ++nextJoinOrder;
         }
         rebuildRoster();
         LOG_F(INFO, "NET server listening UDP port=%d dedicated=%d maxplayers=%d copies=%d", gNetPort, int(gDedicated), gInitialNetPlayers, gNetPacketCopies);
@@ -1651,6 +1688,7 @@ void netDeinitialize(void)
     netDemoStopPlayback();
     demoPlayback = false;
     serverInTick = false;
+    nextJoinOrder = 0;
     restoreClientLevels();
     netMapClear();
     Bytes().swap(serverMapBytes);
@@ -1885,6 +1923,19 @@ void netOnLevelChanging()
     clientVote = {};
     for (auto& slot : slots) slot.ready = false;
 }
+void netOnPlayerStarting(int p)
+{
+    if (!netIsServer() || p < 0 || p >= 8 || !slots[p].active) return;
+    if (gGameOptions.nGameType != kGameTypeTeams)
+    {
+        slots[p].team = -1;
+        return;
+    }
+    // playerInit assigns slot parity on a fresh map. Restore the server's
+    // session assignment before playerStart chooses a team spawn/palette.
+    if (slots[p].team >= 0) gPlayer[p].teamId = slots[p].team;
+    else slots[p].team = gPlayer[p].teamId;
+}
 void netOnLevelStarted()
 {
     if (!netIsLive())
@@ -1977,6 +2028,7 @@ bool netServerBeginTick()
                 // A hot join resets only the joining player's personal scores.
                 // Existing team scores belong to the match and its score limit.
                 playerInit(p, 0, false);
+                netOnPlayerStarting(p);
                 playerStart(p, 1);
             }
             c.ready         = true;
@@ -2010,6 +2062,7 @@ bool netServerBeginTick()
         gNetFifoHead[p]                   = gNetFifoTail + 1;
     }
     serverInTick = true;
+    balanceTeams();
     return true;
 }
 void netServerEndTick()
@@ -2366,9 +2419,16 @@ void netPrintStatus()
         if (gPlayer[p].pSprite && gPlayer[p].pXSprite)
         {
             auto *s = gPlayer[p].pSprite;
-            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u autoaim=%d skill=%d", p, int(s->x), int(s->y), int(s->z), int(gPlayer[p].pXSprite->health),
-                  netAppliedCommandSequence(p), gProfile[p].nAutoAim, gProfile[p].skill);
+            int64_t ammo = 0, armor = 0;
+            for (int value : gPlayer[p].ammoCount) ammo += value;
+            for (int value : gPlayer[p].armor) armor += value;
+            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u autoaim=%d skill=%d team=%d join_order=%llu palette=%d frags=%d weapon=%d ammo_sum=%lld armor_sum=%lld",
+                  p, int(s->x), int(s->y), int(s->z), int(gPlayer[p].pXSprite->health), netAppliedCommandSequence(p), gProfile[p].nAutoAim, gProfile[p].skill,
+                  gPlayer[p].teamId, (unsigned long long)(netIsServer() ? slots[p].joinOrder : 0), int(s->pal), gPlayer[p].fragCount,
+                  int(gPlayer[p].curWeapon), (long long)ammo, (long long)armor);
         }
+    if (netIsLive() && gGameOptions.nGameType == kGameTypeTeams)
+        LOG_F(INFO, "NET team scores blue=%d red=%d", gPlayerScores[0], gPlayerScores[1]);
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;

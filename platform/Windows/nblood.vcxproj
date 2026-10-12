@@ -346,6 +346,7 @@
     <ClInclude Include="..\..\source\blood\src\netmap.h" />
     <ClInclude Include="..\..\source\blood\src\netpredict.h" />
     <ClInclude Include="..\..\source\blood\src\netserver.h" />
+    <ClInclude Include="..\..\source\blood\src\netteams.h" />
     <ClInclude Include="..\..\source\blood\src\netvote.h" />
     <ClInclude Include="..\..\source\blood\src\netprotocol.h" />
     <ClInclude Include="..\..\source\blood\src\netsnapshot.h" />
