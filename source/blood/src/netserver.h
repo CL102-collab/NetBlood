@@ -19,6 +19,7 @@ struct NetServerSettings
     int timeLimitMinutes = 0;
     int scoreLimit = 0;
     int difficulty = 2;
+    int coopLives = 4; // Includes the initial life; replenished each level. Zero keeps legacy respawning.
     bool loseKeys = true;
     int episode = 0; // one-based; zero means no episode was selected explicitly
     size_t rotationIndex = 0;
@@ -50,6 +51,7 @@ bool netServerPrepareEpisodeLevel(int episode, int level);
 void netServerCheckLimits();
 bool netServerHandleLevelExit(int exitType);
 void netServerAdvanceMap();
+void netServerRestartLevel();
 
 enum class NetServerVoteAction { Map, Restart, Next };
 // Competitive targets are the configured rotation entries; coop exposes only

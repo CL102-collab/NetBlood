@@ -65,9 +65,12 @@ def wire_rows(payload):
     count, offset, rows = payload[0], 1, []
     require(count <= 8, "too many recorded scoreboard rows")
     for _ in range(count):
-        require(offset + 18 <= len(payload), "truncated scoreboard row")
-        slot, team, generation, ping, minutes, score = struct.unpack_from("<BBIIIi", payload, offset)
-        offset += 18
+        require(offset + 24 <= len(payload), "truncated scoreboard row")
+        slot, team, generation, ping, minutes, score, lives, downed, giveup = struct.unpack_from("<BBIIIiiBB", payload, offset)
+        offset += 24
+        require(-1 <= lives <= 255, "invalid scoreboard life count")
+        require(downed in (0, 1) and giveup <= 90 and (lives > 0 if downed else giveup == 0),
+                "invalid scoreboard downed state")
         strings = []
         for maximum in (15, 2):
             require(offset + 2 <= len(payload), "truncated scoreboard string length")
@@ -77,7 +80,8 @@ def wire_rows(payload):
             strings.append(payload[offset:offset + length].decode("latin1"))
             offset += length
         rows.append(dict(slot=str(slot), team=str(team), generation=str(generation), ping_ms=str(ping),
-                         minutes=str(minutes), score=str(score), name=strings[0], country=strings[1] or "--"))
+                         minutes=str(minutes), score=str(score), lives=str(lives), downed=str(downed), giveup=str(giveup),
+                         name=strings[0], country=strings[1] or "--"))
     require(offset == len(payload), "trailing scoreboard bytes")
     return rows
 
@@ -113,8 +117,8 @@ def synthetic_flags(source, target):
             rows = wire_rows(body[28:])
             payload = bytearray([len(rows)])
             for row in rows:
-                payload += struct.pack("<BBIIIi", *[int(row[key]) for key in
-                                                  ("slot", "team", "generation", "ping_ms", "minutes", "score")])
+                payload += struct.pack("<BBIIIiiBB", *[int(row[key]) for key in
+                                                     ("slot", "team", "generation", "ping_ms", "minutes", "score", "lives", "downed", "giveup")])
                 for text in (row["name"], ("HU", "US", "JP", "GB")[int(row["slot"]) % 4]):
                     encoded = text.encode("latin1")
                     payload += struct.pack("<H", len(encoded)) + encoded

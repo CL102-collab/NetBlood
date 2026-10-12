@@ -16,6 +16,9 @@ struct Row
     uint8_t slot = 0, team = NoTeam;
     uint32_t generation = 0, pingMs = 0, elapsedMinutes = 0;
     int32_t score = 0;
+    int32_t livesRemaining = -1; // Unlimited outside limited cooperative games.
+    bool downed = false;
+    uint8_t giveUpTicks = 0; // Three seconds at 30 Hz; meaningful only while downed.
     std::string name, country; // ISO 3166-1 alpha-2; empty means unknown.
 };
 
@@ -38,7 +41,9 @@ inline bool validState(const State& state)
     for (auto const& row : state.rows)
     {
         if (row.slot >= MaxPlayers || row.slot <= previous || !row.generation ||
-            (row.team != NoTeam && row.team > 1) || row.pingMs > MaxPingMs || row.name.size() > MaxName)
+            (row.team != NoTeam && row.team > 1) || row.pingMs > MaxPingMs || row.name.size() > MaxName ||
+            row.livesRemaining < -1 || row.livesRemaining > 255 || row.giveUpTicks > 90 ||
+            (row.downed ? row.livesRemaining <= 0 : row.giveUpTicks != 0))
             return false;
         previous = row.slot;
         for (unsigned char c : row.name) if (c < 32 || c == 127) return false;
@@ -61,6 +66,9 @@ inline bool writeState(netwire::Writer& writer, const State& state)
         writer.u32(row.pingMs);
         writer.u32(row.elapsedMinutes);
         writer.u32(static_cast<uint32_t>(row.score));
+        writer.u32(static_cast<uint32_t>(row.livesRemaining));
+        writer.u8(row.downed);
+        writer.u8(row.giveUpTicks);
         writer.text(row.name, MaxName);
         writer.text(row.country, 2);
     }
@@ -82,6 +90,13 @@ inline bool readState(netwire::Reader& reader, State& state)
         row.pingMs = reader.u32();
         row.elapsedMinutes = reader.u32();
         row.score = static_cast<int32_t>(reader.u32());
+        uint32_t const lives = reader.u32();
+        if (lives != UINT32_MAX && lives > 255) return false;
+        row.livesRemaining = lives == UINT32_MAX ? -1 : static_cast<int32_t>(lives);
+        uint8_t const downed = reader.u8();
+        if (downed > 1) return false;
+        row.downed = downed != 0;
+        row.giveUpTicks = reader.u8();
         row.name = reader.text(MaxName);
         row.country = reader.text(2);
         candidate.rows.push_back(row);

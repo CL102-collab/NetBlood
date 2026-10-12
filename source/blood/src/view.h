@@ -126,6 +126,8 @@ static inline double calcFrameDelay(unsigned int const maxFPS) { return maxFPS ?
 void viewGetFontInfo(int id, const char *unk1, int *pXSize, int *pYSize);
 void viewUpdatePages(void);
 void viewToggle(int viewMode);
+void viewUpdateCoopSpectator();
+void viewCycleCoopSpectator();
 void viewInitializePrediction(void);
 void viewUpdatePrediction(GINPUT *pInput);
 vec3_t viewPredictionPosition();

@@ -997,6 +997,7 @@ void playerStart(int nPlayer, int bNewLevel)
         pPlayer->posture = kPostureSwim;
         pPlayer->pXSprite->medium = kMediumWater;
     }
+    netOnPlayerSpawned(nPlayer);
 }
 
 void playerReset(PLAYER *pPlayer)
@@ -1567,6 +1568,67 @@ inline void playerDropHand(PLAYER *pPlayer)
     pPlayer->hand = 0;
 }
 
+static int playerDamageSpriteInternal(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, int nDamage,
+    bool coopGiveUp);
+
+static bool playerReviveCoopTeammate(PLAYER *pPlayer)
+{
+    if (!netIsServer() || !netCoopLifeLimit())
+        return false;
+
+    // Use the normal interaction reach, and require a visible body on roughly
+    // the same floor so that Use cannot revive through walls or stacked rooms.
+    PLAYER *pTarget = nullptr;
+    int nearest = 64 << 4;
+    spritetype const *pSprite = pPlayer->pSprite;
+    for (int p = connecthead; p >= 0; p = connectpoint2[p])
+    {
+        if (p == pPlayer->nPlayer || !netCoopPlayerIsDowned(p))
+            continue;
+        PLAYER *pOther = &gPlayer[p];
+        spritetype const *pBody = pOther->pSprite;
+        if (!pBody || !pOther->pXSprite || pOther->pXSprite->health != 0
+            || klabs(pSprite->z - pBody->z) > (32 << 8))
+            continue;
+        int const distance = approxDist(pSprite->x - pBody->x, pSprite->y - pBody->y);
+        if (distance >= nearest)
+            continue;
+        int top, bottom;
+        GetSpriteExtents(pBody, &top, &bottom);
+        if (!cansee(pSprite->x, pSprite->y, pPlayer->zView, pSprite->sectnum,
+                pBody->x, pBody->y, (top + bottom) / 2, pBody->sectnum))
+            continue;
+        nearest = distance;
+        pTarget = pOther;
+    }
+    if (!pTarget)
+        return false;
+
+    // Revival keeps the current life and inventory. Ordinary healing must not
+    // resurrect a downed player; only this authoritative interaction can.
+    netOnPlayerRevived(pTarget->nPlayer, pPlayer->nPlayer);
+    pTarget->pXSprite->health = 50 << 4;
+    pTarget->pXSprite->burnTime = 0;
+    pTarget->pXSprite->burnSource = -1;
+    pTarget->deathTime = 0;
+    pTarget->fraggerId = -1;
+    pTarget->posture = pTarget->isUnderwater ? kPostureSwim : kPostureStand;
+    pTarget->qavLoop = 0;
+    pTarget->weaponQav = -1;
+    pTarget->weaponTimer = 0;
+    pTarget->weaponState = 0;
+    pTarget->curWeapon = kWeaponNone;
+    pTarget->nextWeapon = kWeaponNone;
+    pTarget->input = {};
+    int const weapon = pTarget->lastWeapon;
+    pTarget->input.newWeapon = weapon > kWeaponNone && weapon < kWeaponMax && pTarget->hasWeapon[weapon]
+        ? weapon : kWeaponPitchfork;
+    WeaponRaise(pTarget);
+    seqSpawn(pTarget->pDudeInfo->seqStartID, 3, pTarget->pSprite->extra, -1);
+    sfxPlay3DSound(pTarget->pSprite, 3009, 0, 6);
+    return true;
+}
+
 void ProcessInput(PLAYER *pPlayer)
 {
     spritetype *pSprite = pPlayer->pSprite;
@@ -1574,6 +1636,20 @@ void ProcessInput(PLAYER *pPlayer)
     int nSprite = pPlayer->nSprite;
     POSTURE *pPosture = &pPlayer->pPosture[pPlayer->lifeMode][pPlayer->posture];
     GINPUT *pInput = &pPlayer->input;
+
+    // An eliminated co-op player keeps a corpse for the camera, but cannot
+    // send gameplay actions while watching surviving teammates.
+    if (netCoopPlayerIsSpectator(pPlayer->nPlayer))
+        *pInput = {};
+
+    if (netCoopPlayerIsDowned(pPlayer->nPlayer))
+    {
+        bool const giveUp = netProcessCoopDownedInput(pPlayer->nPlayer, pInput->keyFlags.action != 0);
+        *pInput = {};
+        if (giveUp)
+            playerDamageSpriteInternal(nSprite, pPlayer, kDamageSpirit, 500 << 4, true);
+        return;
+    }
 
     // Enforce the server policy even if a client sends a forbidden action.
     if (!netAllowHolsterWeapon())
@@ -1618,7 +1694,7 @@ void ProcessInput(PLAYER *pPlayer)
                 if (pPlayer->deathTime > 360)
                     seqSpawn(pPlayer->pDudeInfo->seqStartID+14, 3, pPlayer->pSprite->extra, nPlayerSurviveClient);
             }
-            else if (seqGetStatus(3, pPlayer->pSprite->extra) < 0)
+            else if (!netCoopPlayerIsSpectator(pPlayer->nPlayer) && seqGetStatus(3, pPlayer->pSprite->extra) < 0)
             {
                 if (pPlayer->pSprite)
                     pPlayer->pSprite->type = kThingBloodChunks;
@@ -1638,6 +1714,8 @@ void ProcessInput(PLAYER *pPlayer)
         }
         return;
     }
+    if (netCoopPlayerIsSpectator(pPlayer->nPlayer))
+        return;
     if (pPlayer->posture == kPostureSwim)
     {
         int x = Cos(pSprite->ang);
@@ -1751,6 +1829,8 @@ void ProcessInput(PLAYER *pPlayer)
             pPlayer->posture = kPostureCrouch;
         break;
     }
+    if (pInput->keyFlags.action && playerReviveCoopTeammate(pPlayer))
+        pInput->keyFlags.action = 0;
     if (pInput->keyFlags.action)
     {
         int a2, a3;
@@ -2296,13 +2376,15 @@ bool playerChangeTeam(PLAYER *pPlayer, int team)
     return true;
 }
 
-int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, int nDamage)
+static int playerDamageSpriteInternal(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, int nDamage,
+    bool coopGiveUp)
 {
     dassert(nSource < kMaxSprites);
     dassert(pPlayer != NULL);
-    if (pPlayer->damageControl[nDamageType])
+    if (!coopGiveUp && (pPlayer->damageControl[nDamageType] || netCoopPlayerIsDowned(pPlayer->nPlayer)))
         return 0;
-    nDamage = playerDamageArmor(pPlayer, nDamageType, nDamage);
+    if (!coopGiveUp)
+        nDamage = playerDamageArmor(pPlayer, nDamageType, nDamage);
     pPlayer->painEffect = ClipHigh(pPlayer->painEffect+(nDamage>>3), 600);
     if (pPlayer == gMe)
         ctrlJoystickRumble(pPlayer->painEffect);
@@ -2316,7 +2398,17 @@ int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, in
     int nKneelingPlayer = -1;
     int nSprite = pSprite->index;
     char va = playerSeqPlaying(pPlayer, 16);
-    if (!pXSprite->health)
+    if (coopGiveUp)
+    {
+        // Deliberate surrender uses the ordinary final-death cleanup without
+        // depending on whether the kneeling sequence is still playing.
+        pXSprite->health = 0;
+        pPlayer->fraggerId = nSource;
+        pPlayer->deathTime = 0;
+        nDeathSeqID = 18;
+        sfxPlay3DSound(pSprite, 716, 0, 0);
+    }
+    else if (!pXSprite->health)
     {
         if (va)
         {
@@ -2378,6 +2470,30 @@ int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, in
         }
         pPlayer->deathTime = 0;
         pPlayer->qavLoop = 0;
+        if (netIsServer() && netCoopLifeLimit() && !netCoopPlayerIsSpectator(pPlayer->nPlayer))
+        {
+            if (pPlayer->curWeapon != kWeaponNone)
+                pPlayer->lastWeapon = pPlayer->curWeapon;
+            pPlayer->curWeapon = kWeaponNone;
+            pPlayer->nextWeapon = kWeaponNone;
+            pPlayer->weaponQav = -1;
+            pPlayer->weaponTimer = 0;
+            pPlayer->weaponState = 0;
+            pPlayer->throwPower = 0;
+            pPlayer->fraggerId = nSource;
+            pPlayer->voodooTargets = 0;
+            pPlayer->posture = pPlayer->isUnderwater ? kPostureSwim : kPostureCrouch;
+            pXSprite->burnTime = 0;
+            pXSprite->burnSource = -1;
+            xvel[nSprite] = yvel[nSprite] = 0;
+            sfxKill3DSound(pSprite, 1, -1);
+            sfxPlay3DSound(pSprite, 716, 0, 0);
+            netOnPlayerDowned(pPlayer->nPlayer);
+            // No FinishHim event or legacy kneel callback: a co-op teammate
+            // may revive this player for as long as they choose to wait.
+            seqSpawn(pDudeInfo->seqStartID + 16, 3, nXSprite, -1);
+            return nDamage;
+        }
         pPlayer->curWeapon = kWeaponNone;
         pPlayer->fraggerId = nSource;
         pPlayer->voodooTargets = 0;
@@ -2422,6 +2538,7 @@ int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, in
         return nDamage;
     if (nDeathSeqID != 16)
     {
+        netOnPlayerDeath(pPlayer->nPlayer);
         powerupClear(pPlayer);
         if (nXSector > 0 && xsector[nXSector].Exit)
             trTriggerSector(pSprite->sectnum, &xsector[nXSector], kCmdSectorExit, nSource);
@@ -2463,6 +2580,11 @@ int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, in
     dassert(gSysRes.Lookup(pDudeInfo->seqStartID + nDeathSeqID, "SEQ") != NULL);
     seqSpawn(pDudeInfo->seqStartID+nDeathSeqID, 3, nXSprite, nKneelingPlayer);
     return nDamage;
+}
+
+int playerDamageSprite(int nSource, PLAYER *pPlayer, DAMAGE_TYPE nDamageType, int nDamage)
+{
+    return playerDamageSpriteInternal(nSource, pPlayer, nDamageType, nDamage, false);
 }
 
 int UseAmmo(PLAYER *pPlayer, int nAmmoType, int nDec)

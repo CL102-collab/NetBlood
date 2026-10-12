@@ -218,7 +218,7 @@ def inspect_demo(path):
             break
         require(marker in (0x31544b50, 0x31545352) and length >= 28, "unexpected packet demo record")
         magic, protocol, kind, session, generation, sequence, payload_length = struct.unpack_from("<7I", body)
-        require(magic == 0x314e424e and protocol == 6 and payload_length == len(body)-28, "bad recorded envelope")
+        require(magic == 0x314e424e and protocol == 7 and payload_length == len(body)-28, "bad recorded envelope")
         record = {"type": kind, "session": session, "generation": generation,
                   "sequence": sequence, "elapsed_ticks": elapsed, "tick": tick,
                   "sha256": hashlib.sha256(body).hexdigest()}

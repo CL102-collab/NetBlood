@@ -118,6 +118,16 @@ bool netIsClient();
 // Authoritative Bloodbath permissions; offline and other game modes allow both.
 bool netAllowHolsterWeapon();
 bool netAllowChaseView();
+int netCoopLifeLimit(); // Zero outside dedicated co-op sessions.
+int netCoopLivesRemaining(int player); // Includes the current life; -1 if unlimited.
+bool netCoopPlayerIsSpectator(int player);
+bool netCoopPlayerIsDowned(int player);
+int netCoopGiveUpProgress(int player); // Percent of the three-second hold.
+void netOnPlayerDowned(int player);
+bool netProcessCoopDownedInput(int player, bool useHeld);
+void netOnPlayerRevived(int player, int rescuer);
+void netOnPlayerDeath(int player);
+void netOnPlayerSpawned(int player);
 bool netClientHasSnapshot();
 bool netServerBeginTick();
 void netServerEndTick();

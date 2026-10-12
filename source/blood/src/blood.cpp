@@ -955,10 +955,15 @@ void LocalKeys(void)
         CONTROL_ClearButton(gamefunc_See_Coop_View);
         if (gGameOptions.nGameType == kGameTypeCoop)
         {
-            gViewIndex = connectpoint2[gViewIndex];
-            if (gViewIndex == -1)
-                gViewIndex = connecthead;
-            gView = &gPlayer[gViewIndex];
+            if (netCoopPlayerIsSpectator(myconnectindex))
+                viewCycleCoopSpectator();
+            else
+            {
+                gViewIndex = connectpoint2[gViewIndex];
+                if (gViewIndex == -1)
+                    gViewIndex = connecthead;
+                gView = &gPlayer[gViewIndex];
+            }
         }
         else if (gGameOptions.nGameType == kGameTypeTeams)
         {
@@ -1222,6 +1227,7 @@ void ProcessFrame(void)
         viewCorrectPrediction();
         sndProcess();
         ambProcess();
+        viewUpdateCoopSpectator();
         viewUpdateDelirium();
         viewUpdateShake();
         sfxUpdate3DSounds();
@@ -1351,6 +1357,7 @@ SWITCH switches[] = {
     { "friendlyfire", 58, 1 },
     { "holsterweapon", 59, 1 },
     { "chaseview", 60, 1 },
+    { "lives", 61, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1396,6 +1403,7 @@ void PrintHelp(void)
         "-maplist [file.txt]\tLoop maps from this text filename (one per line)\n"
         "-episode [n]\tCoop episode to play and repeat; starts at 1\n"
         "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
+        "-lives [n]\tLives per coop player; 0=legacy unlimited respawns; Range:0..255; Default:4\n"
         "-losekeys on|off\tLose keys on coop death; Default:on\n"
         "-mapvote on|off\tAllow players to vote for map changes; Default:on\n"
 #ifdef STARTUP_SETUP_WINDOW
@@ -1724,9 +1732,9 @@ void ParseOptions(void)
             break;
         case 48: case 49: case 50: case 51: case 52:
         case 53: case 54: case 55: case 56: case 57: case 58:
-        case 59: case 60:
+        case 59: case 60: case 61:
         {
-            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview" };
+            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview", "lives" };
             const char* name = names[option - 48];
             if (OptArgc < 1)
                 ThrowError("Missing argument for -%s", name);
@@ -2288,6 +2296,7 @@ RESTART:
                         // Client presentation advances without running world/weapon callbacks.
                         sndProcess();
                         ambProcess();
+                        viewUpdateCoopSpectator();
                         viewUpdateDelirium();
 #ifdef POLYMER
                         G_RefreshLights();

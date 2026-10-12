@@ -92,7 +92,7 @@ def gameplay_permissions(server, client, expected, timeout=10):
             break
         require(time.monotonic() < deadline, f"{client.name}: initial weapon never became ready")
         time.sleep(0.1)
-    require(status(client, expected)["view"] == {"chase": "0"},
+    require(status(client, expected)["view"].get("chase") == "0",
             f"{client.name}: player did not start in first-person view")
 
     press(11)  # SDL_SCANCODE_H, bound above to Holster_Weapon.
@@ -112,11 +112,11 @@ def gameplay_permissions(server, client, expected, timeout=10):
 
     press(25)  # SDL_SCANCODE_V, bound above to See_Chase_View.
     camera = status(client, expected)
-    require(camera["view"] == {"chase": str(expected["chase_view"])},
+    require(camera["view"].get("chase") == str(expected["chase_view"]),
             f"{client.name}: chase key did not obey the server permission: {camera['view']}")
     if expected["chase_view"]:
         press(25)
-        require(status(client, expected)["view"] == {"chase": "0"},
+        require(status(client, expected)["view"].get("chase") == "0",
                 f"{client.name}: chase key did not return to first-person view")
     return {"before": before, "after_holster": {"server": authoritative, "client": installed},
             "after_chase": camera}
@@ -225,12 +225,13 @@ def main():
                              ("autoaim", ("maybe",)), ("weaponsstay", ("2",)), ("losekeys", ("yes",)),
                              ("mapvote", ("maybe",)), ("friendlyfire", ("maybe", "2")),
                              ("holsterweapon", ("maybe", "2")), ("chaseview", ("maybe", "2")),
+                             ("lives", ("-1", "256", "4x")),
                              ("gametype", ("invalid",))):
             for index, value in enumerate(values):
                 invalid(f"{flag}-{index}", ["-dedicated", "-" + flag, value], "game type" if flag == "gametype" else flag)
-        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview"):
+        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview", "lives"):
             invalid("missing-" + flag, ["-dedicated", "-" + flag], "game type" if flag == "gametype" else flag)
-        for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off")):
+        for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off"), ("lives", "4")):
             invalid("coop-only-" + flag, ["-dedicated", "-gametype", "bloodbath", "-" + flag, value], flag)
         invalid("maplist-path", ["-dedicated", "-maplist", "../rotation.txt"], "maplist")
         invalid("maplist-extension", ["-dedicated", "-maplist", "rotation.cfg"], "maplist")
@@ -251,11 +252,13 @@ def main():
         invalid("non-dedicated-friendlyfire", ["-friendlyfire", "on"], "dedicated")
         invalid("non-dedicated-holsterweapon", ["-holsterweapon", "on"], "dedicated")
         invalid("non-dedicated-chaseview", ["-chaseview", "on"], "dedicated")
+        invalid("non-dedicated-lives", ["-lives", "4"], "dedicated")
+        invalid("teams-lives", ["-dedicated", "-gametype", "teams", "-lives", "4"], "lives")
 
         port = free_port()
         expected = {"gametype": 2, "timelimit": 1, "scorelimit": 25, "maxplayers": 2,
                     "autoaim": 0, "weaponsstay": 1, "rotation_count": 2, "friendly_fire": 0,
-                    "holster_weapon": 0, "chase_view": 0}
+                    "holster_weapon": 0, "chase_view": 0, "coop_lives": 0}
         server_started = time.monotonic()
         server = start("rotation-server", port, True,
                        ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "2",
@@ -329,7 +332,7 @@ def main():
         for option, allowed in (("holsterweapon", {"holster_weapon": 1, "chase_view": 0}),
                                 ("chaseview", {"holster_weapon": 0, "chase_view": 1})):
             port = free_port()
-            permitted = {"gametype": 2, **allowed}
+            permitted = {"gametype": 2, "coop_lives": 0, **allowed}
             override = start(option + "-server", port, True,
                              ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "1",
                               "-" + option, "on"])
@@ -348,7 +351,7 @@ def main():
         port = free_port()
         coop_expected = {"gametype": 1, "timelimit": 0, "scorelimit": 0, "maxplayers": 1, "autoaim": 1,
                          "weaponsstay": 0, "difficulty": 4, "losekeys": 0, "episode": 2, "level": 1,
-                         "friendly_fire": 1, "holster_weapon": 1, "chase_view": 1}
+                         "friendly_fire": 1, "holster_weapon": 1, "chase_view": 1, "coop_lives": 4}
         coop = start("coop-server", port, True,
                      ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1",
                       "-episode", "2", "-difficulty", "4", "-losekeys", "off", "-autoaim", "on",
@@ -371,10 +374,35 @@ def main():
                                                      "client": status(coop_client, coop_expected)}
         coop_client.stop()
         coop.stop()
+
+        port = free_port()
+        unlimited_expected = {"gametype": 1, "maxplayers": 1, "coop_lives": 0}
+        unlimited = start("coop-unlimited-server", port, True,
+                          ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1", "-lives", "0"])
+        unlimited.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
+                       "configured unlimited co-op server", args.timeout)
+        result["phases"]["coop-unlimited-empty"] = status(unlimited, unlimited_expected)
+        unlimited_client = start("coop-unlimited-client", port)
+        joined(unlimited_client, timeout=args.timeout)
+        for phase in ("coop-unlimited-joined", "coop-unlimited-restart"):
+            if phase.endswith("restart"):
+                unlimited.command_text("restartmap")
+                joined(unlimited_client, count=2, timeout=args.timeout)
+            snapshot = {"server": status(unlimited, unlimited_expected),
+                        "client": status(unlimited_client, unlimited_expected)}
+            for authority, installed in snapshot.items():
+                require(len(installed["players"]) == 1, f"{phase} {authority}: missing unlimited co-op player")
+                player = installed["players"][0]
+                require(player.get("lives") == "-1" and player.get("downed") == "0" and player.get("spectator") == "0",
+                        f"{phase} {authority}: unlimited co-op enabled limited-life state: {player}")
+            result["phases"][phase] = snapshot
+        unlimited_client.stop()
+        unlimited.stop()
+
         port = free_port()
         teams_expected = {"gametype": 3, "maxplayers": 1, "scorelimit": 20,
                           "timelimit": 0, "autoaim": 1, "weaponsstay": 1, "friendly_fire": 0,
-                          "holster_weapon": 1, "chase_view": 1}
+                          "holster_weapon": 1, "chase_view": 1, "coop_lives": 0}
         teams = start("teams-server", port, True,
                       ["-dedicated", "-server", "1", "-port", str(port), "-gametype", "teams", "-scorelimit", "20",
                        "-friendlyfire", "off", "-holsterweapon", "off", "-chaseview", "off"])

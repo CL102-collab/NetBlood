@@ -37,6 +37,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "network.h"
 #include "netserver.h"
+#include "netcoop.h"
 #include "player.h"
 #include "osd.h"
 #include "seq.h"
@@ -144,9 +145,14 @@ struct ClientSlot
     int                   team = -1;
     netvote::Cooldown     voteCooldown;
     std::string           voteIdentity;
+    netcoop::LifeState     coopLives;
+    bool                  coopDowned = false;
+    uint8_t               coopGiveUpTicks = 0;
     uint32_t              voteRequestWindow = 0, voteRequests = 0;
 };
 ClientSlot                   slots[8];
+struct CoopReconnect { std::string identity; netcoop::LifeState lives; bool downed; };
+std::deque<CoopReconnect>     coopReconnects;
 uint64_t                     nextJoinOrder = 0;
 netscoreboard::State          scoreboard;
 uint32_t                     scoreboardHeartbeat = 0;
@@ -368,6 +374,9 @@ netscoreboard::State collectScoreboard()
         row.name.resize(std::min(row.name.size(), netscoreboard::MaxName));
         for (char& c : row.name) if (static_cast<unsigned char>(c) < 32 || c == 127) c = ' ';
         row.score = client.active ? gPlayer[p].fragCount : 0;
+        row.livesRemaining = netCoopLifeLimit() ? client.coopLives.remaining() : -1;
+        row.downed = netCoopLifeLimit() && client.coopDowned;
+        row.giveUpTicks = row.downed ? client.coopGiveUpTicks : 0;
         row.team = client.active && gGameOptions.nGameType == kGameTypeTeams ? gPlayer[p].teamId & 1 : netscoreboard::NoTeam;
         row.elapsedMinutes = netscoreboard::joinedMinutes(now, client.joinedAtMillis);
         if (client.country)
@@ -626,6 +635,8 @@ netwire::ServerRules serverRules()
         rules.scoreLimit = settings.scoreLimit;
         rules.rotationIndex = uint32_t(settings.rotationIndex);
         rules.rotationCount = uint32_t(settings.rotationCount);
+        if (gGameOptions.nGameType == kGameTypeCoop)
+            rules.coopLives = settings.coopLives;
         if (gGameOptions.nGameType == kGameTypeBloodBath)
         {
             rules.allowHolsterWeapon = settings.holsterWeapon;
@@ -986,10 +997,40 @@ void requestMapWindow()
         sendTo(serverPeer, netwire::RequestMap, w.data);
 }
 #endif
+void initializeCoopLives(int p)
+{
+    auto& client = slots[p];
+    client.coopLives.reset(netCoopLifeLimit());
+    client.coopDowned = false;
+    client.coopGiveUpTicks = 0;
+    if (!netCoopLifeLimit() || client.voteIdentity.empty()) return;
+    for (auto it = coopReconnects.begin(); it != coopReconnects.end(); ++it)
+        if (it->identity == client.voteIdentity)
+        {
+            client.coopLives = it->lives;
+            client.coopDowned = it->downed;
+            coopReconnects.erase(it);
+            LOG_F(INFO, "NET coop rejoin slot=%d lives=%d", p, client.coopLives.remaining());
+            break;
+        }
+}
+void rememberCoopLives(int p)
+{
+    auto const& client = slots[p];
+    if (!netCoopLifeLimit() || !client.admitted || client.voteIdentity.empty()) return;
+    // As with map-vote cooldowns, reconnecting with the same address/name must
+    // not replenish the budget. Forget this ledger on every new level.
+    for (auto it = coopReconnects.begin(); it != coopReconnects.end();)
+        if (it->identity == client.voteIdentity) it = coopReconnects.erase(it);
+        else ++it;
+    if (coopReconnects.size() >= 128) coopReconnects.pop_front();
+    coopReconnects.push_back({client.voteIdentity, client.coopLives, client.coopDowned});
+}
 void removePlayer(int p)
 {
     if (p < 0 || p >= 8)
         return;
+    rememberCoopLives(p);
     if (slots[p].active && gGameStarted && gPlayer[p].pSprite)
     {
         seqKill(3, gPlayer[p].pSprite->extra);
@@ -1642,6 +1683,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         c.admitted                   = true;
+        initializeCoopLives(slot);
         c.joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
         scoreboardDirty = true;
         sendWelcome(slot);
@@ -1660,6 +1702,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         c.admitted = true;
+        initializeCoopLives(slot);
         c.joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
         scoreboardDirty = true;
         sendWelcome(slot);
@@ -1870,6 +1913,104 @@ bool netAllowChaseView()
     if (!netIsLive() || gGameOptions.nGameType != kGameTypeBloodBath) return true;
     return (netIsServer() ? serverRules() : clientServerRules).allowChaseView != 0;
 }
+int netCoopLifeLimit()
+{
+    if (!netIsLive() || gGameOptions.nGameType != kGameTypeCoop) return 0;
+    return netIsServer() ? (gDedicated ? netServerSettings().coopLives : 0) : int(clientServerRules.coopLives);
+}
+int netCoopLivesRemaining(int p)
+{
+    int const limit = netCoopLifeLimit();
+    if (!limit || p < 0 || p >= kMaxPlayers) return -1;
+    if (netIsServer()) return slots[p].coopLives.remaining();
+    for (auto const& row : scoreboard.rows)
+        if (row.slot == p) return row.livesRemaining;
+    return limit; // The reliable roster metadata follows the map bootstrap.
+}
+bool netCoopPlayerIsSpectator(int p)
+{
+    return netCoopLifeLimit() && netCoopLivesRemaining(p) == 0;
+}
+bool netCoopPlayerIsDowned(int p)
+{
+    if (!netCoopLifeLimit() || p < 0 || p >= kMaxPlayers) return false;
+    if (netIsServer()) return slots[p].coopDowned;
+    for (auto const& row : scoreboard.rows)
+        if (row.slot == p) return row.downed;
+    return false;
+}
+int netCoopGiveUpProgress(int p)
+{
+    if (!netCoopPlayerIsDowned(p)) return 0;
+    if (netIsServer()) return int(slots[p].coopGiveUpTicks) * 100 / 90;
+    for (auto const& row : scoreboard.rows)
+        if (row.slot == p) return int(row.giveUpTicks) * 100 / 90;
+    return 0;
+}
+void netOnPlayerDowned(int p)
+{
+    if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active
+        || slots[p].coopLives.exhausted()) return;
+    slots[p].coopDowned = true;
+    slots[p].coopGiveUpTicks = 0;
+    scoreboardDirty = true;
+    LOG_F(INFO, "NET coop downed slot=%d lives=%d", p, slots[p].coopLives.remaining());
+}
+bool netProcessCoopDownedInput(int p, bool useHeld)
+{
+    if (!netIsServer() || !netCoopPlayerIsDowned(p)) return false;
+    auto& client = slots[p];
+    if (!useHeld)
+    {
+        scoreboardDirty |= client.coopGiveUpTicks != 0;
+        client.coopGiveUpTicks = 0;
+        return false;
+    }
+    ++client.coopGiveUpTicks;
+    // Progress is reliable and recorded, with at most ten updates per second.
+    scoreboardDirty |= client.coopGiveUpTicks % 3 == 0;
+    if (client.coopGiveUpTicks < 90) return false;
+    client.coopDowned = false;
+    client.coopGiveUpTicks = 0;
+    scoreboardDirty = true;
+    return true;
+}
+void netOnPlayerRevived(int p, int rescuer)
+{
+    if (!netIsServer() || !netCoopPlayerIsDowned(p)) return;
+    slots[p].coopDowned = false;
+    slots[p].coopGiveUpTicks = 0;
+    scoreboardDirty = true;
+    LOG_F(INFO, "NET coop revived slot=%d rescuer=%d lives=%d", p, rescuer, slots[p].coopLives.remaining());
+    netMessageForPlayer(p, "Revived by a teammate. No life lost.");
+    netMessageForPlayer(rescuer, "Teammate revived.");
+}
+void netOnPlayerDeath(int p)
+{
+    if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active
+        || !slots[p].coopLives.die()) return;
+    slots[p].coopDowned = false;
+    slots[p].coopGiveUpTicks = 0;
+    scoreboardDirty = true;
+    int const remaining = slots[p].coopLives.remaining();
+    LOG_F(INFO, "NET coop death slot=%d lives=%d spectator=%d", p, remaining, int(remaining == 0));
+    netMessageForPlayer(p, remaining ? "Press Use to respawn."
+        : "Spectating until the next level or restart.");
+}
+void netOnPlayerSpawned(int p)
+{
+    if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active) return;
+    bool const wasDowned = slots[p].coopDowned;
+    slots[p].coopDowned = false;
+    slots[p].coopGiveUpTicks = 0;
+    if (!slots[p].coopLives.respawn() || wasDowned)
+    {
+        // Reconnects retain incapacitation/exhaustion and still need a valid
+        // player sprite in the authoritative snapshot roster.
+        playerDamageSprite(gPlayer[p].nSprite, &gPlayer[p], kDamageFall, 65535);
+    }
+    scoreboardDirty = true;
+}
 bool netClientHasSnapshot()
 { return clientSnapshotReady; }
 const netscoreboard::State& netGetScoreboard()
@@ -1998,6 +2139,7 @@ void netDeinitialize(void)
     scoreboardHeartbeat = 0;
     scoreboardDirty = true;
     restoreClientLevels();
+    coopReconnects.clear();
     netMapClear();
     Bytes().swap(serverMapBytes);
     Bytes().swap(clientMapBytes);
@@ -2280,6 +2422,14 @@ void netDrawCinematic()
 void netOnLevelChanging()
 {
     if (!netIsServer()) return;
+    coopReconnects.clear();
+    unsigned const lives = gDedicated && netServerSettings().gameType == kGameTypeCoop ? netServerSettings().coopLives : 0;
+    for (auto& slot : slots)
+    {
+        slot.coopLives.reset(lives);
+        slot.coopDowned = false;
+        slot.coopGiveUpTicks = 0;
+    }
     stopLocalCinematic();
     serverCinematic = clientCinematic = {};
     cinematicQueue.clear();
@@ -2443,11 +2593,13 @@ bool netServerBeginTick()
         {
             input               = c.lastInput;
             input.keyFlags.word = 0;
+            if (c.coopDowned) input.keyFlags.action = c.lastInput.keyFlags.action;
             input.useFlags.byte = 0;
             input.newWeapon     = 0;
             input.q16turn       = 0;
             input.q16mlook      = 0;
         }
+        if (netCoopPlayerIsSpectator(p)) input = {};
         gFifoInput[gNetFifoTail & 255][p] = input;
         gNetFifoHead[p]                   = gNetFifoTail + 1;
     }
@@ -2465,6 +2617,23 @@ void netServerEndTick()
     if (!netIsServer())
         return;
     serverTick++;
+    if (netCoopLifeLimit() && !gStartNewGame && !(gGameOptions.uGameFlags & kGameFlagContinuing))
+    {
+        bool anyActive = false, exhausted = true;
+        for (auto const& client : slots)
+        {
+            if (client.pendingDrop || (!client.active && !client.admitted)) continue;
+            anyActive |= client.active;
+            if (!client.coopLives.exhausted()) exhausted = false;
+        }
+        if (anyActive && exhausted)
+        {
+            LOG_F(INFO, "NET coop lives exhausted: restarting map=%s", gGameOptions.zLevelName);
+            for (int p = connecthead; p >= 0; p = connectpoint2[p])
+                netMessageForPlayer(p, "All players are out of lives. Restarting the level.");
+            netServerRestartLevel();
+        }
+    }
     if (gStartNewGame)
         return;
     if (serverTick % 30 == 0)
@@ -2819,34 +2988,46 @@ void netPrintStatus()
           findSnapshot(netIsServer() ? snapshotId : clientSnapshot) ? netSnapshotHash(*findSnapshot(netIsServer() ? snapshotId : clientSnapshot)) : 0,
           (unsigned long long)sentMessages, (unsigned long long)receivedMessages, (unsigned long long)malformedMessages, (unsigned long long)duplicateMessages);
     if (!gDedicated)
-        LOG_F(INFO, "NET view chase=%d", int(gViewPos != VIEWPOS_0));
+        LOG_F(INFO, "NET view chase=%d target=%d spectator=%d", int(gViewPos != VIEWPOS_0), gViewIndex,
+              int(netCoopPlayerIsSpectator(myconnectindex)));
     for (int p = connecthead; p >= 0; p = connectpoint2[p])
         if (gPlayer[p].pSprite && gPlayer[p].pXSprite)
         {
             auto *s = gPlayer[p].pSprite;
-            int64_t ammo = 0, armor = 0;
+            int64_t ammo = 0, armor = 0, pack = 0;
+            unsigned keys = 0, weapons = 0;
             for (int value : gPlayer[p].ammoCount) ammo += value;
             for (int value : gPlayer[p].armor) armor += value;
-            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u autoaim=%d skill=%d team=%d join_order=%llu palette=%d frags=%d weapon=%d ammo_sum=%lld armor_sum=%lld",
+            for (auto const& item : gPlayer[p].packSlots) pack += item.curAmount;
+            for (unsigned i = 0; i < ARRAY_SIZE(gPlayer[p].hasKey); ++i) if (gPlayer[p].hasKey[i]) keys |= 1u << i;
+            for (unsigned i = 0; i < ARRAY_SIZE(gPlayer[p].hasWeapon); ++i) if (gPlayer[p].hasWeapon[i]) weapons |= 1u << i;
+            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u autoaim=%d skill=%d team=%d join_order=%llu palette=%d frags=%d weapon=%d ammo_sum=%lld armor_sum=%lld keys_mask=%u weapons_mask=%u pack_sum=%lld lives=%d spectator=%d downed=%d giveup=%d",
                   p, int(s->x), int(s->y), int(s->z), int(gPlayer[p].pXSprite->health), netAppliedCommandSequence(p), gProfile[p].nAutoAim, gProfile[p].skill,
                   gPlayer[p].teamId, (unsigned long long)(netIsServer() ? slots[p].joinOrder : 0), int(s->pal), gPlayer[p].fragCount,
-                  int(gPlayer[p].curWeapon), (long long)ammo, (long long)armor);
+                  int(gPlayer[p].curWeapon), (long long)ammo, (long long)armor, keys, weapons, (long long)pack,
+                  netCoopLivesRemaining(p), int(netCoopPlayerIsSpectator(p)), int(netCoopPlayerIsDowned(p)), netCoopGiveUpProgress(p));
         }
     if (netIsServer()) scoreboard = collectScoreboard();
     for (auto const& row : scoreboard.rows)
-        LOG_F(INFO, "NET scoreboard slot=%u generation=%u score=%d ping_ms=%u minutes=%u country=%s team=%u name=\"%s\"",
+        LOG_F(INFO, "NET scoreboard slot=%u generation=%u score=%d ping_ms=%u minutes=%u country=%s team=%u lives=%d downed=%d giveup=%u name=\"%s\"",
               unsigned(row.slot), row.generation, row.score, row.pingMs, row.elapsedMinutes,
-              row.country.empty() ? "--" : row.country.c_str(), unsigned(row.team), row.name.c_str());
+              row.country.empty() ? "--" : row.country.c_str(), unsigned(row.team), row.livesRemaining,
+              int(row.downed), unsigned(row.giveUpTicks), row.name.c_str());
     if (netIsLive() && gGameOptions.nGameType == kGameTypeTeams)
         LOG_F(INFO, "NET team scores blue=%d red=%d", gPlayerScores[0], gPlayerScores[1]);
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;
-        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d holster_weapon=%d chase_view=%d",
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d holster_weapon=%d chase_view=%d coop_lives=%d",
               int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
               int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
               gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled,
-              int(gGameOptions.bFriendlyFire), int(netAllowHolsterWeapon()), int(netAllowChaseView()));
+              int(gGameOptions.bFriendlyFire), int(netAllowHolsterWeapon()), int(netAllowChaseView()), netCoopLifeLimit());
+        int monsters = 0, pickups = 0;
+        for (int n = headspritestat[kStatDude]; n >= 0; n = nextspritestat[n])
+            if (!IsPlayerSprite(&sprite[n]) && sprite[n].extra > 0 && xsprite[sprite[n].extra].health > 0) ++monsters;
+        for (int n = headspritestat[kStatItem]; n >= 0; n = nextspritestat[n]) ++pickups;
+        LOG_F(INFO, "NET world monsters_alive=%d pickups=%d", monsters, pickups);
     }
 #ifndef NETCODE_DISABLE
     if (host)

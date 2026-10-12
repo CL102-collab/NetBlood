@@ -61,6 +61,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "levels.h"
 #include "loadsave.h"
+#include "network.h"
 #include "player.h"
 #include "seq.h"
 #include "sfx.h"
@@ -2944,11 +2945,16 @@ spritetype *actDropObject(spritetype *pSprite, int nType) {
 bool actHealDude(XSPRITE *pXDude, int a2, int a3)
 {
     dassert(pXDude != NULL);
+    // Modern-map healing commands must not bypass co-op elimination/revival.
+    spritetype *pSprite = &sprite[pXDude->reference];
+    if (IsPlayerSprite(pSprite) && netCoopLifeLimit()
+        && (!pXDude->health || netCoopPlayerIsSpectator(pSprite->type - kDudePlayer1)
+            || netCoopPlayerIsDowned(pSprite->type - kDudePlayer1)))
+        return false;
     a2 <<= 4;
     a3 <<= 4;
     if (pXDude->health < a3)
     {
-        spritetype *pSprite = &sprite[pXDude->reference];
         if (IsPlayerSprite(pSprite))
             sfxPlay3DSound(pSprite->x, pSprite->y, pSprite->z, 780, pSprite->sectnum);
         pXDude->health = ClipHigh(pXDude->health+a2, a3);

@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "mouse.h"
 #include "joystick.h"
 #include "control.h"
+#include "mmulti.h"
 #include "function.h"
 #include "common_game.h"
 #include "blood.h"
@@ -351,7 +352,8 @@ void ctrlGetInput(void)
 
     if (BUTTON(gamefunc_Open))
     {
-        CONTROL_ClearButton(gamefunc_Open);
+        if (!netCoopPlayerIsDowned(myconnectindex))
+            CONTROL_ClearButton(gamefunc_Open);
         gInput.keyFlags.action = 1;
     }
 

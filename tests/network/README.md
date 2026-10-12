@@ -179,6 +179,7 @@ exclusive.
 | `-episode` | Cooperative episode, numbered from 1 |
 | `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
 | `-losekeys` | `on` (default) or `off`; cooperative play only |
+| `-lives` | Total lives per player per level, 1–255; default 4; `0` enables legacy unlimited respawn; dedicated co-op only |
 
 When a configured time or score limit is reached, the dedicated server advances
 the map list. With an explicit cooperative episode, a time limit follows the
@@ -190,7 +191,7 @@ maps or restart games directly, start games, host another server, or change serv
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 6. Rebuild the server and all
+The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 7. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 
@@ -224,6 +225,45 @@ profiles; the authoritative player profiles must keep the configured values.
 The output retains exact command lines, process logs, statuses and a binary
 hash in `result.json`. It tests console authority enforcement; the separate
 menu guards are not exercised by synthetic menu navigation.
+
+## Cooperative lives and revival
+
+Dedicated co-op starts each player with four total lives per level, configurable
+with `-lives N`. Lethal damage downs the player without spending a life. A nearby
+living teammate can press Use to revive them at 50 health; holding Use for three
+seconds gives up and spends one life. Releasing early resets the hold progress.
+An exhausted player watches surviving teammates and cannot respawn until the
+level changes. When every connected player is exhausted, the server reloads the
+current map with fresh lives, inventory, keys, pickups and monsters.
+With `-lives 0`, co-op retains immediate deaths and unlimited ordinary respawns;
+the downed/revival mechanics are disabled.
+
+Run the real-server regression under X11/Xvfb:
+
+```sh
+python3 tests/network/coop-lives.py \
+  --binary ./nblood \
+  --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-coop-lives-evidence
+```
+
+The generated legal Blood map includes ordinary collectible weapons, ammunition,
+armor and a key, a stationary tentacle and a fatal pit. The clients collect equipment,
+shoot the tentacle, self-down with TNT, revive through Use, and use fatal falls plus
+held Use to consume their budgets. Checks cover three respawns from four lives,
+partial-hold reset, exhausted input denial, teammate viewing, hot join, retained
+exhaustion on same-address/name reconnect, a full team wipe, map transitions and
+the one-life boundary. A separate `-lives 0` session checks five ordinary deaths
+and respawns without downing, exhaustion or a map reset. Exact snapshot installation and recorded scoreboard
+metadata are verified; packet playback must restore exhausted spectator state.
+The output includes process logs, binary hash, packet recording and downed/
+spectator screenshots (`--skip-screenshots` omits captures).
+
+`server-settings.py` also rejects invalid `-lives` values and its use outside
+dedicated co-op, checks the default four-life policy, and verifies unlimited
+metadata in Bloodbath and teams.
+The asset-free `tests/network/coop-lives-test.sh` checks life-budget transitions;
+use `SANITIZE=1` to add address/undefined-behavior sanitizer coverage.
 
 ## Automatic team balancing
 

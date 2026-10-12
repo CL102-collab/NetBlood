@@ -18,6 +18,9 @@ static netscoreboard::State fixture(unsigned count)
         row.generation = slot + 1;
         row.team = slot % 3 < 2 ? slot % 3 : netscoreboard::NoTeam;
         row.score = static_cast<int>(slot) - 3;
+        row.livesRemaining = static_cast<int>(slot) - 1;
+        row.downed = row.livesRemaining > 0 && slot % 2;
+        row.giveUpTicks = row.downed ? slot * 10 : 0;
         row.pingMs = slot * 99;
         row.elapsedMinutes = slot * 60;
         row.name = slot ? "FifteenChars123" : "Player One";
@@ -78,12 +81,14 @@ static void roundTrips()
     one.rows[0].name = "X";
     one.rows[0].country = "US";
     const std::vector<uint8_t> golden = {
-        1, 0, 0, 1,0,0,0, 0,0,0,0, 0,0,0,0, 255,255,255,255,
-        1,0,'X', 2,0,'U','S'};
+        1, 0, 0, 1,0,0,0, 0,0,0,0, 0,0,0,0, 255,255,255,255, 255,255,255,255,
+        0,0, 1,0,'X', 2,0,'U','S'};
     CHECK(encode(one) == golden);
     for (int32_t score : {INT32_MIN, -1, 0, INT32_MAX})
+    for (int32_t lives : {-1, 0, 1, 4, 255})
     {
         one.rows[0].score = score;
+        one.rows[0].livesRemaining = lives;
         one.rows[0].pingMs = netscoreboard::MaxPingMs;
         one.rows[0].generation = UINT32_MAX;
         one.rows[0].elapsedMinutes = UINT32_MAX;
@@ -91,6 +96,19 @@ static void roundTrips()
         netscoreboard::State restored;
         CHECK(decode(encode(one), restored));
         CHECK(restored.rows[0].score == score && restored.rows[0].elapsedMinutes == UINT32_MAX);
+        CHECK(restored.rows[0].livesRemaining == lives);
+        CHECK(!restored.rows[0].downed && !restored.rows[0].giveUpTicks);
+    }
+    for (int32_t lives : {1, 4, 255})
+    for (unsigned ticks = 0; ticks <= 90; ++ticks)
+    {
+        one.rows[0].livesRemaining = lives;
+        one.rows[0].downed = true;
+        one.rows[0].giveUpTicks = ticks;
+        netscoreboard::State restored;
+        CHECK(decode(encode(one), restored));
+        CHECK(restored.rows[0].livesRemaining == lives && restored.rows[0].downed &&
+              restored.rows[0].giveUpTicks == ticks);
     }
 }
 
@@ -103,6 +121,21 @@ static void malformed()
     state = fixture(1); state.rows[0].slot = netscoreboard::MaxPlayers; invalid(state);
     state = fixture(1); state.rows[0].generation = 0; invalid(state);
     state = fixture(1); state.rows[0].pingMs = netscoreboard::MaxPingMs + 1; invalid(state);
+    for (int32_t lives : {INT32_MIN, -2, 256, INT32_MAX})
+    {
+        state = fixture(1); state.rows[0].livesRemaining = lives; invalid(state);
+    }
+    for (int32_t lives : {-1, 0})
+    {
+        state = fixture(1); state.rows[0].livesRemaining = lives;
+        state.rows[0].downed = true; invalid(state);
+    }
+    state = fixture(1); state.rows[0].livesRemaining = 4; state.rows[0].giveUpTicks = 1; invalid(state);
+    for (unsigned ticks = 91; ticks <= 255; ++ticks)
+    {
+        state = fixture(1); state.rows[0].livesRemaining = 4;
+        state.rows[0].downed = true; state.rows[0].giveUpTicks = ticks; invalid(state);
+    }
     for (unsigned team = 2; team < netscoreboard::NoTeam; ++team)
     {
         state = fixture(1); state.rows[0].team = team; invalid(state);
@@ -125,15 +158,36 @@ static void malformed()
     bad = good; bad[2] = 2; reject(bad);
     bad = good; bad[3] = 0; reject(bad);
     bad = good; bad[7] = 0xff; bad[8] = 0xff; reject(bad);
-    bad = good; bad[19] = 16; reject(bad);
-    bad = good; bad[21] = 0; reject(bad);
-    bad = good; bad[21] = 31; reject(bad);
-    bad = good; bad[22] = 3; reject(bad);
-    bad = good; bad[24] = 'u'; reject(bad);
-    bad = good; bad[25] = 0; reject(bad);
+    for (uint32_t lives : {256u, 0x80000000u, UINT32_MAX - 1})
+    {
+        bad = good;
+        for (unsigned byte = 0; byte < 4; ++byte) bad[19 + byte] = static_cast<uint8_t>(lives >> (byte * 8));
+        reject(bad);
+    }
+    for (unsigned downed = 2; downed <= 255; ++downed)
+    {
+        bad = good; bad[23] = downed; reject(bad);
+    }
+    bad = good; bad[23] = 1; reject(bad); // Unlimited lives cannot have a downed state.
+    bad = good; bad[23] = 1;
+    for (unsigned byte = 0; byte < 4; ++byte) bad[19 + byte] = 0;
+    reject(bad); // Exhausted players spectate, rather than becoming downed again.
+    bad = good; bad[24] = 1; reject(bad); // Progress requires being downed.
+    for (unsigned ticks = 91; ticks <= 255; ++ticks)
+    {
+        bad = good;
+        for (unsigned byte = 0; byte < 4; ++byte) bad[19 + byte] = byte == 0 ? 4 : 0;
+        bad[23] = 1; bad[24] = ticks; reject(bad);
+    }
+    bad = good; bad[25] = 16; reject(bad);
+    bad = good; bad[27] = 0; reject(bad);
+    bad = good; bad[27] = 31; reject(bad);
+    bad = good; bad[28] = 3; reject(bad);
+    bad = good; bad[30] = 'u'; reject(bad);
+    bad = good; bad[31] = 0; reject(bad);
     state = fixture(2);
     bad = encode(state);
-    size_t const secondOffset = 1 + 18 + 2 + state.rows[0].name.size() + 2 + state.rows[0].country.size();
+    size_t const secondOffset = 1 + 24 + 2 + state.rows[0].name.size() + 2 + state.rows[0].country.size();
     bad[secondOffset] = 0;
     reject(bad);
 }
@@ -157,5 +211,5 @@ int main()
     roundTrips();
     malformed();
     clocks();
-    std::printf("PASS: %u scoreboard codec checks (bounds, atomic rejection, names, countries, signed scores and join clocks)\n", checks);
+    std::printf("PASS: %u scoreboard codec checks (bounds, atomic rejection, names, countries, scores, lives, revival and join clocks)\n", checks);
 }

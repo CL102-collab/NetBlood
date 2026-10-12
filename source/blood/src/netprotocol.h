@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 6;
+constexpr uint32_t Version    = 7;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -241,8 +241,10 @@ struct ServerRules
     uint32_t mapVoteEnabled = 1;
     // Effective permissions: only dedicated Bloodbath overrides these defaults.
     uint32_t allowHolsterWeapon = 1, allowChaseView = 1;
+    // Zero means unlimited; only dedicated cooperative servers set a limit.
+    uint32_t coopLives = 0;
 };
-constexpr size_t ServerRulesBytes = 9 * sizeof(uint32_t);
+constexpr size_t ServerRulesBytes = 10 * sizeof(uint32_t);
 inline void writeServerRules(Writer& w, const ServerRules& rules)
 {
     w.u32(rules.timeLimitMinutes); w.u32(rules.scoreLimit);
@@ -250,6 +252,7 @@ inline void writeServerRules(Writer& w, const ServerRules& rules)
     w.u32(rules.rotationIndex); w.u32(rules.rotationCount);
     w.u32(rules.mapVoteEnabled);
     w.u32(rules.allowHolsterWeapon); w.u32(rules.allowChaseView);
+    w.u32(rules.coopLives);
 }
 inline bool readServerRules(Reader& r, ServerRules& rules)
 {
@@ -259,10 +262,12 @@ inline bool readServerRules(Reader& r, ServerRules& rules)
     candidate.rotationIndex = r.u32(); candidate.rotationCount = r.u32();
     candidate.mapVoteEnabled = r.u32();
     candidate.allowHolsterWeapon = r.u32(); candidate.allowChaseView = r.u32();
+    candidate.coopLives = r.u32();
     if (!r.ok || candidate.timeLimitMinutes > 10080 || candidate.scoreLimit > INT32_MAX
         || !candidate.maxPlayers || candidate.maxPlayers > 8 || candidate.autoAim > 3
         || candidate.rotationCount > 256 || candidate.mapVoteEnabled > 1
         || candidate.allowHolsterWeapon > 1 || candidate.allowChaseView > 1
+        || candidate.coopLives > 255
         || (candidate.rotationCount ? candidate.rotationIndex >= candidate.rotationCount : candidate.rotationIndex != 0))
         return false;
     rules = candidate;

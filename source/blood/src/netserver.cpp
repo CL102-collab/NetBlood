@@ -21,7 +21,7 @@
 namespace {
 NetServerSettings settings;
 bool hasDedicatedOptions = false, hasMaxPlayers = false, hasServerPlayers = false;
-bool hasDifficulty = false, hasLoseKeys = false;
+bool hasDifficulty = false, hasLoseKeys = false, hasCoopLives = false;
 int serverPlayers = 8;
 struct MapEntry { int episode, level; LEVELINFO metadata; };
 std::vector<MapEntry> initialMaps;
@@ -312,6 +312,7 @@ void netServerParseOption(const char* name, const char* value)
     else if (!std::strcmp(name, "mapvote")) settings.mapVoteEnabled = toggle(name, value);
     else if (!std::strcmp(name, "losekeys")) { settings.loseKeys = toggle(name, value); hasLoseKeys = true; }
     else if (!std::strcmp(name, "difficulty")) { settings.difficulty = number(name, value, 0, 4); hasDifficulty = true; }
+    else if (!std::strcmp(name, "lives")) { settings.coopLives = number(name, value, 0, 255); hasCoopLives = true; }
     else if (!std::strcmp(name, "episode")) settings.episode = number(name, value, 1, kMaxEpisodes);
     else if (!std::strcmp(name, "maplist"))
     {
@@ -338,6 +339,8 @@ void netServerValidateOptions(int gameType, bool hasUserMap)
         ThrowError("Choose only one of -map, -maplist, or -episode");
     if (gameType != kGameTypeCoop && (settings.episode || hasDifficulty || hasLoseKeys))
         ThrowError("-episode, -difficulty/-s, and -losekeys require -gametype coop");
+    if (gameType != kGameTypeCoop && hasCoopLives)
+        ThrowError("-lives requires -gametype coop");
     if (gameType == kGameTypeCoop && settings.scoreLimit)
         ThrowError("-scorelimit requires -gametype bloodbath or teams; use -timelimit for coop");
 }
@@ -483,6 +486,15 @@ void netServerAdvanceMap()
     netPrepareCurrentMapSettings();
     LOG_F(INFO, "NET dedicated next map: map=%s rotation_index=%u rotation_count=%u", gGameOptions.zLevelName,
           unsigned(settings.rotationIndex), unsigned(settings.rotationCount));
+}
+
+void netServerRestartLevel()
+{
+    if (!gDedicated || !netIsServer()) return;
+    pendingAdvance = preserveInventory = false;
+    gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
+    netPrepareCurrentMapSettings();
+    gStartNewGame = true;
 }
 
 std::vector<std::string> netServerVoteMaps()

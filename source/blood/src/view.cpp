@@ -113,6 +113,71 @@ VIEW gPrevView[kMaxPlayers];
 VIEWPOS gViewPos;
 int gViewIndex;
 
+namespace
+{
+bool coopSpectating = false;
+
+bool coopSpectatorTargetValid(int slot)
+{
+    if (unsigned(slot) >= kMaxPlayers)
+        return false;
+    bool connected = false;
+    for (int player = connecthead, count = 0; unsigned(player) < kMaxPlayers && count < kMaxPlayers;
+         player = connectpoint2[player], ++count)
+        if (player == slot) { connected = true; break; }
+    auto const &player = gPlayer[slot];
+    return connected && unsigned(player.nSprite) < kMaxSprites
+        && player.pSprite == &sprite[player.nSprite] && player.pSprite->statnum == kStatDude
+        && player.pSprite->type == kDudePlayer1 + slot && unsigned(player.pSprite->sectnum) < unsigned(numsectors)
+        && player.pSprite->extra > 0 && player.pSprite->extra < kMaxXSprites
+        && player.pXSprite == &xsprite[player.pSprite->extra] && player.pXSprite->health > 0
+        && !netCoopPlayerIsSpectator(slot) && !netCoopPlayerIsDowned(slot);
+}
+}
+
+void viewCycleCoopSpectator()
+{
+    if (!gMe || !netCoopPlayerIsSpectator(myconnectindex))
+        return;
+    int const previous = unsigned(gViewIndex) < kMaxPlayers ? gViewIndex : myconnectindex;
+    for (int offset = 1; offset <= kMaxPlayers; ++offset)
+    {
+        int const slot = (previous + offset) % kMaxPlayers;
+        if (!coopSpectatorTargetValid(slot))
+            continue;
+        gViewIndex = slot;
+        gView = &gPlayer[slot];
+        coopSpectating = true;
+        return;
+    }
+    // A dead teammate may still respawn. Keep our own valid corpse as the
+    // camera until that happens, or until the server restarts the level.
+    gViewIndex = myconnectindex;
+    gView = gMe;
+    coopSpectating = true;
+}
+
+void viewUpdateCoopSpectator()
+{
+    if (!gMe || unsigned(myconnectindex) >= kMaxPlayers)
+        return;
+    if (!netCoopPlayerIsSpectator(myconnectindex))
+    {
+        if (coopSpectating)
+        {
+            gViewIndex = myconnectindex;
+            gView = gMe;
+        }
+        coopSpectating = false;
+        return;
+    }
+    coopSpectating = true;
+    if (!coopSpectatorTargetValid(gViewIndex))
+        viewCycleCoopSpectator();
+    else
+        gView = &gPlayer[gViewIndex];
+}
+
 struct INTERPOLATE {
     void *pointer;
     int value;
@@ -1795,9 +1860,12 @@ void viewDrawScoreboard()
         || gInputMode != INPUT_MODE_0 || gGameMenuMgr.m_bActive || OSD_GetRowsCur() > 0) return;
     auto rows = netGetScoreboard().rows;
     bool const teams = gGameOptions.nGameType == kGameTypeTeams;
-    std::sort(rows.begin(), rows.end(), [teams](const netscoreboard::Row &left, const netscoreboard::Row &right)
+    bool const coopLives = netCoopLifeLimit() > 0;
+    std::sort(rows.begin(), rows.end(), [teams, coopLives](const netscoreboard::Row &left, const netscoreboard::Row &right)
     {
         if (teams && left.team != right.team) return left.team < right.team;
+        if (coopLives && netCoopLivesRemaining(left.slot) != netCoopLivesRemaining(right.slot))
+            return netCoopLivesRemaining(left.slot) > netCoopLivesRemaining(right.slot);
         if (left.score != right.score) return left.score > right.score;
         return left.slot < right.slot;
     });
@@ -1829,7 +1897,7 @@ void viewDrawScoreboard()
     rect(8, 20, width - 16, 1, 0x645848);
     auto columns = [&](int top)
     {
-        text("SCORE", 212, top, 0xb4b4b4, true, true);
+        text(coopLives ? "LIVES" : "SCORE", 212, top, 0xb4b4b4, true, true);
         text("PING", 253, top, 0xb4b4b4, true, true);
         text("TIME", 292, top, 0xb4b4b4, true, true);
     };
@@ -1850,8 +1918,15 @@ void viewDrawScoreboard()
         }
         text(name, 35, top + 1, color, false);
         char value[32];
-        Bsnprintf(value, sizeof(value), "%d", row.score);
-        text(value, 212, top + 1, color, true, true);
+        int const lives = coopLives ? netCoopLivesRemaining(row.slot) : -1;
+        bool const downed = coopLives && netCoopPlayerIsDowned(row.slot);
+        // The widest life status ("255 DOWN") is 32 pixels, leaving clear
+        // space after a maximum-length name and before the ping column.
+        if (downed) Bsnprintf(value, sizeof(value), "%d DOWN", lives);
+        else if (coopLives && lives == 0) Bstrcpy(value, "0 OUT");
+        else if (coopLives && lives < 0) Bstrcpy(value, "-");
+        else Bsnprintf(value, sizeof(value), "%d", coopLives ? lives : row.score);
+        text(value, 212, top + 1, downed ? 0xf3cf82 : color, true, true);
         Bsnprintf(value, sizeof(value), "%u", row.pingMs);
         text(value, 253, top + 1, 0xd8d8d8, true, true);
         if (row.elapsedMinutes > 99999) Bstrcpy(value, "99999+");
@@ -1894,6 +1969,70 @@ void viewDrawScoreboard()
     }
     text("Ping: server RTT (ms)   Time: minutes connected", 8, height - 11, 0xaaa59b);
     scoreboardCanvasEnd();
+}
+
+const char *viewCoopControlKey(int control)
+{
+    for (int binding = 0; binding < 2; ++binding)
+    {
+        auto const scan = KeyboardKeys[control][binding];
+        if (scan != 0 && scan != 0xff)
+        {
+            const char *key = KB_ScanCodeToString(scan);
+            if (key && key[0])
+                return key;
+        }
+    }
+    return nullptr;
+}
+
+void viewDrawCoopStatus()
+{
+    if (netCoopLifeLimit() <= 0)
+        return;
+    auto line = [](const char *text, int y)
+    {
+        char buffer[128];
+        Bsnprintf(buffer, sizeof(buffer), "%s", text);
+        for (char *glyph = buffer; *glyph; ++glyph)
+            if (static_cast<unsigned char>(*glyph) < 32 || static_cast<unsigned char>(*glyph) >= 127)
+                *glyph = '?';
+        int width = 0;
+        viewGetFontInfo(3, buffer, &width, nullptr);
+        for (size_t length = Bstrlen(buffer); width > 144 && length > 3;)
+        {
+            --length;
+            Bmemcpy(buffer + length - 3, "...", 4);
+            viewGetFontInfo(3, buffer, &width, nullptr);
+        }
+        viewDrawText(3, buffer, 8, y, -128, 0, 0, 1, RS_ALIGN_L);
+    };
+    // Below the left-side vote panel and above the bottom status bar.
+    char text[128];
+    if (netCoopPlayerIsDowned(myconnectindex))
+    {
+        const char *key = viewCoopControlKey(gamefunc_Open);
+        viewDrawText(3, "Waiting for a teammate to revive you", 160, 108, -128, 0, 1, 1);
+        Bsnprintf(text, sizeof(text), "Hold %s for 3 seconds to give up", key ? key : "Open / Use");
+        viewDrawText(3, text, 160, 118, -128, 0, 1, 1);
+        int const progress = netCoopGiveUpProgress(myconnectindex);
+        if (progress > 0)
+        {
+            Bsnprintf(text, sizeof(text), "Giving up: %d%%", progress);
+            viewDrawText(3, text, 160, 128, -128, 0, 1, 1);
+        }
+        return;
+    }
+    if (!netCoopPlayerIsSpectator(myconnectindex))
+        return;
+    if (gView != gMe && coopSpectatorTargetValid(gViewIndex))
+        Bsnprintf(text, sizeof(text), "Spectating %s", gProfile[gViewIndex].name);
+    else
+        Bstrcpy(text, "Waiting for a teammate to respawn");
+    line(text, 112);
+    const char *key = viewCoopControlKey(gamefunc_See_Coop_View);
+    Bsnprintf(text, sizeof(text), "%s: next player", key ? key : "See Coop View");
+    line(text, 121);
 }
 } // namespace
 
@@ -3803,6 +3942,7 @@ int32_t g_frameRate;
 
 void viewDrawScreen(void)
 {
+    viewUpdateCoopSpectator();
     int nPalette = 0;
     static ClockTicks lastUpdate;
     int defaultHoriz = gCenterHoriz ? 100 : 90;
@@ -4355,6 +4495,7 @@ RORHACK:
     viewDrawInterface(delta);
     netLagDraw();
     netDrawMapVote();
+    viewDrawCoopStatus();
     if (IsPlayerSprite(gView->pSprite) && (gView->hand == 1))
     {
         int zn = ((gView->zWeapon-gView->zView-(12<<8))>>7)+220;
@@ -4404,7 +4545,7 @@ RORHACK:
     {
         viewDrawText(1, "PAUSED", 160, 10, 0, 0, 1, 0);
     }
-    else if (gView != gMe)
+    else if (gView != gMe && !netCoopPlayerIsSpectator(myconnectindex))
     {
         sprintf(gTempStr, "] %s [", gProfile[gView->nPlayer].name);
         viewDrawText(0, gTempStr, 160, 10, 0, 0, 1, 0);

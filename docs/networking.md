@@ -20,6 +20,9 @@ Use the Multiplayer menu to host or join, or launch from a terminal:
 # Dedicated co-op server, up to eight players, default map E1M1.
 ./nblood -dedicated -server 8 -gametype coop -port 23513
 
+# Co-op with six lives per player for each level (default: four).
+./nblood -dedicated -gametype coop -lives 6
+
 # Dedicated team server with teammate damage enabled.
 ./nblood -dedicated -gametype teams -friendlyfire on -port 23513
 
@@ -54,6 +57,38 @@ clients and retained across map changes, and clients cannot override them.
 `net_status` reports the effective permissions as `holster_weapon` and
 `chase_view`. These options restrict the player controls; normal weapon switching
 and weapon lowering caused by gameplay still work.
+
+Dedicated co-op servers accept `-lives N`, from 0 to 255, defaulting to **4 lives
+per player per level**. Four lives include the initial life and three respawns.
+Use **`-lives 0`** to retain legacy unlimited respawning, without kneeling,
+teammate revival, life-based spectating or automatic team-wipe restarts.
+The option requires co-op; other game modes and graphical hosts keep their
+existing respawn behavior.
+
+With a positive life limit, lethal damage puts a player into a kneeling state.
+A living teammate can approach and press **Use** to revive them with **50 health**,
+preserving their current life and inventory. Revival requires line of sight and
+close range. Kneeling players cannot fight or move and remain safe from further
+damage while waiting. To give up instead, hold **Use for three seconds**;
+releasing it cancels the hold. The
+screen shows the bound key and hold progress. Only giving up deducts a life;
+press Use again after the death animation to respawn if any lives remain.
+
+Players with no lives left can only spectate surviving teammates. The **See
+Co-op View** control cycles between them; the HUD shows the target and bound key.
+Remaining lives appear only on the co-op scoreboard for every player, with `DOWN`
+or `OUT` labels for incapacitated or eliminated players. Once every connected
+player is out of lives, the server fully restarts the **current map**: all player
+keys, weapons, ammo, armor, inventory and powerups reset, monsters and pickups
+return, and everyone receives a fresh life
+budget. The usual starting pitchfork is provided. An empty server does not loop
+through restarts. New levels also replenish lives; a successful co-op level exit
+retains the normal inventory-carryover rules.
+
+Late joiners receive their own full budget. Reconnecting with the same address
+and player name during a level retains remaining lives and kneeling/eliminated
+status. Lives and revival state are authoritative, reported by `net_status`, and
+included in packet demo recording/playback. Legacy input demos remain unchanged.
 
 The port uses UDP. Clients connect directly to the server address. The server
 checks protocol, content and map identity.
@@ -241,7 +276,7 @@ full-state recovery. Map generations separate sessions across level changes,
 and sprite generations prevent interpolation or sounds attaching to a reused
 sprite slot. Server AI pointers and event queues remain server-private.
 
-The current wire protocol is version 6; clients and servers must use the same
+The current wire protocol is version 7; clients and servers must use the same
 version. Scoreboard metadata is independent of the deterministic game state.
 
 Relevant code is in `source/blood/src/network.cpp`, `netprotocol.h`,
