@@ -147,6 +147,34 @@ or establish full parity. `--map` restricts the suite; effect comparisons run on
 when both participating maps are selected. `--defs` and repeatable
 `--search-path` allow additional local fixtures.
 
+`make-ror-fixtures.py` creates a separate original Blood room-over-room suite:
+
+```sh
+python3 tests/vulkan/make-ror-fixtures.py --output /tmp/nblood-ror-fixtures
+python3 tests/vulkan/run.py --assets /path/to/blood121 \
+  --fixtures /tmp/nblood-ror-fixtures --mode compare --validation \
+  --width 800 --height 600 --output /tmp/nblood-ror-results
+```
+
+`VRFLOOR0`/`VRFLOOR` look down through a floor portal, while
+`VRCEIL0`/`VRCEIL` look up through a ceiling portal. `VRDEEP0`/`VRDEEP` and
+`VRHIGH0`/`VRHIGH` repeat those directions through two portals across three
+rooms. Rooms occupy disconnected XY areas and use Blood's upper/lower stack
+markers (types 11/12), with no ordinary wall connections. Each pair changes
+only the farthest destination room's materials to a bright checker pattern;
+geometry, markers, source materials, and the camera remain identical. Visible
+changes therefore prove that the renderer drew the room beyond the portal.
+
+The runner requires each destination change to produce mean RGB error of at
+least 0.1/255 in each renderer. It compares Polymost and Vulkan over both the
+complete frame and the union of changed destination pixels using the usual
+parity tolerances. Restrict captures with repeatable `--map` options, retaining
+both members of each pair to keep its visibility check. Review screenshots and
+difference images alongside `results.json`. These paused fixtures test ordinary
+floor/ceiling ROR and vertical portal chains, not movement through portals or
+every map configuration. Masked ROR sectors are excluded because `mirrors.cpp`
+currently rejects them for the Polymost reference (`MASKED_ROR_ISSUE`).
+
 `generate-shaders.py` regenerates the checked-in Vulkan SPIR-V include using
 `glslangValidator`; generated shader consistency is separate from these runtime
 checks.
