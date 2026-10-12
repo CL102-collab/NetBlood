@@ -206,9 +206,11 @@
     <ClCompile Include="..\..\source\blood\src\misc.cpp" />
     <ClCompile Include="..\..\source\blood\src\network.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontent.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netcontentreport.cpp" />
     <ClCompile Include="..\..\source\blood\src\netdemo.cpp" />
     <ClCompile Include="..\..\source\blood\src\netevents.cpp" />
     <ClCompile Include="..\..\source\blood\src\netlag.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netmap.cpp" />
     <ClCompile Include="..\..\source\blood\src\netpredict.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot_codec.cpp" />
@@ -335,9 +337,12 @@
     <ClInclude Include="..\..\source\blood\src\misc.h" />
     <ClInclude Include="..\..\source\blood\src\network.h" />
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />
+    <ClInclude Include="..\..\source\blood\src\netassets.h" />
+    <ClInclude Include="..\..\source\blood\src\netcontentreport.h" />
     <ClInclude Include="..\..\source\blood\src\netdemo.h" />
     <ClInclude Include="..\..\source\blood\src\netevents.h" />
     <ClInclude Include="..\..\source\blood\src\netlag.h" />
+    <ClInclude Include="..\..\source\blood\src\netmap.h" />
     <ClInclude Include="..\..\source\blood\src\netpredict.h" />
     <ClInclude Include="..\..\source\blood\src\netprotocol.h" />
     <ClInclude Include="..\..\source\blood\src\netsnapshot.h" />

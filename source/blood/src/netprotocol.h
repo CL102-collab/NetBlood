@@ -13,6 +13,9 @@ constexpr uint32_t Version    = 1;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
+constexpr uint32_t MaxMapBytes = 16u * 1024u * 1024u;
+constexpr uint32_t MapChunkBytes = 16u * 1024u;
+constexpr uint32_t MapWindowChunks = 4;
 enum Type : uint32_t
 {
     Hello = 1,
@@ -25,7 +28,12 @@ enum Type : uint32_t
     Taunt,
     Reject,
     Profile,
-    Event
+    Event,
+    RequestMap,
+    MapData,
+    ContentManifest,
+    ContentReady,
+    TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.
 inline int32_t normalizeTurn(int32_t turn)
@@ -121,7 +129,7 @@ struct Header
 { uint32_t type = 0, session = 0, generation = 0, sequence = 0; };
 inline std::vector<uint8_t> encode(const Header &h, const std::vector<uint8_t> &body)
 {
-    if (body.size() > MaxPayload || h.type < Hello || h.type > Event)
+    if (body.size() > MaxPayload || h.type < Hello || h.type >= TypeCount)
         return {};
     Writer w;
     w.u32(Magic);
@@ -146,9 +154,76 @@ inline bool decode(const void *bytes, size_t size, Header &h, Reader &body)
     h.generation = r.u32();
     h.sequence   = r.u32();
     uint32_t n   = r.u32();
-    if (!r.ok || h.type < Hello || h.type > Event || n != size - HeaderSize)
+    if (!r.ok || h.type < Hello || h.type >= TypeCount || n != size - HeaderSize)
         return false;
     body = Reader(static_cast<const uint8_t *>(bytes) + HeaderSize, n);
+    return true;
+}
+struct MapRequestPayload
+{
+    uint32_t slotGeneration = 0, mapCRC = 0, offset = 0;
+};
+inline bool validMapRequest(const MapRequestPayload &request)
+{
+    return request.offset <= MaxMapBytes && request.offset % MapChunkBytes == 0;
+}
+inline bool writeMapRequest(Writer &w, const MapRequestPayload &request)
+{
+    if (!validMapRequest(request))
+        return false;
+    w.u32(request.slotGeneration);
+    w.u32(request.mapCRC);
+    w.u32(request.offset);
+    return true;
+}
+inline bool readMapRequest(Reader &r, MapRequestPayload &request)
+{
+    MapRequestPayload candidate;
+    candidate.slotGeneration = r.u32();
+    candidate.mapCRC = r.u32();
+    candidate.offset = r.u32();
+    if (!r.end() || !validMapRequest(candidate))
+        return false;
+    request = candidate;
+    return true;
+}
+struct MapDataPayload
+{
+    uint32_t mapCRC = 0, totalBytes = 0, offset = 0, length = 0;
+    // Borrowed packet bytes; valid only while the Reader's backing storage lives.
+    const uint8_t *data = nullptr;
+};
+inline bool validMapData(const MapDataPayload &chunk)
+{
+    if (!chunk.totalBytes || chunk.totalBytes > MaxMapBytes ||
+        chunk.offset >= chunk.totalBytes || chunk.offset % MapChunkBytes != 0)
+        return false;
+    const uint32_t remaining = chunk.totalBytes - chunk.offset;
+    return chunk.length == (remaining < MapChunkBytes ? remaining : MapChunkBytes);
+}
+inline bool writeMapData(Writer &w, const MapDataPayload &chunk)
+{
+    if (!validMapData(chunk) || !chunk.data)
+        return false;
+    w.u32(chunk.mapCRC);
+    w.u32(chunk.totalBytes);
+    w.u32(chunk.offset);
+    w.u32(chunk.length);
+    w.bytes(chunk.data, chunk.length);
+    return true;
+}
+inline bool readMapData(Reader &r, MapDataPayload &chunk)
+{
+    MapDataPayload candidate;
+    candidate.mapCRC = r.u32();
+    candidate.totalBytes = r.u32();
+    candidate.offset = r.u32();
+    candidate.length = r.u32();
+    if (!r.ok || !validMapData(candidate) || candidate.length != r.size - r.pos)
+        return false;
+    candidate.data = r.data + r.pos;
+    r.pos += candidate.length;
+    chunk = candidate;
     return true;
 }
 struct Command

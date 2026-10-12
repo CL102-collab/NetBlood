@@ -1,0 +1,224 @@
+// Real ENet peers for content-handshake integration checks against the game.
+#define UNREFERENCED_PARAMETER(value) ((void)(value))
+#define ENET_IMPLEMENTATION
+#include "enet.h"
+#include "netassets.h"
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <stdexcept>
+#include <thread>
+
+namespace {
+using Clock = std::chrono::steady_clock;
+using Bytes = std::vector<uint8_t>;
+void check(bool condition, const char *message)
+{ if (!condition) throw std::runtime_error(message); }
+struct Message {
+    netwire::Header header;
+    Bytes body;
+};
+struct Endpoint {
+    ENetHost *host = nullptr;
+    ENetPeer *peer = nullptr;
+    uint32_t sequence = 0;
+    bool disconnected = false;
+    Endpoint(unsigned port, bool server) {
+        ENetAddress address = {};
+        char loopback[] = "127.0.0.1";
+        check(enet_address_set_host(&address, loopback) == 0, "loopback address");
+        address.port = enet_uint16(port);
+        host = enet_host_create(server ? &address : nullptr, 1, 3, 0, 0);
+        check(host != nullptr, "create ENet host");
+        host->checksum = enet_crc32;
+        host->packetCopies = 3;
+        host->maximumPacketSize = netwire::MaxPayload + netwire::HeaderSize;
+        if (!server) {
+            peer = enet_host_connect(host, &address, 3, netwire::Version);
+            check(peer != nullptr, "create peer");
+            const auto deadline = Clock::now() + std::chrono::seconds(10);
+            bool connected = false;
+            while (Clock::now() < deadline && !connected) {
+                ENetEvent event;
+                if (enet_host_service(host, &event, 20) <= 0) continue;
+                check(event.type == ENET_EVENT_TYPE_CONNECT, "unexpected connection event");
+                connected = true;
+            }
+            check(connected, "connection timeout");
+        }
+    }
+    ~Endpoint() {
+        if (peer && !disconnected) enet_peer_disconnect_now(peer, 0);
+        if (host) enet_host_destroy(host);
+    }
+    void send(uint32_t type, const Bytes &body, uint32_t session = 0, uint32_t generation = 0) {
+        netwire::Header h;
+        h.type = type; h.session = session; h.generation = generation; h.sequence = ++sequence;
+        Bytes wire = netwire::encode(h, body);
+        ENetPacket *packet = enet_packet_create(wire.data(), wire.size(), ENET_PACKET_FLAG_RELIABLE);
+        check(packet != nullptr, "allocate packet");
+        if (enet_peer_send(peer, 0, packet) < 0) {
+            enet_packet_destroy(packet);
+            throw std::runtime_error("send packet");
+        }
+        enet_host_flush(host);
+    }
+    bool poll(Message &message, unsigned milliseconds = 20) {
+        ENetEvent event;
+        if (enet_host_service(host, &event, milliseconds) <= 0) return false;
+        if (event.type == ENET_EVENT_TYPE_CONNECT) {
+            peer = event.peer;
+            return false;
+        }
+        if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+            disconnected = true;
+            return false;
+        }
+        if (event.type != ENET_EVENT_TYPE_RECEIVE) return false;
+        netwire::Reader body(nullptr, 0);
+        const bool valid = netwire::decode(event.packet->data, event.packet->dataLength, message.header, body);
+        if (valid) message.body.assign(body.data, body.data + body.size);
+        enet_packet_destroy(event.packet);
+        check(valid, "invalid response envelope");
+        return true;
+    }
+    Message receive(unsigned seconds = 10) {
+        const auto deadline = Clock::now() + std::chrono::seconds(seconds);
+        Message message;
+        while (Clock::now() < deadline) {
+            if (poll(message)) return message;
+            check(!disconnected, "disconnected before response");
+        }
+        throw std::runtime_error("response timeout");
+    }
+    void silence(unsigned milliseconds) {
+        const auto deadline = Clock::now() + std::chrono::milliseconds(milliseconds);
+        Message message;
+        while (Clock::now() < deadline) {
+            check(!poll(message), "unexpected response before content admission");
+            check(!disconnected, "unexpected disconnect before content admission");
+        }
+    }
+};
+Bytes hello(uint32_t fingerprint, bool capable = true) {
+    netwire::Writer writer;
+    writer.u32(fingerprint); writer.text("content-probe", 15);
+    writer.u8(1); writer.u8(1); writer.u8(2);
+    if (capable) writer.u32(netassets::ManifestVersion);
+    return writer.data;
+}
+uint32_t manifest(const Message &message) {
+    check(message.header.type == netwire::ContentManifest, "expected asset manifest");
+    check(message.header.session != 0, "manifest session missing");
+    netwire::Reader reader(message.body.data(), message.body.size());
+    const uint32_t fingerprint = reader.u32();
+    std::vector<netassets::Asset> assets;
+    std::string error;
+    check(netassets::decodeManifest(reader, assets, error), "server manifest invalid");
+    check(!assets.empty(), "stock server manifest empty");
+    return fingerprint;
+}
+void probe(unsigned port, const std::string &mode, uint32_t fingerprint, const char *trigger) {
+    Endpoint client(port, false);
+    client.send(netwire::Hello, hello(fingerprint, mode != "legacy"));
+    const Message offered = client.receive();
+    if (mode == "legacy") {
+        check(offered.header.type == netwire::Welcome, "legacy CRC client was not admitted");
+        std::puts("legacy_admitted=1");
+        return;
+    }
+    const uint32_t expected = manifest(offered);
+    if (mode == "inspect") {
+        std::printf("fingerprint=%u generation=%u assets_manifest=1\n", expected, offered.header.generation);
+        return;
+    }
+    check(expected == fingerprint, "probe supplied incorrect fingerprint");
+    if (mode == "invalid-ready" || mode == "wrong-ready") {
+        netwire::Writer ready;
+        if (mode == "invalid-ready") ready.u16(uint16_t(fingerprint));
+        else ready.u32(fingerprint ^ 1u);
+        client.send(netwire::ContentReady, ready.data, offered.header.session, offered.header.generation);
+        const Message rejected = client.receive();
+        check(rejected.header.type == netwire::Reject, "bad content reply was admitted");
+        netwire::Reader reason(rejected.body.data(), rejected.body.size());
+        const std::string explanation = reason.text(160);
+        check(reason.end() && explanation.find("content mismatch") != std::string::npos, "bad reply rejection unclear");
+        std::puts("invalid_ready_rejected=1");
+        return;
+    }
+    check(mode == "race", "unknown probe mode");
+    for (unsigned i = 0; i < 32; ++i) client.send(netwire::Hello, hello(fingerprint));
+    client.silence(600);
+    // An unrelated session cannot authorize an offered content check.
+    netwire::Writer ready;
+    ready.u32(fingerprint);
+    client.send(netwire::ContentReady, ready.data, offered.header.session ^ 1u, offered.header.generation);
+    client.silence(300);
+    std::printf("offered_generation=%u repeated_hello_suppressed=1 wrong_session_ignored=1\n", offered.header.generation);
+    std::fflush(stdout);
+    const auto deadline = Clock::now() + std::chrono::seconds(30);
+    while (!std::ifstream(trigger).good()) {
+        check(Clock::now() < deadline, "map change trigger timeout");
+        client.silence(25);
+    }
+    client.send(netwire::ContentReady, ready.data, offered.header.session, offered.header.generation);
+    const Message welcomed = client.receive();
+    check(welcomed.header.type == netwire::Welcome, "stale map generation did not admit valid content");
+    check(welcomed.header.generation != offered.header.generation, "server did not welcome current map");
+    std::printf("welcome_generation=%u stale_generation_ready_admitted=1\n", welcomed.header.generation);
+}
+void fakeServer(unsigned port, const std::string &mode) {
+    Endpoint server(port, true);
+    std::puts("listening=1"); std::fflush(stdout);
+    const Message request = server.receive(30);
+    check(request.header.type == netwire::Hello, "client did not send Hello");
+    netwire::Reader helloReader(request.body.data(), request.body.size());
+    const uint32_t fingerprint = helloReader.u32();
+    helloReader.text(15); helloReader.u8(); helloReader.u8(); helloReader.u8();
+    check(helloReader.u32() == netassets::ManifestVersion && helloReader.end(), "client omitted manifest capability");
+    netwire::Writer response;
+    uint32_t type = netwire::ContentManifest;
+    if (mode == "old-reject") {
+        type = netwire::Reject;
+        response.text("Invalid client profile", 160);
+    } else if (mode == "no-manifest") {
+        type = netwire::Welcome;
+    } else {
+        response.u32(fingerprint);
+        response.u32(netassets::ManifestVersion);
+        if (mode == "bad-count") response.u32(uint32_t(netassets::MaxAssets + 1));
+        else if (mode == "truncated") {
+            response.u32(1);
+            response.text("archive:system", netassets::MaxAssetKey);
+            response.text("BLOOD.RFF", netassets::MaxAssetName);
+            response.u32(100); response.u32(0);
+            response.u8(0); // Only one of the required sixteen digest bytes.
+        } else throw std::runtime_error("unknown fake server mode");
+    }
+    server.send(type, response.data, 0x73492811u, 1);
+    if (mode == "old-reject") enet_peer_disconnect_later(server.peer, 0);
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    Message message;
+    while (Clock::now() < deadline && !server.disconnected)
+        check(!server.poll(message), "client sent gameplay or content approval after invalid manifest");
+    check(server.disconnected, "client did not disconnect after invalid manifest");
+    std::puts("invalid_server_disconnected=1 content_ready_sent=0");
+}
+}
+int main(int argc, char **argv) {
+    try {
+        check(argc >= 4, "usage: peer probe|server PORT MODE [CRC [TRIGGER]]");
+        check(enet_initialize() == 0, "ENet init");
+        const unsigned port = unsigned(std::strtoul(argv[2], nullptr, 10));
+        check(port && port <= 65535, "invalid port");
+        if (std::string(argv[1]) == "probe")
+            probe(port, argv[3], argc > 4 ? uint32_t(std::strtoul(argv[4], nullptr, 10)) : 0, argc > 5 ? argv[5] : "");
+        else fakeServer(port, argv[3]);
+        enet_deinitialize();
+        return 0;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "FAIL: %s\n", error.what());
+        return 1;
+    }
+}

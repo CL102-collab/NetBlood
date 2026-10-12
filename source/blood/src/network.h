@@ -119,6 +119,7 @@ bool netServerBeginTick();
 void netServerEndTick();
 void netOnLevelStarted();
 void netClientPump();
+void netDrawConnectionStatus();
 void netPrintStatus();
 void netDisconnect();
 bool netStartPacketRecording(const char *path);

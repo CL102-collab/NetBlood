@@ -56,10 +56,18 @@ def snapshot_hashes(text, server=False):
 
 
 class Game:
-    def __init__(self, name, args, root, library, port=None, dedicated=False, playback=None, renderer=None, listen=False):
+    def __init__(self, name, args, root, library, port=None, dedicated=False, playback=None, renderer=None, listen=False,
+                 initial_files=None, launch_map=None):
         self.name = name
         self.path = root / name
         self.path.mkdir()
+        for relative, source in (initial_files or {}).items():
+            target = self.path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(source, bytes):
+                target.write_bytes(source)
+            else:
+                shutil.copy2(source, target)
         self.fifo = self.path / "input.fifo"
         os.mkfifo(self.fifo)
         self.events = os.open(self.fifo, os.O_RDWR | os.O_NONBLOCK)
@@ -92,10 +100,12 @@ class Game:
             environment.update(SDL_VIDEODRIVER="network-test-invalid-video-driver",
                                SDL_AUDIODRIVER="network-test-invalid-audio-driver", NETWORK_TEST_HEADLESS="1")
             command += ["-dedicated", "-server", "8", "-port", str(port), "-gametype", "coop"]
+            if launch_map:
+                command += [f"-map={launch_map}"]
         elif playback:
-            command += ["-map", "E1M1"]
+            command += [f"-map={launch_map or 'E1M1'}"]
         elif listen:
-            command += ["-server", "8", "-port", str(port), "-gametype", "coop", "-map", "E1M1"]
+            command += ["-server", "8", "-port", str(port), "-gametype", "coop", f"-map={launch_map or 'E1M1'}"]
         else:
             command += ["-client", "127.0.0.1", "-port", str(port)]
         self.command = command

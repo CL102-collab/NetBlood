@@ -109,7 +109,17 @@ int main()
     w = initialWorld(); w->sectors[0].value.wallnum = 5; rejected(*w, "sector range outside world");
     w = initialWorld(); w->walls[1].value.point2 = 1; rejected(*w, "merged/nonclosing wall loop");
     w = initialWorld(); w->walls[1].value.nextwall = 2; rejected(*w, "portal missing paired sector");
-    w = initialWorld(); w->walls[1].value.nextwall = 2; w->walls[1].value.nextsector = 0; rejected(*w, "asymmetric portal");
+    w = initialWorld(); w->walls[1].value.nextwall = 2; w->walls[1].value.nextsector = 0;
+    require(netSnapshotValidate(encode(*w), error), "bounded asymmetric legacy portal accepted");
+    w->walls[1].value.nextwall = 4; rejected(*w, "portal wall index outside world");
+    w = initialWorld(); w->walls[1].value.nextwall = 2; w->walls[1].value.nextsector = 1;
+    rejected(*w, "portal sector index outside world");
+    w = initialWorld(); w->sectors[0].value.wallnum = 2; w->walls.resize(2);
+    w->walls[1].value.point2 = 0;
+    require(netSnapshotValidate(encode(*w), error), "E6M7 two-wall sector accepted");
+    w = initialWorld(); w->walls[0].value.overpicnum = -1;
+    require(netSnapshotValidate(encode(*w), error), "unused legacy overlay sentinel accepted");
+    w->walls[0].value.cstat = 16; rejected(*w, "visible negative overlay rejected");
     w = initialWorld(); w->sprites[0].extra.reference = 1; rejected(*w, "mismatched extended sprite reference");
     w = initialWorld(); w->sprites[0].nextSector = 0; rejected(*w, "cyclic sector sprite list");
     w = initialWorld(); w->sprites[0].nextStatus = 0; rejected(*w, "cyclic status sprite list");

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 
 namespace {
 unsigned checks;
@@ -59,6 +60,14 @@ void framing()
     }
     bad = encoded; field(bad, 8, 0); CHECK(!decode(bad));
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
+    static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
+                  "Existing packet and demo message IDs must not change");
+    for (uint32_t type = netwire::Hello; type < netwire::TypeCount; ++type) {
+        header.type = type;
+        CHECK(decode(netwire::encode(header, payload)));
+    }
+    header.type = netwire::TypeCount; CHECK(netwire::encode(header, payload).empty());
+    bad = encoded; field(bad, 8, netwire::TypeCount); CHECK(!decode(bad));
     header.type = netwire::Hello;
     CHECK(netwire::encode(header, std::vector<uint8_t>(netwire::MaxPayload+1)).empty());
     CHECK(netwire::newer(1, 0) && netwire::newer(1, 0xffffffffu));
@@ -154,6 +163,112 @@ void commands()
     CHECK(queue.pop(source) && source.sequence == 1025);
     std::puts("PASS: command validation, triplicate suppression, gaps, reorder, wrap and bounded lead");
 }
+void mapTransfer()
+{
+    netwire::MapRequestPayload request;
+    request.slotGeneration = 0x08070605;
+    request.mapCRC = 0x78563412;
+    request.offset = netwire::MapChunkBytes;
+    netwire::Writer writer;
+    CHECK(netwire::writeMapRequest(writer, request));
+    CHECK(writer.data == std::vector<uint8_t>({5,6,7,8, 0x12,0x34,0x56,0x78, 0,0x40,0,0}));
+    const auto requestBytes = writer.data;
+    for (uint32_t offset = 0; offset <= netwire::MaxMapBytes; offset += netwire::MapChunkBytes) {
+        request.offset = offset;
+        writer = netwire::Writer();
+        CHECK(netwire::writeMapRequest(writer, request));
+        netwire::Reader reader(writer.data.data(), writer.data.size());
+        netwire::MapRequestPayload decoded;
+        CHECK(netwire::readMapRequest(reader, decoded) && reader.end());
+        CHECK(decoded.slotGeneration == request.slotGeneration && decoded.mapCRC == request.mapCRC && decoded.offset == offset);
+    }
+    for (size_t length = 0; length < requestBytes.size(); ++length) {
+        netwire::Reader reader(requestBytes.data(), length);
+        netwire::MapRequestPayload decoded; decoded.slotGeneration = 91;
+        CHECK(!netwire::readMapRequest(reader, decoded) && decoded.slotGeneration == 91);
+    }
+    for (uint32_t offset : {1u, netwire::MapChunkBytes-1, netwire::MaxMapBytes+1,
+                            netwire::MaxMapBytes+netwire::MapChunkBytes, UINT32_MAX}) {
+        request.offset = offset;
+        writer = netwire::Writer(); writer.data = {19};
+        CHECK(!netwire::writeMapRequest(writer, request) && writer.data == std::vector<uint8_t>({19}));
+        auto invalid = requestBytes; field(invalid, 8, offset);
+        netwire::Reader reader(invalid.data(), invalid.size());
+        netwire::MapRequestPayload decoded;
+        CHECK(!netwire::readMapRequest(reader, decoded));
+    }
+    auto trailing = requestBytes; trailing.push_back(0);
+    netwire::Reader requestTrailing(trailing.data(), trailing.size());
+    CHECK(!netwire::readMapRequest(requestTrailing, request));
+
+    std::vector<uint8_t> payload(netwire::MapChunkBytes);
+    for (auto &byte : payload) byte = uint8_t(randomValue());
+    netwire::MapDataPayload chunk;
+    chunk.mapCRC = 0x78563412; chunk.data = payload.data();
+    for (uint32_t total : {1u, netwire::MapChunkBytes-1, netwire::MapChunkBytes,
+                           netwire::MapChunkBytes+1, 2*netwire::MapChunkBytes-1,
+                           netwire::MaxMapBytes-1, netwire::MaxMapBytes}) {
+        chunk.totalBytes = total;
+        for (uint32_t offset = 0; offset < total; offset += netwire::MapChunkBytes) {
+            chunk.offset = offset;
+            chunk.length = std::min(netwire::MapChunkBytes, total-offset);
+            writer = netwire::Writer();
+            CHECK(netwire::writeMapData(writer, chunk));
+            CHECK(writer.data.size() == 16+chunk.length);
+            netwire::Reader reader(writer.data.data(), writer.data.size());
+            netwire::MapDataPayload decoded;
+            CHECK(netwire::readMapData(reader, decoded) && reader.end());
+            CHECK(decoded.mapCRC == chunk.mapCRC && decoded.totalBytes == total &&
+                  decoded.offset == offset && decoded.length == chunk.length);
+            CHECK(decoded.data == writer.data.data()+16 &&
+                  std::equal(decoded.data, decoded.data+decoded.length, payload.begin()));
+        }
+    }
+    chunk.totalBytes = netwire::MapChunkBytes+1; chunk.offset = 0; chunk.length = netwire::MapChunkBytes;
+    writer = netwire::Writer(); CHECK(netwire::writeMapData(writer, chunk));
+    const auto fullChunk = writer.data;
+    CHECK(std::vector<uint8_t>(fullChunk.begin(), fullChunk.begin()+16) ==
+          std::vector<uint8_t>({0x12,0x34,0x56,0x78, 1,0x40,0,0, 0,0,0,0, 0,0x40,0,0}));
+    for (size_t length = 0; length < fullChunk.size(); ++length) {
+        netwire::Reader reader(fullChunk.data(), length);
+        netwire::MapDataPayload decoded; decoded.mapCRC = 91;
+        CHECK(!netwire::readMapData(reader, decoded) && decoded.mapCRC == 91 && !decoded.data);
+    }
+    for (auto invalidField : {std::make_pair(4u, 0u), std::make_pair(4u, netwire::MaxMapBytes+1),
+                              std::make_pair(4u, UINT32_MAX), std::make_pair(8u, 1u),
+                              std::make_pair(8u, chunk.totalBytes), std::make_pair(8u, UINT32_MAX),
+                              std::make_pair(12u, 0u), std::make_pair(12u, netwire::MapChunkBytes-1),
+                              std::make_pair(12u, netwire::MapChunkBytes+1), std::make_pair(12u, UINT32_MAX)}) {
+        auto invalid = fullChunk; field(invalid, invalidField.first, invalidField.second);
+        netwire::Reader reader(invalid.data(), invalid.size());
+        netwire::MapDataPayload decoded; decoded.mapCRC = 91;
+        CHECK(!netwire::readMapData(reader, decoded) && decoded.mapCRC == 91 && !decoded.data);
+    }
+    trailing = fullChunk; trailing.push_back(0);
+    netwire::Reader chunkTrailing(trailing.data(), trailing.size());
+    netwire::MapDataPayload decoded;
+    CHECK(!netwire::readMapData(chunkTrailing, decoded));
+    // Transfer bytes are opaque. The file's complete CRC is verified after
+    // assembly; changing payload bytes is valid wire data, not a framing error.
+    auto changed = fullChunk; changed.back() ^= 0xff;
+    netwire::Reader changedReader(changed.data(), changed.size());
+    CHECK(netwire::readMapData(changedReader, decoded) && decoded.data[decoded.length-1] == changed.back());
+    for (unsigned invalid = 0; invalid < 7; ++invalid) {
+        auto bad = chunk;
+        switch (invalid) {
+            case 0: bad.totalBytes = 0; break;
+            case 1: bad.totalBytes = netwire::MaxMapBytes+1; break;
+            case 2: bad.offset = 1; break;
+            case 3: bad.offset = bad.totalBytes; break;
+            case 4: bad.length = 0; break;
+            case 5: bad.length = netwire::MapChunkBytes+1; break;
+            case 6: bad.data = nullptr; break;
+        }
+        writer = netwire::Writer(); writer.data = {19};
+        CHECK(!netwire::writeMapData(writer, bad) && writer.data == std::vector<uint8_t>({19}));
+    }
+    std::puts("PASS: map requests/chunks, golden bytes, maximum maps, partial final chunks, truncation and bounds");
+}
 void snapshots()
 {
     std::vector<uint8_t> baseline(32768);
@@ -217,21 +332,25 @@ void malformedCorpus()
         netwire::Header header;
         netwire::Reader body(nullptr, 0);
         if (netwire::decode(bytes.data(), bytes.size(), header, body)) {
-            CHECK(header.type >= netwire::Hello && header.type <= netwire::Event);
+            CHECK(header.type >= netwire::Hello && header.type < netwire::TypeCount);
             CHECK(body.size + netwire::HeaderSize == bytes.size());
         }
         netwire::Reader command(bytes.data(), bytes.size()); netwire::Command ignored;
         netwire::readCommand(command, ignored);
+        netwire::Reader request(bytes.data(), bytes.size()); netwire::MapRequestPayload ignoredRequest;
+        netwire::readMapRequest(request, ignoredRequest);
+        netwire::Reader chunk(bytes.data(), bytes.size()); netwire::MapDataPayload ignoredChunk;
+        netwire::readMapData(chunk, ignoredChunk);
         std::string error;
         const std::vector<uint8_t> sentinel = {1,2,3}; auto output = sentinel;
         bool accepted = netSnapshotUnpack(bytes, nullptr, output, error);
         CHECK(!accepted && output == sentinel);
     }
-    std::puts("PASS: 30000 deterministic malformed wire/command/snapshot inputs");
+    std::puts("PASS: 30000 deterministic malformed wire/command/map/snapshot inputs");
 }
 }
 int main()
 {
-    framing(); commands(); snapshots(); malformedCorpus();
+    framing(); commands(); mapTransfer(); snapshots(); malformedCorpus();
     std::printf("PASS: network codecs (%u assertions)\n", checks);
 }

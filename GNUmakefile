@@ -797,9 +797,11 @@ blood_game_objs := \
 	misc.cpp \
 	network.cpp \
 	netcontent.cpp \
+	netcontentreport.cpp \
 	netdemo.cpp \
 	netevents.cpp \
 	netlag.cpp \
+	netmap.cpp \
 	netpredict.cpp \
 	netsnapshot.cpp \
 	netsnapshot_codec.cpp \

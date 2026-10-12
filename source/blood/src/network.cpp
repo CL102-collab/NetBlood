@@ -75,9 +75,11 @@ PKT_STARTGAME gPacketStartGame;
 #include "levels.h"
 #include "misc.h"
 #include "netcontent.h"
+#include "netcontentreport.h"
 #include "netdemo.h"
 #include "netevents.h"
 #include "netlag.h"
+#include "netmap.h"
 #include "netpredict.h"
 #include "netprotocol.h"
 #include "netsnapshot.h"
@@ -85,6 +87,8 @@ PKT_STARTGAME gPacketStartGame;
 
 #include <algorithm>
 #include <deque>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -93,6 +97,7 @@ extern void MenuSetupEpisodeInfo(void);
 int gNetPacketCopies = 3;
 int gNetSnapshotRate = 20;
 static_assert(kWeaponMax == netwire::WeaponCount, "Update the wire weapon range when adding weapons");
+static_assert(netmap::MaxBytes == netwire::MaxMapBytes, "Map storage and wire limits must agree");
 namespace
 {
 using Bytes = std::vector<uint8_t>;
@@ -101,12 +106,23 @@ struct CachedSnapshot
     uint32_t id = 0;
     Bytes    state;
 };
+struct MapWindow
+{
+    unsigned pendingPackets = 0;
+};
 struct ClientSlot
 {
 #ifndef NETCODE_DISABLE
     ENetPeer *peer = nullptr;
 #endif
-    uint32_t              generation = 0, received[12] = {}, snapshotAck = 0, fullSnapshotTime = 0;
+    uint32_t              generation = 0, received[netwire::TypeCount] = {}, snapshotAck = 0, fullSnapshotTime = 0;
+    uint32_t              mapDownloadNext = 0;
+    uint32_t              mapWindowEnd = 0;
+    bool                  mapDownloadStarted = false;
+    bool                  mapRequestPending = false;
+    bool                  contentOffered = false;
+    uint32_t              contentFingerprint = 0;
+    std::shared_ptr<MapWindow> mapWindow;
     bool                  admitted = false, active = false, ready = false, pendingReady = false, pendingDrop = false, pendingLoops = false;
     netwire::CommandQueue commands;
     GINPUT                lastInput     = {};
@@ -114,12 +130,13 @@ struct ClientSlot
 };
 ClientSlot                   slots[8];
 uint32_t                     session = 0, mapGeneration = 0, sendSequence = 0, serverTick = 0, snapshotId = 0, commandSequence = 0;
-uint32_t                     clientSlotGeneration = 0, clientReceived[12] = {}, clientSnapshot = 0, clientMapCRC = 0, lastSnapshotTime = 0;
+uint32_t                     clientSlotGeneration = 0, clientReceived[netwire::TypeCount] = {}, clientSnapshot = 0, clientMapCRC = 0, lastSnapshotTime = 0;
 uint32_t                     nextTickTime = 0, lastSnapshotTick = 0, playbackStart = 0;
 bool                         initialized = false, clientLoaded = false, clientSnapshotReady = false, servicing = false, demoPlayback = false, serverInTick = false;
 size_t                       pendingClientBytes = 0;
 unsigned                     snapshotBudget     = 0;
 uint32_t                     contentCRC         = 0;
+bool                         clientContentChecked = false;
 NetDemoInfo                  replayInfo;
 bool                         replayFirstWelcome  = false;
 bool                         playbackEndReported = false;
@@ -130,6 +147,11 @@ std::deque<CachedSnapshot>   snapshotCache;
 std::deque<netwire::Command> commandHistory;
 std::deque<Bytes>            pendingClientPackets;
 Bytes                        lastWelcome, lastRecordedSnapshot;
+Bytes                        serverMapBytes, clientMapBytes;
+GAMEOPTIONS                  clientMapOptions = {};
+uint32_t                     clientMapSize = 0, clientMapProgressTime = 0;
+bool                         clientDownloadingMap = false, mapDownloadDisconnected = false;
+std::string                  mapDownloadError;
 struct ClientLevelOverride
 {
     int       episode, level;
@@ -244,22 +266,44 @@ Bytes envelope(uint32_t type, const Bytes &body)
     return netwire::encode(h, body);
 }
 #ifndef NETCODE_DISABLE
-void sendTo(ENetPeer *peer, uint32_t type, const Bytes &body, bool reliable = true)
+void ENET_CALLBACK releaseMapPacket(void *opaque)
+{
+    auto *packet = static_cast<ENetPacket *>(opaque);
+    auto *window = static_cast<std::shared_ptr<MapWindow> *>(packet->userData);
+    --(*window)->pendingPackets;
+    delete window;
+}
+bool sendTo(ENetPeer *peer, uint32_t type, const Bytes &body, bool reliable = true, std::shared_ptr<MapWindow> window = {})
 {
     if (!peer)
-        return;
+        return false;
     Bytes wire = envelope(type, body);
     if (wire.empty())
-        return;
+        return false;
     const int   channel = type == netwire::Commands ? CommandChannel : type == netwire::Snapshot && !reliable ? SnapshotChannel : ControlChannel;
     enet_uint32 flags   = reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT;
     ENetPacket *packet  = enet_packet_create(wire.data(), wire.size(), flags);
     if (!packet)
-        return;
+        return false;
+    if (window)
+    {
+        auto *reference = new (std::nothrow) std::shared_ptr<MapWindow>(window);
+        if (!reference)
+        {
+            enet_packet_destroy(packet);
+            return false;
+        }
+        ++window->pendingPackets;
+        packet->userData = reference;
+        packet->freeCallback = releaseMapPacket;
+    }
     if (enet_peer_send(peer, channel, packet) < 0)
+    {
         enet_packet_destroy(packet);
-    else
-        sentMessages++;
+        return false;
+    }
+    sentMessages++;
+    return true;
 }
 void sendReject(ENetPeer *peer, const char *why)
 {
@@ -308,7 +352,8 @@ bool prepareClientLevel(const GAMEOPTIONS &options)
     }
     EPISODEINFO &episode = gEpisodeInfo[options.nEpisode];
     LEVELINFO   &level   = episode.levelsInfo[options.nLevel];
-    if (Bstrcasecmp(level.Filename, options.zLevelName))
+    const bool cachedMap = netMapResolve(options.zLevelName) != options.zLevelName;
+    if (Bstrcasecmp(level.Filename, options.zLevelName) || cachedMap)
     {
         bool saved = false;
         for (auto &entry : clientLevelOverrides)
@@ -323,7 +368,9 @@ bool prepareClientLevel(const GAMEOPTIONS &options)
         char definition[BMAX_PATH + 8];
         Bstrncpyz(definition, options.zLevelName, sizeof(definition));
         ChangeExtension(definition, ".DEF");
-        IniFile   metadata(definition);
+        // A cached map's canonical name belongs to the server. Do not use it
+        // to probe an unrelated local .DEF (including absolute server paths).
+        IniFile   metadata(cachedMap ? nullptr : definition);
         LEVELINFO local = {};
         Bstrncpyz(local.Filename, options.zLevelName, sizeof(local.Filename));
         levelLoadMapInfo(&metadata, &local, nullptr);
@@ -336,6 +383,38 @@ bool prepareClientLevel(const GAMEOPTIONS &options)
     MenuSetupEpisodeInfo();
     return true;
 }
+void failMapDownload(const std::string &reason)
+{
+    LOG_F(ERROR, "NET map download failed: %s", reason.c_str());
+    netDisconnect();
+    gStartNewGame = false;
+    mapDownloadError = reason;
+    viewSetErrorMessage("Map download failed; see console for details");
+}
+bool startClientMap()
+{
+    if (!prepareClientLevel(clientMapOptions))
+    {
+        failMapDownload("Invalid map filename or level indices");
+        return false;
+    }
+    gGameOptions = clientMapOptions;
+    configureStart(clientMapOptions);
+    gPacketStartGame.userMap = 0;
+    gStartNewGame = true;
+    clientDownloadingMap = false;
+    Bytes().swap(clientMapBytes);
+    return true;
+}
+#ifndef NETCODE_DISABLE
+void requestMapWindow()
+{
+    netwire::Writer w;
+    netwire::MapRequestPayload request = {clientSlotGeneration, clientMapCRC, uint32_t(clientMapBytes.size())};
+    if (netwire::writeMapRequest(w, request))
+        sendTo(serverPeer, netwire::RequestMap, w.data);
+}
+#endif
 void removePlayer(int p)
 {
     if (p < 0 || p >= 8)
@@ -373,7 +452,38 @@ void sendWelcome(int p)
     w.bytes(packed.data(), packed.size());
     sendTo(slots[p].peer, netwire::Welcome, w.data);
     slots[p].ready       = false;
+    slots[p].pendingReady = false;
     slots[p].snapshotAck = 0;
+    slots[p].mapDownloadNext = 0;
+    slots[p].mapDownloadStarted = false;
+    slots[p].mapRequestPending = false;
+    slots[p].mapWindow.reset();
+}
+void pumpMapDownloads()
+{
+    if (!netIsServer() || !gGameStarted || gStartNewGame)
+        return;
+    for (auto &c : slots)
+    {
+        // A request acknowledges receipt at the application layer, but is not
+        // proof of ENet acknowledgements. Keep at most one transport window
+        // queued even if a peer guesses and pipelines later request offsets.
+        if (!c.peer || !c.mapRequestPending || c.ready || c.pendingReady || (c.mapWindow && c.mapWindow->pendingPackets))
+            continue;
+        if (!c.mapWindow)
+            c.mapWindow = std::make_shared<MapWindow>();
+        while (c.mapDownloadNext < c.mapWindowEnd)
+        {
+            uint32_t length = std::min(netwire::MapChunkBytes, uint32_t(serverMapBytes.size()) - c.mapDownloadNext);
+            netwire::MapDataPayload chunk = {gGameOptions.uMapCRC, uint32_t(serverMapBytes.size()), c.mapDownloadNext,
+                                             length, serverMapBytes.data() + c.mapDownloadNext};
+            netwire::Writer w;
+            if (!netwire::writeMapData(w, chunk) || !sendTo(c.peer, netwire::MapData, w.data, true, c.mapWindow))
+                break;
+            c.mapDownloadNext += length;
+        }
+        c.mapRequestPending = c.mapDownloadNext < c.mapWindowEnd;
+    }
 }
 #endif
 Bytes snapshotBody(const Bytes &canonical, uint32_t id, uint32_t baseline, const Bytes *base)
@@ -454,6 +564,13 @@ bool recordServerSnapshot(const Bytes &state, uint32_t id)
     }
     return true;
 }
+void failContentCheck(std::vector<netassets::Issue> issues, const std::string &reason)
+{
+    netDisconnect();
+    gStartNewGame = false;
+    netContentReportShow(std::move(issues), reason);
+    viewSetErrorMessage("Game content mismatch. Check the listed files and restart with the server's mod.");
+}
 bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
 {
     netwire::Header h;
@@ -463,10 +580,60 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         malformedMessages++;
         return false;
     }
+    if (h.type == netwire::ContentManifest)
+    {
+        // Content is checked before a map, snapshot, or download can start.
+        // This control exchange is deliberately excluded from packet demos.
+        if (replay || clientContentChecked || (session && session != h.session))
+            return false;
+        uint32_t fingerprint = r.u32();
+        std::vector<netassets::Asset> required;
+        std::string error;
+        if (!h.session || !netassets::decodeManifest(r, required, error))
+        {
+            malformedMessages++;
+            failContentCheck({}, "Cannot check the server's mod: invalid asset manifest. Use compatible client and server versions.");
+            return false;
+        }
+        auto issues = netContentDifferences(required);
+        LOG_F(INFO, "NET content check local=%08x remote=%08x assets=%u issues=%u", contentCRC, fingerprint,
+              unsigned(required.size()), unsigned(issues.size()));
+        if (!issues.empty())
+        {
+            failContentCheck(std::move(issues), "Required mod assets are missing, different, or not loaded. Install and select the server's mod, then restart.");
+            return false;
+        }
+        if (fingerprint != contentCRC)
+        {
+            LOG_F(ERROR, "NET game content mismatch local=%08x remote=%08x", contentCRC, fingerprint);
+            failContentCheck({}, "The listed server files match, but effective game definitions differ. Check extra overrides, mod selection and load order, then restart.");
+            return false;
+        }
+#ifndef NETCODE_DISABLE
+        session = h.session;
+        netwire::Writer w;
+        w.u32(fingerprint);
+        if (!sendTo(serverPeer, netwire::ContentReady, w.data))
+        {
+            failContentCheck({}, "The server disconnected during the mod check. Reconnect to try again.");
+            return false;
+        }
+        clientContentChecked = true;
+        LOG_F(INFO, "NET content verified assets=%u", unsigned(required.size()));
+        return true;
+#else
+        return false;
+#endif
+    }
     if (h.type == netwire::Welcome)
     {
         if (!replay && session && h.session != session)
             return false;
+        if (!replay && !clientContentChecked)
+        {
+            failContentCheck({}, "The server did not provide an asset manifest. Update the server to a compatible version.");
+            return false;
+        }
         if (mapGeneration == h.generation && clientReceived[h.type] && !netwire::newer(h.sequence, clientReceived[h.type]))
         {
             duplicateMessages++;
@@ -529,21 +696,40 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         snapshotCache.clear();
         netPredictReset();
         netEventsReset();
-        gGameOptions = options;
-        if (!prepareClientLevel(options))
-        {
-            LOG_F(ERROR, "NET bootstrap requires a valid map filename and indices");
-            return false;
-        }
-        configureStart(options);
-        gPacketStartGame.userMap = 0;
-        gStartNewGame            = true;
+        netMapClear();
+        clientMapOptions = options;
+        clientMapBytes.clear();
+        clientMapSize = 0;
+        clientDownloadingMap = mapDownloadDisconnected = false;
+        mapDownloadError.clear();
+        gStartNewGame = false;
         lastWelcome.assign(data, data + size);
         if (netDemoIsRecording() && !replay)
             netDemoRecordPacket(0, lastWelcome, true);
         serverTick = 0;
         LOG_F(INFO, "NET welcome slot=%d generation=%u map_generation=%u map_crc=%08x", slot, slotGeneration, mapGeneration, crc);
+        if (netMapPrepare(options.zLevelName, crc, error))
+            return startClientMap();
+        if (replay)
+        {
+            failMapDownload("Map is unavailable for offline playback; join a server with this map first");
+            return false;
+        }
+#ifndef NETCODE_DISABLE
+        if (!serverPeer)
+        {
+            failMapDownload("Server disconnected before map transfer");
+            return false;
+        }
+        clientDownloadingMap = true;
+        clientMapProgressTime = timerGetTicks();
+        LOG_F(INFO, "NET map download started crc=%08x generation=%u", crc, mapGeneration);
+        requestMapWindow();
         return true;
+#else
+        failMapDownload("Networking is disabled");
+        return false;
+#endif
     }
     if (h.type == netwire::Reject)
     {
@@ -551,7 +737,12 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         if (r.end())
         {
             LOG_F(ERROR, "NET rejected: %s", reason.c_str());
-            viewSetErrorMessage(reason.c_str());
+            if (!replay && !clientContentChecked && reason == "Invalid client profile")
+                failContentCheck({}, "The server rejected the join format. Update the server and client to compatible versions with mod asset checking.");
+            else if (clientDownloadingMap)
+                failMapDownload(reason);
+            else
+                viewSetErrorMessage(reason.c_str());
         }
         return false;
     }
@@ -559,6 +750,38 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
     {
         duplicateMessages++;
         return false;
+    }
+    if (h.type == netwire::MapData)
+    {
+        if (replay || !clientDownloadingMap)
+            return false;
+        netwire::MapDataPayload chunk;
+        if (!netwire::readMapData(r, chunk) || chunk.mapCRC != clientMapCRC || chunk.offset != clientMapBytes.size()
+            || (clientMapSize && chunk.totalBytes != clientMapSize))
+        {
+            malformedMessages++;
+            failMapDownload("Invalid map transfer chunk");
+            return false;
+        }
+        clientMapSize = chunk.totalBytes;
+        clientMapBytes.insert(clientMapBytes.end(), chunk.data, chunk.data + chunk.length);
+        clientMapProgressTime = timerGetTicks();
+        if (clientMapBytes.size() == clientMapSize)
+        {
+            std::string error;
+            if (!netMapInstall(clientMapOptions.zLevelName, clientMapCRC, clientMapBytes, error))
+            {
+                failMapDownload(error);
+                return false;
+            }
+            LOG_F(INFO, "NET map download complete crc=%08x bytes=%u", clientMapCRC, clientMapSize);
+            return startClientMap();
+        }
+#ifndef NETCODE_DISABLE
+        if (clientMapBytes.size() % (netwire::MapChunkBytes * netwire::MapWindowChunks) == 0)
+            requestMapWindow();
+#endif
+        return true;
     }
     if (h.type == netwire::Snapshot)
     {
@@ -733,17 +956,12 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
     }
     if (h.type == netwire::Hello)
     {
-        if (c.admitted)
+        if (c.admitted || c.contentOffered)
             return;
         uint32_t fingerprint = r.u32();
-        if (fingerprint != contentCRC)
-        {
-            LOG_F(ERROR, "NET game content mismatch local=%08x remote=%08x", contentCRC, fingerprint);
-            sendReject(peer, "Game content mismatch");
-            return;
-        }
         std::string name = r.text(MAXPLAYERNAME - 1);
         int         aim = r.u8(), weapon = r.u8(), skill = r.u8();
+        uint32_t capability = r.pos < r.size ? r.u32() : 0;
         if (!r.end() || aim > 2 || weapon > 3 || skill > 4)
         {
             sendReject(peer, "Invalid client profile");
@@ -753,7 +971,55 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         gProfile[slot].nAutoAim      = aim;
         gProfile[slot].nWeaponSwitch = weapon;
         gProfile[slot].skill         = skill;
+        if (capability)
+        {
+            if (capability != netassets::ManifestVersion)
+            {
+                sendReject(peer, "Unsupported asset manifest version; update client and server");
+                return;
+            }
+            Bytes manifest;
+            std::string error;
+            if (!netassets::encodeManifest(netContentManifest(), manifest, error))
+            {
+                LOG_F(ERROR, "NET cannot provide content manifest: %s", error.c_str());
+                sendReject(peer, "Server cannot describe its mod assets; check the server log");
+                return;
+            }
+            netwire::Writer w;
+            w.u32(contentCRC);
+            w.bytes(manifest.data(), manifest.size());
+            c.contentOffered = true;
+            c.contentFingerprint = fingerprint;
+            if (!sendTo(peer, netwire::ContentManifest, w.data))
+                sendReject(peer, "Server could not send the mod asset manifest");
+            return;
+        }
+        // Older clients can still join with the original fingerprint check.
+        // Their protocol cannot display per-file diagnostics.
+        if (fingerprint != contentCRC)
+        {
+            LOG_F(ERROR, "NET game content mismatch local=%08x remote=%08x", contentCRC, fingerprint);
+            sendReject(peer, "Game content mismatch; install the server's mod or update the client for file details");
+            return;
+        }
         c.admitted                   = true;
+        sendWelcome(slot);
+        return;
+    }
+    if (h.type == netwire::ContentReady)
+    {
+        // The server can change maps while the client checks files. Admission
+        // is session-scoped; sendWelcome describes the current map generation.
+        if (!c.contentOffered || c.admitted || h.session != session)
+            return;
+        uint32_t fingerprint = r.u32();
+        if (!r.end() || fingerprint != contentCRC || c.contentFingerprint != contentCRC)
+        {
+            sendReject(peer, "Game content mismatch; select the server's mod and restart");
+            return;
+        }
+        c.admitted = true;
         sendWelcome(slot);
         return;
     }
@@ -764,7 +1030,40 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         duplicateMessages++;
         return;
     }
-    if (h.type == netwire::Ready)
+    if (h.type == netwire::RequestMap)
+    {
+        netwire::MapRequestPayload request;
+        if (!netwire::readMapRequest(r, request) || request.slotGeneration != c.generation || request.mapCRC != gGameOptions.uMapCRC)
+        {
+            malformedMessages++;
+            return;
+        }
+        // Serve only the map currently running on this server. A peer cannot
+        // choose a filename, restart a transfer, or queue unbounded windows.
+        if (!gGameStarted || gStartNewGame || c.ready || c.pendingReady || c.mapRequestPending || request.offset != c.mapDownloadNext
+            || (c.mapDownloadStarted && !request.offset))
+            return;
+        if (serverMapBytes.empty())
+        {
+            std::string error;
+            if (!netMapRead(gGameOptions.zLevelName, serverMapBytes, error)
+                || !netMapValidate(serverMapBytes, gGameOptions.uMapCRC, error))
+            {
+                serverMapBytes.clear();
+                LOG_F(ERROR, "NET map transfer unavailable: %s", error.c_str());
+                sendReject(peer, "Server cannot provide the current map");
+                return;
+            }
+        }
+        if (request.offset >= serverMapBytes.size())
+            return;
+        if (!c.mapDownloadStarted)
+            LOG_F(INFO, "NET map upload started slot=%d crc=%08x bytes=%u", slot, request.mapCRC, unsigned(serverMapBytes.size()));
+        c.mapDownloadStarted = true;
+        c.mapRequestPending = true;
+        c.mapWindowEnd = std::min(uint32_t(serverMapBytes.size()), request.offset + netwire::MapChunkBytes * netwire::MapWindowChunks);
+    }
+    else if (h.type == netwire::Ready)
     {
         uint32_t generation = r.u32(), crc = r.u32();
         if (!r.end() || generation != c.generation || crc != gGameOptions.uMapCRC)
@@ -1005,6 +1304,14 @@ void netDeinitialize(void)
     demoPlayback = false;
     serverInTick = false;
     restoreClientLevels();
+    netMapClear();
+    Bytes().swap(serverMapBytes);
+    Bytes().swap(clientMapBytes);
+    clientDownloadingMap = mapDownloadDisconnected = false;
+    clientMapSize = 0;
+    mapDownloadError.clear();
+    clientContentChecked = false;
+    netContentReportClear();
 #ifndef NETCODE_DISABLE
     if (host)
     {
@@ -1088,6 +1395,7 @@ void netUpdate(void)
                 w.u8(ClipRange(gAutoAim, 0, 2));
                 w.u8(ClipRange(gWeaponSwitch, 0, 3));
                 w.u8(ClipRange(gSkill, 0, 4));
+                w.u32(netassets::ManifestVersion);
                 sendTo(serverPeer, netwire::Hello, w.data);
             }
         }
@@ -1118,11 +1426,13 @@ void netUpdate(void)
             {
                 serverPeer          = nullptr;
                 clientSnapshotReady = false;
+                mapDownloadDisconnected = clientDownloadingMap;
                 netLagometerDisconnect(true);
                 LOG_F(WARNING, "NET disconnected from server");
             }
         }
     }
+    pumpMapDownloads();
     enet_host_flush(host);
     servicing = false;
 #endif
@@ -1137,6 +1447,11 @@ void netClientPump()
     netUpdate();
     if (!netIsClient())
         return;
+    if (clientDownloadingMap && (mapDownloadDisconnected || timerGetTicks() - clientMapProgressTime > 30000))
+    {
+        failMapDownload(mapDownloadDisconnected ? "Server disconnected during map transfer" : "Map transfer timed out");
+        return;
+    }
     if (demoPlayback)
     {
         Bytes    packet;
@@ -1146,7 +1461,8 @@ void netClientPump()
         {
             if (!netDemoReplayPacket(packet.data(), packet.size()))
             {
-                LOG_F(ERROR, "NET demo contains an invalid protocol packet");
+                if (mapDownloadError.empty())
+                    LOG_F(ERROR, "NET demo contains an invalid protocol packet");
                 netDemoStopPlayback();
                 playbackEndReported = true;
                 break;
@@ -1178,6 +1494,29 @@ void netClientPump()
     if (wasRecording && !netDemoIsRecording() && !netDemoLastError().empty())
         LOG_F(ERROR, "NET demo recording failed: %s", netDemoLastError().c_str());
 }
+void netDrawConnectionStatus()
+{
+    if (gDedicated)
+        return;
+    if (netContentReportDraw())
+        return;
+    if (clientDownloadingMap)
+    {
+        char progress[80];
+        if (clientMapSize)
+            Bsnprintf(progress, sizeof(progress), "%u%% (%u / %u KB)", unsigned(clientMapBytes.size() * 100 / clientMapSize),
+                      unsigned((clientMapBytes.size() + 1023) / 1024), unsigned((clientMapSize + 1023) / 1024));
+        else
+            Bstrncpyz(progress, "Waiting for server", sizeof(progress));
+        viewDrawText(3, "Downloading map", 160, 85, -128, 0, 1, 1);
+        viewDrawText(3, progress, 160, 100, -128, 0, 1, 1);
+    }
+    else if (!mapDownloadError.empty() && !gGameStarted)
+    {
+        viewDrawText(3, "Map download failed", 160, 85, -128, 0, 1, 1);
+        viewDrawText(3, "See console for details", 160, 100, -128, 0, 1, 1);
+    }
+}
 void netOnLevelStarted()
 {
     if (!netIsLive())
@@ -1186,6 +1525,7 @@ void netOnLevelStarted()
     netEventsReset();
     if (netIsServer())
     {
+        Bytes().swap(serverMapBytes);
         commandSequence = 0;
         if (netDemoIsRecording())
         {

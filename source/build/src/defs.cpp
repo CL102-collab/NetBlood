@@ -149,6 +149,22 @@ static const char *skyfaces[6] =
 
 static int32_t defsparser(scriptfile *script);
 
+void (*g_defAssetLoadedCallback)(const char *fn) = nullptr;
+
+static int32_t defsCheckFileExist(const char* fn)
+{
+    int32_t const result = check_file_exist(fn);
+    if (!result && g_defAssetLoadedCallback) g_defAssetLoadedCallback(fn);
+    return result;
+}
+
+static buildvfs_kfd defsOpenFile(const char* fn)
+{
+    auto const file = kopen4load(fn, 0);
+    if (file != buildvfs_kfd_invalid && g_defAssetLoadedCallback) g_defAssetLoadedCallback(fn);
+    return file;
+}
+
 static void defsparser_include(const char *fn, const scriptfile *script, const char *cmdtokptr)
 {
     scriptfile *included;
@@ -249,7 +265,7 @@ static void Defs_ApplyPaletteToTileBuffer(int32_t const tsiz, int32_t const pal)
 
 static int32_t Defs_ImportTileFromTexture(char const * const fn, int32_t const tile, int32_t const alphacut, int32_t istexture)
 {
-    if (check_file_exist(fn))
+    if (defsCheckFileExist(fn))
         return -1;
 
     int32_t xsiz = 0, ysiz = 0;
@@ -402,6 +418,7 @@ public:
 
 static int32_t defsparser(scriptfile *script)
 {
+    if (g_defAssetLoadedCallback) g_defAssetLoadedCallback(script->filename);
     int32_t tokn;
     char *cmdtokptr;
 #ifdef USE_DEF_PROGRESS
@@ -557,7 +574,7 @@ static int32_t defsparser(scriptfile *script)
             if (scriptfile_getnumber(script,&fnoo)) break; //y-size
             if (scriptfile_getstring(script,&fn))  break;
 
-            if (check_file_exist(fn))
+            if (defsCheckFileExist(fn))
                 break;
 
 #ifdef USE_OPENGL
@@ -577,7 +594,7 @@ static int32_t defsparser(scriptfile *script)
             {
                 if (scriptfile_getstring(script,&fn[i])) break; //grab the 6 faces
 
-                if (check_file_exist(fn[i]))
+                if (defsCheckFileExist(fn[i]))
                     happy = 0;
             }
             if (i < 6 || !happy) break;
@@ -764,7 +781,7 @@ static int32_t defsparser(scriptfile *script)
                 break;
             }
 
-            buildvfs_kfd const fil = kopen4load(fn, 0);
+            buildvfs_kfd const fil = defsOpenFile(fn);
             if (EDUKE32_PREDICT_FALSE(fil == buildvfs_kfd_invalid))
             {
                 LOG_F(ERROR, "%s:%d: artfile: couldn't open %s", script->filename, scriptfile_getlinum(script,cmdtokptr), fn);
@@ -1270,6 +1287,7 @@ static int32_t defsparser(scriptfile *script)
 
 #ifdef USE_OPENGL
             lastmodelid = md_loadmodel(modelfn);
+            if (lastmodelid >= 0 && g_defAssetLoadedCallback) g_defAssetLoadedCallback(modelfn);
             if (EDUKE32_PREDICT_FALSE(lastmodelid < 0))
             {
                 LOG_F(WARNING, "Failed loading MD2/MD3 model %s", modelfn);
@@ -1391,7 +1409,7 @@ static int32_t defsparser(scriptfile *script)
             if (seenframe) { modelskin = ++lastmodelskin; }
             seenframe = 0;
 
-            if (check_file_exist(skinfn))
+            if (defsCheckFileExist(skinfn))
                 break;
 
             if (EDUKE32_PREDICT_FALSE(lastmodelid < 0))
@@ -1450,6 +1468,7 @@ static int32_t defsparser(scriptfile *script)
                 break;
             }
 
+            if (g_defAssetLoadedCallback) g_defAssetLoadedCallback(fn);
             lastvoxid = nextvoxid++;
         }
         break;
@@ -1510,6 +1529,7 @@ static int32_t defsparser(scriptfile *script)
             if (scriptfile_getbraces(script,&modelend)) break;
 #ifdef USE_OPENGL
             lastmodelid = md_loadmodel(modelfn);
+            if (lastmodelid >= 0 && g_defAssetLoadedCallback) g_defAssetLoadedCallback(modelfn);
             if (EDUKE32_PREDICT_FALSE(lastmodelid < 0))
             {
                 LOG_F(ERROR, "Failed loading MD2/MD3 model %s", modelfn);
@@ -1778,7 +1798,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    if (check_file_exist(skinfn))
+                    if (defsCheckFileExist(skinfn))
                         break;
 
                     if (EDUKE32_PREDICT_FALSE(lastmodelid < 0))
@@ -1998,6 +2018,7 @@ static int32_t defsparser(scriptfile *script)
                 break;
             }
 
+            if (g_defAssetLoadedCallback) g_defAssetLoadedCallback(fn);
             lastvoxid = nextvoxid++;
 
             while (script->textptr < voxelend)
@@ -2146,7 +2167,7 @@ static int32_t defsparser(scriptfile *script)
                     happy = 0;
                 }
                 // FIXME?
-                if (check_file_exist(fn[i]))
+                if (defsCheckFileExist(fn[i]))
                     happy = 0;
             }
             if (!happy) break;
@@ -2204,11 +2225,11 @@ static int32_t defsparser(scriptfile *script)
                 break;
             }
 
-            if (check_file_exist(fn))
+            if (defsCheckFileExist(fn))
                 break;
 
 #ifdef POLYMER
-            fd = kopen4load(fn, 0);
+            fd = defsOpenFile(fn);
 
             // load the highpalookup and send it to polymer
             highpaldata = (char *)Xmalloc(PR_HIGHPALOOKUP_DATA_SIZE);
@@ -2504,7 +2525,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    if (EDUKE32_PREDICT_FALSE(check_file_exist(fn)))
+                    if (EDUKE32_PREDICT_FALSE(defsCheckFileExist(fn)))
                         break;
 
                     if (xsiz > 0 && ysiz > 0)
@@ -2580,7 +2601,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    if (EDUKE32_PREDICT_FALSE(check_file_exist(fn)))
+                    if (EDUKE32_PREDICT_FALSE(defsCheckFileExist(fn)))
                         break;
 
 #ifdef USE_OPENGL
@@ -2988,7 +3009,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    buildvfs_kfd const fil = kopen4load(fn, 0);
+                    buildvfs_kfd const fil = defsOpenFile(fn);
                     if (EDUKE32_PREDICT_FALSE(fil == buildvfs_kfd_invalid))
                     {
                         LOG_F(ERROR, "%s:%d: basepalette: couldn't open %s", script->filename, scriptfile_getlinum(script,cmdtokptr), fn);
@@ -3160,7 +3181,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    buildvfs_kfd const fil = kopen4load(fn, 0);
+                    buildvfs_kfd const fil = defsOpenFile(fn);
                     if (EDUKE32_PREDICT_FALSE(fil == buildvfs_kfd_invalid))
                     {
                         LOG_F(ERROR, "%s:%d: palookup: couldn't open %s", script->filename, scriptfile_getlinum(script,cmdtokptr), fn);
@@ -3450,7 +3471,7 @@ static int32_t defsparser(scriptfile *script)
                         break;
                     }
 
-                    buildvfs_kfd const fil = kopen4load(fn, 0);
+                    buildvfs_kfd const fil = defsOpenFile(fn);
                     if (EDUKE32_PREDICT_FALSE(fil == buildvfs_kfd_invalid))
                     {
                         LOG_F(ERROR, "%s:%d: blendtable: couldn't open %s", script->filename, scriptfile_getlinum(script,cmdtokptr), fn);

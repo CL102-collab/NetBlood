@@ -2020,6 +2020,7 @@ int app_main(int argc, char const * const * argv)
 
     levelLoadDefaults();
 
+    g_defAssetLoadedCallback = netContentTrackDefinition;
     loaddefinitionsfile(BLOODWIDESCREENDEF);
     loaddefinitions_game(BLOODWIDESCREENDEF, FALSE);
 
@@ -2031,6 +2032,7 @@ int app_main(int argc, char const * const * argv)
         LOG_F(INFO, "Definitions file \"%s\" loaded in %d ms.", deffile, etime-stime);
     }
     loaddefinitions_game(deffile, FALSE);
+    g_defAssetLoadedCallback = nullptr;
 
     // Freeze content identity before dynamic fire/view initialization changes tiles.
     netContentCRC();
@@ -2359,6 +2361,7 @@ RESTART:
                 break;
             }
             frameJustDrawn = true;
+            netDrawConnectionStatus();
             videoNextPage();
         }
         //scrNextPage();
@@ -2564,6 +2567,7 @@ static void parsedefinitions_game_animsounds(scriptfile *pScript, const char * b
 
 static int parsedefinitions_game(scriptfile *pScript, int firstPass)
 {
+    if (!firstPass) netContentTrackDefinition(pScript->filename);
     int   token;
     char *pToken;
 
@@ -2700,6 +2704,8 @@ static int parsedefinitions_game(scriptfile *pScript, int firstPass)
                 if (S_DefineMusic(musicID, fileName) == -1)
                     LOG_F(ERROR, "%s:%d: error: invalid music ID",
                                  pScript->filename, scriptfile_getlinum(pScript, tokenPtr));
+                else
+                    netContentTrackDefinition(fileName);
             }
         }
         break;
@@ -3141,6 +3147,7 @@ bool LoadArtFile(const char *pzFile)
     for (int i = artheader.tilestart; i <= artheader.tileend; i++)
         tileUpdatePicSiz(i);
     kclose(hFile);
+    netContentTrackFile(pzFile, true);
     return true;
 }
 

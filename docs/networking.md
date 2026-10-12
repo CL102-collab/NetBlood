@@ -7,8 +7,9 @@ then reconcile with acknowledged server snapshots. Remote players and moving
 geometry interpolate between snapshots. Prediction never applies damage or
 runs weapon callbacks on a client.
 
-All participants need this protocol and matching game content. Older lockstep
-multiplayer clients cannot connect. Legacy demo playback remains available.
+All participants need this protocol and matching game content. Missing or
+different maps are downloaded automatically. Older lockstep multiplayer clients
+cannot connect. Legacy demo playback remains available.
 
 ## Hosting and joining
 
@@ -35,8 +36,61 @@ the server runs. A joining client loads the map and receives a complete snapshot
 before entering play; the server continues while that client loads.
 
 The port uses UDP. Clients connect directly to the server address. The server
-checks protocol, content and map identity; it does not distribute missing game
-assets or maps.
+checks protocol, content and map identity.
+
+### Automatic map downloads
+
+When a joining client's installed map is missing or has a different checksum,
+the client first checks its download cache, then requests the server's current
+map if necessary. This also works when the server changes maps. A progress
+indicator appears while downloading; the client enters play only after the
+complete map passes checksum and format validation. Other players and the
+server continue running during the transfer.
+
+Downloads use the existing reliable UDP connection in bounded windows of four
+16 KiB chunks. Maps are limited to 16 MiB. The server serves only its current
+map, and clients cannot request arbitrary server files. Interrupted transfers
+are discarded; a later connection starts a fresh transfer.
+
+Validated maps are stored in `.nblood-map-cache/` under the game's working
+configuration directory (`-usecwd` uses the current directory). Generated cache
+filenames use the map identity, never the server's path. Installed maps are not
+overwritten. The cache is checked again before reuse; corrupted files trigger a
+fresh download. If downloading or saving fails, joining stops with an error in
+the console. The cache can be removed while the game is closed to reclaim space.
+
+Only the `.MAP` file is transferred. Base game archives, artwork, sounds, and
+other mod assets must already match. Optional companion files such as map
+metadata (`.DEF`), music and map hacks are not downloaded. Maps that require
+these resources should be distributed with their mod as usual.
+
+## Missing or different mod assets
+
+Before downloading a map or entering the game, clients check the server's
+required asset manifest. A failed check shows each affected filename, its
+expected size in bytes, and its expected MD5 checksum. The report distinguishes
+missing files, different contents (including changes with the same file size),
+and correct files that are present but were not loaded by the selected mod.
+Use Page Up and Page Down to browse the error screen. The full report is also
+written to the game log and `net-content-mismatch.txt` in the current game
+configuration directory. For example:
+
+```text
+NET asset missing: EXAMPLE.DAT | size=0 bytes | md5=d41d8cd98f00b204e9800998ecf8427e
+```
+
+The values describe the server's required file, so they can be compared with
+the mod package using `md5sum` or another MD5 utility. Install and select the
+same mod on both machines, then restart; the game freezes its content inventory
+at startup. Mod assets are not downloaded automatically.
+
+The inventory covers selected RFF archives, ART files, external resource
+overrides, loaded definition scripts and their tracked asset dependencies.
+Maps use the separate map-transfer check. If files match but effective gameplay
+definitions differ, the error advises checking extra overrides and load order.
+File diagnostics require updated clients and servers. Earlier authoritative
+clients retain their original fingerprint check and receive a shorter error.
+MD5 identifies file contents here; it is not a signature or an authenticity check.
 
 ## Console controls
 
@@ -110,6 +164,12 @@ recorded multiple times. Playback uses the authoritative snapshot path and does
 not simulate the world again. Hot joins, disconnects and map transitions are
 represented by the recorded authoritative state.
 
+Downloaded maps remain in the cache for offline packet-demo playback. Map bytes
+are not embedded in the demo: moving a recording to another machine also
+requires its maps, or that machine must first join a server to download them.
+An unavailable map stops playback with an error instead of trying to download
+from an offline server.
+
 The legacy `-record` input recorder and existing demo playback/validation remain
 available for offline sessions. Legacy demos have a fixed roster in their
 header and cannot describe hot joins; live sessions use packet demos. Original
@@ -129,7 +189,8 @@ sprite slot. Server AI pointers and event queues remain server-private.
 
 Relevant code is in `source/blood/src/network.cpp`, `netprotocol.h`,
 `netsnapshot*.cpp`, `netpredict.cpp`, `netevents.cpp`, `netdemo.cpp` and
-`netlag.cpp`. The GNU build and Windows project include these files.
+`netlag.cpp`. Asset checks and reports use `netcontent*.cpp` and `netassets.h`.
+The GNU build and Windows project include these files.
 
 Protocol and real-socket tests are under `tests/network/`. The integration
 runner starts real game processes and exercises delayed joins, movement,

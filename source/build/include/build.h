@@ -1677,6 +1677,8 @@ int32_t md_undefinetile(int32_t tile);
 int32_t md_undefinemodel(int32_t modelid);
 
 int32_t loaddefinitionsfile(const char *fn);
+// Optional observer for successfully opened definition files and their assets.
+extern void (*g_defAssetLoadedCallback)(const char *fn);
 
 // if loadboard() fails with -2 return, try loadoldboard(). if it fails with
 // -2, board is dodgy

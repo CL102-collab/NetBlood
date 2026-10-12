@@ -30,6 +30,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "misc.h"
 #include "globals.h"
 #include "sound.h"
+#include "netcontent.h"
 
 static Resource gBarfRes;
 
@@ -476,6 +477,7 @@ void ParseScript(const char *scriptFileName)
         pathsearchmode = bakpathsearchmode;
         return;
     }
+    netContentTrackFile(scriptFileName, true);
 
     gParseLevel = 0;
     dword_44CE0[0] = 0;

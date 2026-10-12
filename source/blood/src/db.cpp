@@ -35,6 +35,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "db.h"
 #include "netsnapshot.h"
+#include "netmap.h"
 #include "iob.h"
 #include "eventq.h"
 #ifdef NOONE_EXTENSIONS
@@ -725,6 +726,7 @@ MAPHEADER2 byte_19AE44;
 
 unsigned int dbReadMapCRC(const char *pPath)
 {
+    pPath = netMapResolve(pPath);
     char name2[BMAX_PATH];
     byte_1A76C7 = 0;
     byte_1A76C8 = 0;
@@ -790,6 +792,7 @@ const int nXSpriteSize = 56;
 const int nXWallSize = 24;
 
 int dbLoadMap(const char *pPath, int *pX, int *pY, int *pZ, short *pAngle, short *pSector, unsigned int *pCRC) {
+    pPath = netMapResolve(pPath);
     char name2[BMAX_PATH]; int16_t tpskyoff[256];
 
     memset(show2dsector,0,sizeof(show2dsector));

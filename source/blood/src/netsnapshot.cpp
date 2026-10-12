@@ -171,7 +171,7 @@ void wallFields(Archive& io, uwalltype& v)
     F(nextsector, -1, kMaxSectors-1)
     F(cstat, 0, 65535)
     F(picnum, 0, kMaxTiles-1)
-    F(overpicnum, 0, kMaxTiles-1)
+    F(overpicnum, -1, kMaxTiles-1)
     F(shade, -128, 127)
     F(pal, 0, 255)
     F(xrepeat, 0, 255)
@@ -737,7 +737,8 @@ bool validateWorld(const ClientWorld& world, std::string& error)
     for (size_t i = 0; i < ns; ++i)
     {
         auto const& s = world.sectors[i];
-        if (size_t(s.value.wallptr) >= nw || size_t(s.value.wallptr)+s.value.wallnum > nw || s.value.wallnum < 3)
+        // E6M7 contains a two-wall sector that the original engine accepts.
+        if (size_t(s.value.wallptr) >= nw || size_t(s.value.wallptr)+s.value.wallnum > nw || s.value.wallnum < 2)
             return fail("invalid snapshot sector wall range");
         for (int j = s.value.wallptr; j < s.value.wallptr+s.value.wallnum; ++j)
         {
@@ -758,12 +759,11 @@ bool validateWorld(const ClientWorld& world, std::string& error)
         if (++wallIncoming[s.value.point2] != 1) return fail("snapshot wall loops merge instead of closing");
         if ((s.value.nextwall < 0) != (s.value.nextsector < 0) ||
             s.value.nextwall >= int(nw) || s.value.nextsector >= int(ns)) return fail("invalid snapshot wall portal");
-        if (s.value.nextwall >= 0)
-        {
-            auto const& other = world.walls[s.value.nextwall].value;
-            if (other.nextwall != int(i) || other.nextsector != wallSector[i] || wallSector[s.value.nextwall] != s.value.nextsector)
-                return fail("asymmetric snapshot wall portal");
-        }
+        // Shipped CP02 has stale nextsector ownership and E3M5 contains an
+        // asymmetric portal. Preserve their bounded legacy topology instead
+        // of requiring reciprocal links that the original maps do not have.
+        if (s.value.overpicnum < 0 && (s.value.cstat & (16 | 32)))
+            return fail("invalid snapshot visible wall overlay");
         if (s.value.extra > 0)
         {
             if (xWallSeen[s.value.extra] || s.extension.reference != int(i)) return fail("invalid snapshot wall extension reference");
