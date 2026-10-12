@@ -674,7 +674,8 @@ bool stateFields(Archive& io, ClientWorld& v)
             s.hit.hit = int32_t(io.number(s.hit.hit, INT32_MIN, INT32_MAX));
             s.hit.ceilhit = int32_t(io.number(s.hit.ceilhit, INT32_MIN, INT32_MAX));
             s.hit.florhit = int32_t(io.number(s.hit.florhit, INT32_MIN, INT32_MAX));
-            s.visualAiType = int32_t(io.number(s.visualAiType, 0, 65535));
+            // Preserve kAiStateOther (-1) and custom-monster death posture (-2).
+            s.visualAiType = int32_t(io.number(s.visualAiType, -2, 65535));
             s.attachedHand = io.number(s.attachedHand, 0, 1) != 0;
         }
     }

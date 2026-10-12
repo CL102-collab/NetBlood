@@ -82,6 +82,47 @@ void fieldRejected(ClientWorld& world)
     Archive writer(bytes, error);
     require(!stateFields(writer, world), "out-of-range native field rejected");
 }
+
+void visualAiTypeBounds()
+{
+    auto world = initialWorld();
+    auto const zero = encode(*world);
+    world->sprites[0].visualAiType = 65535;
+    auto const reference = encode(*world);
+    require(reference.size() == zero.size(), "AI state keeps the fixed-width schema");
+    // Locate this scalar through the production encoder, without hard-coding
+    // offsets into the variable-length world representation.
+    size_t const offset = std::mismatch(zero.begin(), zero.end(), reference.begin()).first - zero.begin();
+    require(offset + 4 <= zero.size(), "AI state field found in snapshot");
+    auto wireValue = [&](int32_t value) {
+        auto bytes = zero;
+        for (unsigned i = 0; i < 4; ++i) bytes[offset+i] = uint8_t(uint32_t(value) >> (8*i));
+        return bytes;
+    };
+    require(wireValue(65535) == reference, "AI state is one little-endian 32-bit scalar");
+    for (int32_t value : {-2, -1, 0, 65535})
+    {
+        world->sprites[0].visualAiType = value;
+        std::vector<uint8_t> bytes;
+        std::string error;
+        Archive writer(bytes, error);
+        require(stateFields(writer, *world), "valid visual AI state marker encodes");
+        require(bytes == wireValue(value), "AI state marker preserves its exact wire bits");
+        auto decoded = std::unique_ptr<ClientWorld>(new ClientWorld());
+        require(decode(bytes, *decoded, error), "valid visual AI state marker decodes");
+        require(decoded->sprites[0].visualAiType == value, "AI state signed value survives decoding");
+        require(encode(*decoded) == bytes, "AI state roundtrip is byte exact");
+    }
+    for (int32_t value : {-3, 65536, INT32_MIN, INT32_MAX})
+    {
+        world->sprites[0].visualAiType = value;
+        fieldRejected(*world);
+        auto decoded = std::unique_ptr<ClientWorld>(new ClientWorld());
+        std::string error;
+        require(!decode(wireValue(value), *decoded, error), "invalid visual AI state wire value rejected");
+        require(!error.empty(), "invalid visual AI state reports a reason");
+    }
+}
 }
 
 int main()
@@ -98,6 +139,8 @@ int main()
     require(netSnapshotGetOptions(good, options, mask, error), error.c_str());
     require(mask == 1 && options.uMapCRC == 0x12345678 && !strcmp(options.zLevelName, "E1M1"), "bootstrap metadata");
     require(decoded->players[0].ammoCount[3] == 17 && decoded->sprites[0].generation == 41, "HUD and generation fields");
+
+    visualAiTypeBounds();
 
     w = initialWorld(); w->players[0].weaponAmmo = 12; rejected(*w, "HUD ammunition index bound");
     w = initialWorld(); w->players[0].packItemId = kPackMax; rejected(*w, "HUD inventory index bound");
