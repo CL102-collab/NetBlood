@@ -82,6 +82,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "levels.h"
 #include "misc.h"
 #include "netcontent.h"
+#include "netcompat.h"
 #include "netcontentreport.h"
 #include "netdemo.h"
 #include "netevents.h"
@@ -198,6 +199,8 @@ std::deque<VoteCooldownEntry> voteCooldowns;
 uint32_t                     clientMapSize = 0, clientMapProgressTime = 0;
 bool                         clientDownloadingMap = false, mapDownloadDisconnected = false;
 std::string                  mapDownloadError;
+bool                         clientVersionReceived = false;
+std::vector<std::string>      clientVersionError;
 struct ClientLevelOverride
 {
     int       episode, level;
@@ -356,6 +359,41 @@ void sendReject(ENetPeer *peer, const char *why)
     netwire::Writer w;
     w.text(why, 160);
     sendTo(peer, netwire::Reject, w.data);
+    enet_peer_disconnect_later(peer, 1);
+}
+bool sendConnectionPacket(ENetPeer *peer, Bytes wire)
+{
+    if (!peer || wire.empty()) return false;
+    ENetPacket *packet = enet_packet_create(wire.data(), wire.size(), ENET_PACKET_FLAG_RELIABLE);
+    if (!packet) return false;
+    if (enet_peer_send(peer, ControlChannel, packet) < 0)
+    {
+        enet_packet_destroy(packet);
+        return false;
+    }
+    ++sentMessages;
+    return true;
+}
+void sendServerVersion(ENetPeer *peer)
+{
+    netcompat::ServerInfo info;
+    info.build = s_buildRev;
+    info.build.resize(std::min(info.build.size(), netcompat::MaxBuild));
+    for (char& ch : info.build)
+        if (static_cast<unsigned char>(ch) < 32 || static_cast<unsigned char>(ch) > 126) ch = '?';
+    sendConnectionPacket(peer, netcompat::encodeServerInfo(info));
+}
+void rejectClientVersion(ENetPeer *peer, uint32_t clientVersion)
+{
+    char reason[161];
+    Bsnprintf(reason, sizeof(reason), "Your client uses network version %u; this server requires %u. %s",
+        clientVersion, netwire::Version, clientVersion < netwire::Version
+            ? "Please update your game and reconnect."
+            : "Ask the server administrator to update, or use a matching game version.");
+    LOG_F(WARNING, "NET rejected client version client=%u required=%u: %s", clientVersion, netwire::Version, reason);
+    // Diagnostic-only framing in the client's advertised protocol lets older
+    // decoders read the rejection without accepting any older gameplay packets.
+    sendConnectionPacket(peer, netcompat::encodeReject(clientVersion ? clientVersion : netwire::Version, reason));
     enet_peer_disconnect_later(peer, 1);
 }
 #endif
@@ -1229,8 +1267,57 @@ void failContentCheck(std::vector<netassets::Issue> issues, const std::string &r
     netContentReportShow(std::move(issues), reason);
     viewSetErrorMessage("Game content mismatch. Check the listed files and restart with the server's mod.");
 }
+void failClientVersion(uint32_t required, const std::string &build)
+{
+    // Tear down outside the ENet service loop, then retain the error on the
+    // pre-game screen until the user starts another connection or leaves it.
+    netDisconnect();
+    gStartNewGame = false;
+    char detail[128];
+    Bsnprintf(detail, sizeof(detail), "Your network version: %u. Server requires: %u.", netwire::Version, required);
+    if (!required)
+        clientVersionError = {"Invalid server version information", "Please update the server and reconnect."};
+    else if (netwire::Version < required)
+        clientVersionError = {"Your game version is too old", detail, "Please update your game and reconnect."};
+    else
+        clientVersionError = {"The server uses an older game version", detail,
+            "Ask the server administrator to update,", "or use a matching game version."};
+    LOG_F(ERROR, "NET version mismatch client=%u required=%u build=%s: %s", netwire::Version, required,
+        build.c_str(), clientVersionError.back().c_str());
+    viewSetErrorMessage(clientVersionError.front().c_str());
+}
 bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
 {
+    if (!replay && netcompat::isServerInfo(data, size))
+    {
+        if (clientVersionReceived || clientContentChecked || clientSnapshotReady) return false;
+        netcompat::ServerInfo info;
+        if (!netcompat::decodeServerInfo(data, size, info))
+        {
+            ++malformedMessages;
+            failClientVersion(0, {});
+            return false;
+        }
+        LOG_F(INFO, "NET server version required=%u client=%u build=%s", info.requiredProtocol, netwire::Version, info.build.c_str());
+        if (info.requiredProtocol != netwire::Version)
+        {
+            failClientVersion(info.requiredProtocol, info.build);
+            return false;
+        }
+        clientVersionReceived = true;
+        return true;
+    }
+    if (!replay && !clientVersionReceived && !clientContentChecked && !clientSnapshotReady)
+    {
+        uint32_t protocol = 0;
+        std::string reason;
+        if (netcompat::decodeReject(data, size, protocol, reason) && protocol != netwire::Version)
+        {
+            LOG_F(ERROR, "NET rejected by server version=%u: %s", protocol, reason.c_str());
+            failClientVersion(protocol, {});
+            return false;
+        }
+    }
     netwire::Header h;
     netwire::Reader r(nullptr, 0);
     if (!netwire::decode(data, size, h, r))
@@ -2179,6 +2266,8 @@ void netDeinitialize(void)
     clientMapSize = 0;
     mapDownloadError.clear();
     clientContentChecked = false;
+    clientVersionReceived = false;
+    clientVersionError.clear();
     clientServerRules = {};
     mapVote.cancel();
     voteState = netwire::VoteState::Idle;
@@ -2251,9 +2340,15 @@ void netUpdate(void)
                             slot = p;
                             break;
                         }
-                if (slot < 0 || event.data != netwire::Version)
+                sendServerVersion(event.peer);
+                if (event.data != netwire::Version)
                 {
-                    sendReject(event.peer, slot < 0 ? "Server full" : "Protocol version mismatch");
+                    rejectClientVersion(event.peer, event.data);
+                    continue;
+                }
+                if (slot < 0)
+                {
+                    sendReject(event.peer, "Server full");
                     continue;
                 }
                 uint32_t generation = slots[slot].generation + 1;
@@ -2383,6 +2478,17 @@ void netDrawConnectionStatus()
 {
     if (gDedicated)
         return;
+    if (!clientVersionError.empty())
+    {
+        if (gGameMenuMgr.m_bActive) return;
+        int y = 85;
+        for (auto const& line : clientVersionError)
+        {
+            viewDrawText(3, line.c_str(), 160, y, -128, 0, 1, 1);
+            y += 12;
+        }
+        return;
+    }
     if (netContentReportDraw())
         return;
     if (clientDownloadingMap)
@@ -2453,6 +2559,7 @@ void netDrawCinematic()
 }
 void netOnLevelChanging()
 {
+    clientVersionError.clear();
     if (!netIsServer()) return;
     coopReconnects.clear();
     unsigned const lives = gDedicated && netServerSettings().gameType == kGameTypeCoop ? netServerSettings().coopLives : 0;

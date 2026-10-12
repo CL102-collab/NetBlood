@@ -93,6 +93,25 @@ included in packet demo recording/playback. Legacy input demos remain unchanged.
 The port uses UDP. Clients connect directly to the server address. The server
 checks protocol, content and map identity.
 
+### Client version compatibility
+
+On connection, the server advertises its required network protocol version and
+build label before admitting a player or transferring game content. The current
+required protocol is **7**. Build labels identify the executable for diagnostics;
+compatibility is determined by the network protocol, not by Git revision age.
+
+An older client receives an error showing its version and the server requirement,
+with instructions to update the game and reconnect. A newer client connecting to
+an older server is told to ask the server administrator to update or use a
+matching game version. Updated clients keep this message on the connection
+screen; no map or gameplay state is loaded after an incompatible advertisement.
+
+The version announcement uses a stable connection format separate from gameplay
+packets. A diagnostic rejection also uses the connecting client's advertised
+protocol so earlier clients can read the explanation through their existing
+error handling. Gameplay packets and packet demos still require an exact
+protocol match; legacy input demos are unchanged.
+
 ### Automatic map downloads
 
 When a joining client's installed map is missing or has a different checksum,

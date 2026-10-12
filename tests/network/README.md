@@ -473,6 +473,42 @@ during manifest negotiation, compatibility with old CRC-only clients, malformed
 or truncated manifests, and actionable rejection when a server omits the
 required manifest.
 
+## Connection version compatibility
+
+Standalone checks validate the separate advertisement and diagnostic-rejection
+codecs, malformed/truncated messages and strict gameplay-version rejection:
+
+```sh
+tests/network/compatibility-test.sh
+SANITIZE=1 tests/network/compatibility-test.sh
+```
+
+Exercise the production connection handlers with real UDP and graphical clients:
+
+```sh
+python3 tests/network/client-version.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-client-version-evidence
+```
+
+Run under X11/Xvfb. Servers advertise their required gameplay protocol and
+build label in a separate, version-stable connection message before admission.
+Gameplay packets still require an exact protocol match. An older or newer
+client receives a rejection explaining the mismatch; current clients keep the
+error and update guidance visible after disconnecting, including when an older
+server sends only its historical rejection packet.
+
+The harness checks real-server connections advertising protocols 6, 7 and 8,
+verifies the version/build advertisement arrives first, and confirms mismatched
+peers never enter gameplay. A normal current client must still join. Small ENet
+server fixtures then require older/newer protocols or send an old-format
+rejection to real graphical clients. These cases verify disconnects without
+content approval or gameplay, visible errors retained after three seconds, and
+no unrelated mod-installation report. Screenshots, peer logs, binary digest and
+results are saved beside `result.json`; `--skip-screenshots` omits image captures.
+The existing content-handshake helper also validates the advertisement before
+continuing its admission tests.
+
 ## Standalone impairment relay
 
 ```sh

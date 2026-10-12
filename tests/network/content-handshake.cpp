@@ -3,6 +3,7 @@
 #define ENET_IMPLEMENTATION
 #include "enet.h"
 #include "netassets.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,8 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 using Bytes = std::vector<uint8_t>;
+constexpr uint32_t ServerInfoMagic = 0x3156424eu; // Stable NBV1, independent of gameplay version.
+constexpr uint32_t ServerInfoSchema = 1;
 void check(bool condition, const char *message)
 { if (!condition) throw std::runtime_error(message); }
 struct Message {
@@ -23,8 +26,12 @@ struct Endpoint {
     ENetHost *host = nullptr;
     ENetPeer *peer = nullptr;
     uint32_t sequence = 0;
+    uint32_t wireVersion = netwire::Version, remoteVersion = 0;
+    unsigned advertisements = 0, messagesBeforeAdvertisement = 0;
+    uint32_t requiredProtocol = 0;
+    std::string serverBuild;
     bool disconnected = false;
-    Endpoint(unsigned port, bool server) {
+    Endpoint(unsigned port, bool server, uint32_t version = netwire::Version) : wireVersion(version) {
         ENetAddress address = {};
         char loopback[] = "127.0.0.1";
         check(enet_address_set_host(&address, loopback) == 0, "loopback address");
@@ -35,7 +42,7 @@ struct Endpoint {
         host->packetCopies = 3;
         host->maximumPacketSize = netwire::MaxPayload + netwire::HeaderSize;
         if (!server) {
-            peer = enet_host_connect(host, &address, 3, netwire::Version);
+            peer = enet_host_connect(host, &address, 3, version);
             check(peer != nullptr, "create peer");
             const auto deadline = Clock::now() + std::chrono::seconds(10);
             bool connected = false;
@@ -52,10 +59,7 @@ struct Endpoint {
         if (peer && !disconnected) enet_peer_disconnect_now(peer, 0);
         if (host) enet_host_destroy(host);
     }
-    void send(uint32_t type, const Bytes &body, uint32_t session = 0, uint32_t generation = 0) {
-        netwire::Header h;
-        h.type = type; h.session = session; h.generation = generation; h.sequence = ++sequence;
-        Bytes wire = netwire::encode(h, body);
+    void sendWire(Bytes wire) {
         ENetPacket *packet = enet_packet_create(wire.data(), wire.size(), ENET_PACKET_FLAG_RELIABLE);
         check(packet != nullptr, "allocate packet");
         if (enet_peer_send(peer, 0, packet) < 0) {
@@ -64,11 +68,17 @@ struct Endpoint {
         }
         enet_host_flush(host);
     }
+    void send(uint32_t type, const Bytes &body, uint32_t session = 0, uint32_t generation = 0) {
+        netwire::Header h;
+        h.type = type; h.session = session; h.generation = generation; h.sequence = ++sequence;
+        sendWire(netwire::encode(h, body));
+    }
     bool poll(Message &message, unsigned milliseconds = 20) {
         ENetEvent event;
         if (enet_host_service(host, &event, milliseconds) <= 0) return false;
         if (event.type == ENET_EVENT_TYPE_CONNECT) {
             peer = event.peer;
+            remoteVersion = event.data;
             return false;
         }
         if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
@@ -76,11 +86,35 @@ struct Endpoint {
             return false;
         }
         if (event.type != ENET_EVENT_TYPE_RECEIVE) return false;
-        netwire::Reader body(nullptr, 0);
-        const bool valid = netwire::decode(event.packet->data, event.packet->dataLength, message.header, body);
-        if (valid) message.body.assign(body.data, body.data + body.size);
+        Bytes wire(event.packet->data, event.packet->data + event.packet->dataLength);
         enet_packet_destroy(event.packet);
+        netwire::Reader prefix(wire.data(), wire.size());
+        if (prefix.u32() == ServerInfoMagic) {
+            check(prefix.u32() == ServerInfoSchema, "unsupported server advertisement schema");
+            requiredProtocol = prefix.u32();
+            serverBuild = prefix.text(96);
+            check(prefix.end() && requiredProtocol != 0, "invalid server advertisement");
+            for (unsigned char ch : serverBuild)
+                check(ch >= 32 && ch <= 126, "server advertisement build is not printable ASCII");
+            ++advertisements;
+            return false;
+        }
+        check(wire.size() >= netwire::HeaderSize, "truncated response envelope");
+        netwire::Reader versionReader(wire.data(), wire.size());
+        check(versionReader.u32() == netwire::Magic, "invalid response magic");
+        check(versionReader.u32() == wireVersion, "response does not match the peer's advertised protocol");
+        // An old/new-version probe accepts only its version-stamped diagnostic
+        // rejection. Normalize that header solely to reuse the strict parser.
+        if (wireVersion != netwire::Version) {
+            check(versionReader.u32() == netwire::Reject, "foreign-protocol peer received gameplay");
+            for (unsigned byte = 0; byte < 4; ++byte)
+                wire[4 + byte] = uint8_t(netwire::Version >> (byte * 8));
+        }
+        netwire::Reader body(nullptr, 0);
+        const bool valid = netwire::decode(wire.data(), wire.size(), message.header, body);
+        if (valid) message.body.assign(body.data, body.data + body.size);
         check(valid, "invalid response envelope");
+        if (!advertisements) ++messagesBeforeAdvertisement;
         return true;
     }
     Message receive(unsigned seconds = 10) {
@@ -101,6 +135,93 @@ struct Endpoint {
         }
     }
 };
+
+// Encode independently of netcompat.h so integration tests catch a changed
+// advertisement schema instead of silently inheriting both sides of a mistake.
+Bytes advertisement(uint32_t required, const std::string &build) {
+    netwire::Writer writer;
+    writer.u32(ServerInfoMagic); writer.u32(ServerInfoSchema); writer.u32(required);
+    writer.text(build, 96);
+    return writer.data;
+}
+
+void versionProbe(unsigned port, uint32_t version) {
+    check(version != 0, "client protocol must be nonzero");
+    Endpoint client(port, false, version);
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    std::string reason;
+    bool rejected = false;
+    while (Clock::now() < deadline) {
+        Message message;
+        if (client.poll(message)) {
+            check(client.advertisements == 1 && client.messagesBeforeAdvertisement == 0,
+                  "server sent a gameplay envelope before its version advertisement");
+            check(version != netwire::Version && message.header.type == netwire::Reject && !rejected,
+                  "unexpected gameplay after version advertisement");
+            netwire::Reader reader(message.body.data(), message.body.size());
+            reason = reader.text(160);
+            check(reader.end(), "invalid version rejection reason");
+            std::string lower = reason;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+                return char(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
+            });
+            check(reason.find(std::to_string(netwire::Version)) != std::string::npos &&
+                  reason.find(std::to_string(version)) != std::string::npos &&
+                  lower.find("update") != std::string::npos,
+                  "version rejection omits protocols or update guidance");
+            rejected = true;
+        }
+        if (version == netwire::Version && client.advertisements) break;
+        if (client.disconnected) break;
+    }
+    check(client.advertisements == 1 && client.requiredProtocol == netwire::Version && !client.serverBuild.empty(),
+          "server did not advertise its required protocol and build");
+    check(version == netwire::Version || (rejected && client.disconnected),
+          "incompatible client was not explicitly rejected and disconnected");
+    std::printf("advertisement=1 schema=1 required_protocol=%u client_protocol=%u build=\"%s\" gameplay_messages=0\n",
+                client.requiredProtocol, version, client.serverBuild.c_str());
+    if (rejected)
+        std::printf("rejected=1 reject_protocol=%u disconnected=1 reason=\"%s\"\n", version, reason.c_str());
+}
+
+void versionServer(unsigned port, const std::string &mode) {
+    check(mode == "advert-newer" || mode == "advert-older" || mode == "legacy-reject",
+          "unknown version server mode");
+    const uint32_t required = mode == "advert-newer" ? netwire::Version + 1 : netwire::Version - 1;
+    Endpoint server(port, true);
+    std::printf("listening=1 mode=%s required_protocol=%u\n", mode.c_str(), required);
+    std::fflush(stdout);
+    const auto deadline = Clock::now() + std::chrono::seconds(30);
+    unsigned hellos = 0;
+    bool sent = false;
+    while (Clock::now() < deadline && !server.disconnected) {
+        Message message;
+        const bool received = server.poll(message);
+        if (server.peer && !sent) {
+            if (mode == "legacy-reject") {
+                netwire::Writer reason;
+                reason.text("Protocol version mismatch", 160);
+                netwire::Header header; header.type = netwire::Reject;
+                Bytes wire = netwire::encode(header, reason.data);
+                for (unsigned byte = 0; byte < 4; ++byte)
+                    wire[4 + byte] = uint8_t(required >> (byte * 8));
+                server.sendWire(wire);
+            } else {
+                server.sendWire(advertisement(required, "compat-fixture-protocol-" + std::to_string(required)));
+            }
+            sent = true;
+        }
+        if (received) {
+            check(message.header.type == netwire::Hello && ++hellos <= 1,
+                  "incompatible client sent content approval or gameplay");
+        }
+    }
+    check(sent && server.disconnected, "client did not disconnect after protocol incompatibility");
+    check(server.remoteVersion == netwire::Version, "test client advertised an unexpected protocol");
+    std::printf("version_server_disconnected=1 expected_protocol=%u client_protocol=%u hello_sent=%u "
+                "content_ready_sent=0 ready_sent=0 commands_sent=0\n",
+                required, server.remoteVersion, hellos);
+}
 Bytes hello(uint32_t fingerprint, bool capable = true, uint8_t autoAim = 1, uint8_t skill = 2) {
     netwire::Writer writer;
     writer.u32(fingerprint); writer.text("content-probe", 15);
@@ -248,13 +369,17 @@ void fakeServer(unsigned port, const std::string &mode) {
 }
 int main(int argc, char **argv) {
     try {
-        check(argc >= 4, "usage: peer probe|server PORT MODE [CRC [TRIGGER]]");
+        check(argc >= 4, "usage: peer probe|server|version-server PORT MODE [CRC [TRIGGER]], or version-probe PORT VERSION");
         check(enet_initialize() == 0, "ENet init");
         const unsigned port = unsigned(std::strtoul(argv[2], nullptr, 10));
         check(port && port <= 65535, "invalid port");
         if (std::string(argv[1]) == "probe")
             probe(port, argv[3], argc > 4 ? uint32_t(std::strtoul(argv[4], nullptr, 10)) : 0, argc > 5 ? argv[5] : "");
-        else fakeServer(port, argv[3]);
+        else if (std::string(argv[1]) == "server") fakeServer(port, argv[3]);
+        else if (std::string(argv[1]) == "version-probe")
+            versionProbe(port, uint32_t(std::strtoul(argv[3], nullptr, 10)));
+        else if (std::string(argv[1]) == "version-server") versionServer(port, argv[3]);
+        else throw std::runtime_error("unknown peer mode");
         enet_deinitialize();
         return 0;
     } catch (const std::exception &error) {
