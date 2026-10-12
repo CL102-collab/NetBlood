@@ -206,6 +206,10 @@ configured Bloodbath server admits two graphical clients, including a late
 join, and rejects a third. It checks effective rules on both sides, client
 console map/restart/autoaim denial, and a real one-minute map rotation. A
 separate cooperative server checks episode, difficulty and retained keys.
+Friendly fire is checked with its default disabled value during rotation,
+explicitly enabled in co-op and explicitly disabled in teams. Connected clients
+must receive each setting and retain it through a server restart or map change;
+invalid values and use without `-dedicated` must fail during startup.
 Real ENet probes request forbidden autoaim and difficulty values in their
 profiles; the authoritative player profiles must keep the configured values.
 The output retains exact command lines, process logs, statuses and a binary

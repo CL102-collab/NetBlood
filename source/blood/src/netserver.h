@@ -12,6 +12,7 @@ struct NetServerSettings
     int maxPlayers = 8;
     int autoAim = 1;
     bool weaponsStay = true;
+    bool friendlyFire = false;
     bool mapVoteEnabled = true;
     int timeLimitMinutes = 0;
     int scoreLimit = 0;

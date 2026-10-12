@@ -20,6 +20,9 @@ Use the Multiplayer menu to host or join, or launch from a terminal:
 # Dedicated co-op server, up to eight players, default map E1M1.
 ./nblood -dedicated -server 8 -gametype coop -port 23513
 
+# Dedicated team server with teammate damage enabled.
+./nblood -dedicated -gametype teams -friendlyfire on -port 23513
+
 # Join it, including after the level has already started.
 ./nblood -client 192.168.1.10 -port 23513
 
@@ -34,6 +37,11 @@ assets but creates no window or audio device, reserves no player slot, and
 continues running when everyone disconnects. Players may join and rejoin while
 the server runs. A joining client loads the map and receives a complete snapshot
 before entering play; the server continues while that client loads.
+
+Dedicated servers accept `-friendlyfire on|off`, defaulting to `off`. It controls
+damage between teammates in team games and between players in co-op; self-damage
+is unaffected. The setting persists across map changes and cannot be changed by
+connected clients. `net_status` reports the effective value as `friendly_fire`.
 
 The port uses UDP. Clients connect directly to the server address. The server
 checks protocol, content and map identity.

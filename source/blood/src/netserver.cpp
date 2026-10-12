@@ -306,6 +306,7 @@ void netServerParseOption(const char* name, const char* value)
     else if (!std::strcmp(name, "scorelimit")) settings.scoreLimit = number(name, value, 0, INT_MAX);
     else if (!std::strcmp(name, "autoaim")) settings.autoAim = toggle(name, value);
     else if (!std::strcmp(name, "weaponsstay")) settings.weaponsStay = toggle(name, value);
+    else if (!std::strcmp(name, "friendlyfire")) settings.friendlyFire = toggle(name, value);
     else if (!std::strcmp(name, "mapvote")) settings.mapVoteEnabled = toggle(name, value);
     else if (!std::strcmp(name, "losekeys")) { settings.loseKeys = toggle(name, value); hasLoseKeys = true; }
     else if (!std::strcmp(name, "difficulty")) { settings.difficulty = number(name, value, 0, 4); hasDifficulty = true; }
@@ -386,6 +387,7 @@ void netServerApplySettings()
     gGameOptions.nGameType = settings.gameType;
     gGameOptions.nDifficulty = gGameOptions.nDifficultyQuantity = gGameOptions.nDifficultyHealth = settings.difficulty;
     gGameOptions.nWeaponSettings = settings.weaponsStay ? 1 : 2;
+    gGameOptions.bFriendlyFire = settings.friendlyFire;
     gGameOptions.bPlayerKeys = settings.loseKeys ? LOSTONDEATH : KEPTONRESPAWN;
     if (settings.gameType != kGameTypeCoop) gGameOptions.nMonsterSettings = 0;
     gAutoAim = settings.autoAim;

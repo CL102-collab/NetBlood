@@ -166,11 +166,11 @@ def main():
                              ("difficulty", ("-1", "5", "2x")),
                              ("episode", ("0", "8", "1x")),
                              ("autoaim", ("maybe",)), ("weaponsstay", ("2",)), ("losekeys", ("yes",)),
-                             ("mapvote", ("maybe",)),
+                             ("mapvote", ("maybe",)), ("friendlyfire", ("maybe", "2")),
                              ("gametype", ("invalid",))):
             for index, value in enumerate(values):
                 invalid(f"{flag}-{index}", ["-dedicated", "-" + flag, value], "game type" if flag == "gametype" else flag)
-        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote"):
+        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire"):
             invalid("missing-" + flag, ["-dedicated", "-" + flag], "game type" if flag == "gametype" else flag)
         for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off")):
             invalid("coop-only-" + flag, ["-dedicated", "-gametype", "bloodbath", "-" + flag, value], flag)
@@ -190,10 +190,11 @@ def main():
         invalid("coop-scorelimit", ["-dedicated", "-gametype", "coop", "-scorelimit", "5"], "scorelimit")
         invalid("non-dedicated-rule", ["-maxplayers", "2"], "dedicated")
         invalid("non-dedicated-mapvote", ["-mapvote", "off"], "dedicated")
+        invalid("non-dedicated-friendlyfire", ["-friendlyfire", "on"], "dedicated")
 
         port = free_port()
         expected = {"gametype": 2, "timelimit": 1, "scorelimit": 25, "maxplayers": 2,
-                    "autoaim": 0, "weaponsstay": 1, "rotation_count": 2}
+                    "autoaim": 0, "weaponsstay": 1, "rotation_count": 2, "friendly_fire": 0}
         server_started = time.monotonic()
         server = start("rotation-server", port, True,
                        ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "2",
@@ -263,11 +264,12 @@ def main():
 
         port = free_port()
         coop_expected = {"gametype": 1, "timelimit": 0, "scorelimit": 0, "maxplayers": 1, "autoaim": 1,
-                         "weaponsstay": 0, "difficulty": 4, "losekeys": 0, "episode": 2, "level": 1}
+                         "weaponsstay": 0, "difficulty": 4, "losekeys": 0, "episode": 2, "level": 1,
+                         "friendly_fire": 1}
         coop = start("coop-server", port, True,
                      ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1",
                       "-episode", "2", "-difficulty", "4", "-losekeys", "off", "-autoaim", "on",
-                      "-weaponsstay", "off", "-timelimit", "0", "-scorelimit", "0"])
+                      "-weaponsstay", "off", "-timelimit", "0", "-scorelimit", "0", "-friendlyfire", "on"])
         coop.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                   "configured co-op episode", args.timeout)
         result["phases"]["coop-server"] = status(coop, coop_expected)
@@ -285,12 +287,22 @@ def main():
         coop_client.stop()
         coop.stop()
         port = free_port()
+        teams_expected = {"gametype": 3, "maxplayers": 1, "scorelimit": 20,
+                          "timelimit": 0, "autoaim": 1, "weaponsstay": 1, "friendly_fire": 0}
         teams = start("teams-server", port, True,
-                      ["-dedicated", "-server", "1", "-port", str(port), "-gametype", "teams", "-scorelimit", "20"])
+                      ["-dedicated", "-server", "1", "-port", str(port), "-gametype", "teams", "-scorelimit", "20",
+                       "-friendlyfire", "off"])
         teams.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                    "configured teams server", args.timeout)
-        result["phases"]["teams-server"] = status(teams, {"gametype": 3, "maxplayers": 1, "scorelimit": 20,
-                                                            "timelimit": 0, "autoaim": 1, "weaponsstay": 1})
+        result["phases"]["teams-server"] = status(teams, teams_expected)
+        teams_client = start("teams-client", port)
+        joined(teams_client, timeout=args.timeout)
+        result["phases"]["teams-client"] = status(teams_client, teams_expected)
+        teams.command_text("restartmap")
+        joined(teams_client, count=2, timeout=args.timeout)
+        result["phases"]["teams-server-restart"] = {"server": status(teams, teams_expected),
+                                                      "client": status(teams_client, teams_expected)}
+        teams_client.stop()
         teams.stop()
         result["passed"] = True
     except (Failure, OSError, subprocess.SubprocessError) as error:

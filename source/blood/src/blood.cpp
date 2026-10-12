@@ -1344,6 +1344,7 @@ SWITCH switches[] = {
     { "difficulty", 55, 1 },
     { "losekeys", 56, 1 },
     { "mapvote", 57, 1 },
+    { "friendlyfire", 58, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1383,6 +1384,7 @@ void PrintHelp(void)
         "-scorelimit [n]\tFrag/team score limit; 0 means unlimited (default)\n"
         "-autoaim on|off\tForce autoaim for every player; Default:on\n"
         "-weaponsstay on|off\tKeep picked-up weapons available; Default:on\n"
+        "-friendlyfire on|off\tAllow damage to teammates; Default:off\n"
         "-maplist [file.txt]\tLoop maps from this text filename (one per line)\n"
         "-episode [n]\tCoop episode to play and repeat; starts at 1\n"
         "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
@@ -1713,9 +1715,9 @@ void ParseOptions(void)
             gDedicated = true;
             break;
         case 48: case 49: case 50: case 51: case 52:
-        case 53: case 54: case 55: case 56: case 57:
+        case 53: case 54: case 55: case 56: case 57: case 58:
         {
-            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote" };
+            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire" };
             const char* name = names[option - 48];
             if (OptArgc < 1)
                 ThrowError("Missing argument for -%s", name);

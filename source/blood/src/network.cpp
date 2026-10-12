@@ -2825,10 +2825,11 @@ void netPrintStatus()
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;
-        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u",
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d",
               int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
               int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
-              gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled);
+              gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled,
+              int(gGameOptions.bFriendlyFire));
     }
 #ifndef NETCODE_DISABLE
     if (host)
