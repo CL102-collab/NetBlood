@@ -169,6 +169,116 @@ void queueAdvance(int exitType, const char* reason, bool limit = false)
     gGameOptions.uGameFlags |= kGameFlagContinuing;
     LOG_F(INFO, "NET dedicated map finished: reason=%s map=%s elapsed_ticks=%d", reason, gGameOptions.zLevelName, gLevelTime);
 }
+
+bool voteAllowed(std::string& error)
+{
+    if (!netIsServer())
+        error = "Only a multiplayer server can run map votes.";
+    else if (!settings.mapVoteEnabled)
+        error = "Map voting is disabled on this server.";
+    else if (!gGameStarted || !ready2send || pendingAdvance || gStartNewGame
+             || (gGameOptions.uGameFlags & (kGameFlagContinuing | kGameFlagEnding)))
+        error = "A map change is already in progress.";
+    else
+        return true;
+    return false;
+}
+
+struct VoteNextLevel
+{
+    int episode, level;
+    bool preserveInventory;
+};
+
+bool nextVoteEpisode(VoteNextLevel& target, std::string& error)
+{
+    if (gGameOptions.szUserMap[0])
+    {
+        error = "This map has no next level; vote to restart it instead.";
+        return false;
+    }
+    int episode = gGameOptions.nEpisode;
+    int level = gGameOptions.nLevel;
+    int const selectedEpisode = gDedicated && settings.episode ? settings.episode - 1 : episode;
+    if (episode < 0 || episode >= gEpisodeCount || selectedEpisode < 0 || selectedEpisode >= gEpisodeCount
+        || level < 0 || level >= gEpisodeInfo[episode].nLevels || gEpisodeInfo[selectedEpisode].nLevels < 1)
+    {
+        error = "The server has no valid next level.";
+        return false;
+    }
+    int secret;
+    levelGetNextLevels(episode, level, &level, &secret);
+    bool preserve = true;
+    if (level < 0 || level >= gEpisodeInfo[selectedEpisode].nLevels)
+    {
+        episode = selectedEpisode;
+        level = 0;
+        preserve = false;
+    }
+    if (level >= gEpisodeInfo[episode].nLevels)
+    {
+        error = "The server has no valid next level.";
+        return false;
+    }
+    target = {episode, level, preserve};
+    return true;
+}
+
+bool nextVoteMap(std::string& name, std::string& error)
+{
+    if (gDedicated && !rotation.empty())
+    {
+        name = rotation[(settings.rotationIndex + 1) % rotation.size()];
+        return true;
+    }
+    VoteNextLevel target;
+    if (!nextVoteEpisode(target, error)) return false;
+    // Match netServerAdvanceMap's restored INI metadata after custom maps have
+    // temporarily occupied a stock map's registry slot.
+    if (gDedicated)
+        for (auto const& entry : initialMaps)
+            if (entry.episode == target.episode && entry.level == target.level)
+            {
+                name = entry.metadata.Filename;
+                return true;
+            }
+    name = gEpisodeInfo[target.episode].levelsInfo[target.level].Filename;
+    return true;
+}
+
+bool voteTarget(NetServerVoteAction action, size_t index, std::string& name, std::string& error)
+{
+    int const gameType = gDedicated ? settings.gameType : gGameOptions.nGameType;
+    if (gameType == kGameTypeCoop)
+    {
+        if (action == NetServerVoteAction::Restart)
+        {
+            name = gGameOptions.szUserMap[0] ? gGameOptions.szUserMap : gGameOptions.zLevelName;
+            return true;
+        }
+        if (action == NetServerVoteAction::Next)
+            return nextVoteMap(name, error);
+        error = "Co-op map votes can only restart the current level or advance to the next level.";
+        return false;
+    }
+    if (gameType != kGameTypeBloodBath && gameType != kGameTypeTeams)
+    {
+        error = "Map voting is unavailable for this game mode.";
+        return false;
+    }
+    if (!gDedicated || rotation.empty())
+        error = "Map voting requires a server map rotation in Bloodbath or teams.";
+    else if (action != NetServerVoteAction::Map)
+        error = "Choose a map from the server's rotation.";
+    else if (index >= rotation.size())
+        error = "That map is not in the server's rotation.";
+    else
+    {
+        name = rotation[index];
+        return true;
+    }
+    return false;
+}
 }
 
 const NetServerSettings& netServerSettings() { return settings; }
@@ -195,6 +305,7 @@ void netServerParseOption(const char* name, const char* value)
     else if (!std::strcmp(name, "scorelimit")) settings.scoreLimit = number(name, value, 0, INT_MAX);
     else if (!std::strcmp(name, "autoaim")) settings.autoAim = toggle(name, value);
     else if (!std::strcmp(name, "weaponsstay")) settings.weaponsStay = toggle(name, value);
+    else if (!std::strcmp(name, "mapvote")) settings.mapVoteEnabled = toggle(name, value);
     else if (!std::strcmp(name, "losekeys")) { settings.loseKeys = toggle(name, value); hasLoseKeys = true; }
     else if (!std::strcmp(name, "difficulty")) { settings.difficulty = number(name, value, 0, 4); hasDifficulty = true; }
     else if (!std::strcmp(name, "episode")) settings.episode = number(name, value, 1, kMaxEpisodes);
@@ -362,6 +473,98 @@ void netServerAdvanceMap()
     gGameOptions.uGameFlags &= ~(kGameFlagEnding | kGameFlagPlayOutro);
     netServerApplySettings();
     netPrepareCurrentMapSettings();
-    LOG_F(INFO, "NET dedicated next map: map=%s rotation_index=%zu rotation_count=%zu", gGameOptions.zLevelName,
-          settings.rotationIndex, settings.rotationCount);
+    LOG_F(INFO, "NET dedicated next map: map=%s rotation_index=%u rotation_count=%u", gGameOptions.zLevelName,
+          unsigned(settings.rotationIndex), unsigned(settings.rotationCount));
+}
+
+std::vector<std::string> netServerVoteMaps()
+{
+    if (gDedicated && settings.mapVoteEnabled
+        && (settings.gameType == kGameTypeBloodBath || settings.gameType == kGameTypeTeams))
+        return rotation;
+    return {};
+}
+
+bool netServerResolveVote(NetServerVoteAction action, const std::string& map,
+                          size_t& rotationIndex, std::string& error)
+{
+    error.clear();
+    if (!voteAllowed(error)) return false;
+    size_t index = 0;
+    if (action == NetServerVoteAction::Map)
+    {
+        if (map.find('\0') != std::string::npos)
+        {
+            error = "Invalid map name.";
+            return false;
+        }
+        std::string const key = canonical(map.c_str());
+        for (; index < rotation.size(); ++index)
+            if (canonical(rotation[index].c_str()) == key) break;
+    }
+    else if (!map.empty())
+    {
+        error = "Restart and next-level votes do not accept a map name.";
+        return false;
+    }
+    std::string name;
+    if (!voteTarget(action, index, name, error)) return false;
+    rotationIndex = index;
+    return true;
+}
+
+bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::string& error)
+{
+    error.clear();
+    if (!voteAllowed(error)) return false;
+    std::string name;
+    if (!voteTarget(action, rotationIndex, name, error)) return false;
+    // Rotation entries were checked at startup, but their files may have been
+    // removed while a vote was running. Reject the vote without killing the
+    // dedicated server or changing any game settings.
+    std::vector<uint8_t> bytes;
+    std::string mapError;
+    if (!netMapRead(name.c_str(), bytes, mapError))
+    {
+        error = "Cannot load voted map '" + name + "': " + mapError;
+        return false;
+    }
+    if (action == NetServerVoteAction::Next)
+    {
+        if (gDedicated)
+        {
+            queueAdvance(kLevelExitNormal, "mapvote-next");
+            netServerAdvanceMap();
+        }
+        else
+        {
+            VoteNextLevel target;
+            if (!nextVoteEpisode(target, error)) return false;
+            levelSetupOptions(target.episode, target.level);
+            gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
+            if (target.preserveInventory) gGameOptions.uGameFlags |= kGameFlagContinuing;
+            netPrepareCurrentMapSettings();
+        }
+    }
+    else
+    {
+        if (action == NetServerVoteAction::Map)
+        {
+            settings.rotationIndex = rotationIndex;
+            selectMap(rotation[rotationIndex].c_str());
+        }
+        // Both selecting a rotation map and restarting co-op start a fresh
+        // round; co-op Next retains the usual episode inventory behavior.
+        gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
+        netPrepareCurrentMapSettings();
+        // A listen server has already registered this map. Reuse its slot on
+        // restart instead of appending the same custom map with levelAddUserMap.
+        // Keep szUserMap intact so it still has no implicit next episode level.
+        if (action == NetServerVoteAction::Restart && !gDedicated)
+            gPacketStartGame.userMap = 0;
+        LOG_F(INFO, "NET map vote applied: map=%s rotation_index=%u rotation_count=%u",
+              gGameOptions.zLevelName, unsigned(settings.rotationIndex), unsigned(settings.rotationCount));
+    }
+    gStartNewGame = true;
+    return true;
 }

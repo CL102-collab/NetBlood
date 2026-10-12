@@ -42,7 +42,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 2,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 3,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -62,6 +62,8 @@ void framing()
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
     static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
                   "Existing packet and demo message IDs must not change");
+    static_assert(netwire::VoteRequest == 16 && netwire::VoteStatus == 17 && netwire::VoteOptions == 18,
+                  "Map-vote messages append to existing message IDs");
     for (uint32_t type = netwire::Hello; type < netwire::TypeCount; ++type) {
         header.type = type;
         CHECK(decode(netwire::encode(header, payload)));
@@ -97,10 +99,11 @@ void serverRules()
     rules.timeLimitMinutes = 10080; rules.scoreLimit = INT32_MAX;
     rules.maxPlayers = 8; rules.autoAim = 3;
     rules.rotationIndex = 255; rules.rotationCount = 256;
+    rules.mapVoteEnabled = 1;
     netwire::Writer writer; netwire::writeServerRules(writer, rules);
     const std::vector<uint8_t> expected = {
         0x60,0x27,0,0, 0xff,0xff,0xff,0x7f, 8,0,0,0, 3,0,0,0,
-        0xff,0,0,0, 0,1,0,0};
+        0xff,0,0,0, 0,1,0,0, 1,0,0,0};
     CHECK(writer.data == expected && writer.data.size() == netwire::ServerRulesBytes);
     netwire::Reader reader(writer.data.data(), writer.data.size());
     netwire::ServerRules decoded;
@@ -117,7 +120,7 @@ void serverRules()
     }
     const std::pair<unsigned, uint32_t> invalid[] = {
         {0,10081}, {0,UINT32_MAX}, {4,0x80000000u}, {8,0}, {8,9}, {12,4},
-        {16,256}, {16,UINT32_MAX}, {20,257}, {20,0}};
+        {16,256}, {16,UINT32_MAX}, {20,257}, {20,0}, {24,2}, {24,UINT32_MAX}};
     for (const auto& mutation : invalid) {
         auto bad = expected; field(bad, mutation.first, mutation.second);
         netwire::Reader malformed(bad.data(), bad.size());
@@ -127,15 +130,129 @@ void serverRules()
         CHECK(rewritten.data == expected);
     }
     for (uint32_t cap = 1; cap <= 8; ++cap)
-        for (uint32_t aim = 0; aim <= 3; ++aim) {
-            rules = netwire::ServerRules(); rules.maxPlayers = cap; rules.autoAim = aim;
+        for (uint32_t aim = 0; aim <= 3; ++aim)
+        for (uint32_t enabled = 0; enabled <= 1; ++enabled) {
+            rules = netwire::ServerRules(); rules.maxPlayers = cap; rules.autoAim = aim; rules.mapVoteEnabled = enabled;
             writer.data.clear(); netwire::writeServerRules(writer, rules);
             netwire::Reader minimal(writer.data.data(), writer.data.size());
             CHECK(netwire::readServerRules(minimal, decoded) && minimal.end());
-            CHECK(decoded.maxPlayers == cap && decoded.autoAim == aim && !decoded.timeLimitMinutes && !decoded.scoreLimit);
+            CHECK(decoded.maxPlayers == cap && decoded.autoAim == aim && decoded.mapVoteEnabled == enabled &&
+                  !decoded.timeLimitMinutes && !decoded.scoreLimit);
         }
     std::puts("PASS: authoritative server rules, exact wire bytes, bounds, truncation and unchanged rejected output");
 }
+template<class Payload>
+void voteRoundtrip(const Payload& source,
+                   bool (*write)(netwire::Writer&, const Payload&),
+                   bool (*read)(netwire::Reader&, Payload&))
+{
+    netwire::Writer wire;
+    CHECK(write(wire, source));
+    netwire::Reader reader(wire.data.data(), wire.data.size());
+    Payload decoded;
+    CHECK(read(reader, decoded) && reader.end());
+    netwire::Writer copy;
+    CHECK(write(copy, decoded) && copy.data == wire.data);
+    for (size_t size = 0; size < wire.data.size(); ++size) {
+        netwire::Reader truncated(wire.data.data(), size);
+        decoded = source;
+        CHECK(!read(truncated, decoded));
+        copy.data.clear();
+        CHECK(write(copy, decoded) && copy.data == wire.data);
+    }
+    auto extra = wire.data; extra.push_back(0);
+    netwire::Reader trailing(extra.data(), extra.size());
+    CHECK(!read(trailing, decoded));
+}
+
+template<class Payload>
+void voteInvalid(const Payload& invalid, bool (*write)(netwire::Writer&, const Payload&))
+{
+    netwire::Writer wire; wire.data = {73};
+    CHECK(!write(wire, invalid) && wire.data == std::vector<uint8_t>({73}));
+}
+
+void mapVotes()
+{
+    using namespace netwire;
+    VoteRequestPayload request;
+    for (VoteCommand command : {VoteCommand::List, VoteCommand::Map, VoteCommand::Restart,
+                               VoteCommand::Next, VoteCommand::Yes, VoteCommand::No, VoteCommand::QueryStatus}) {
+        request.command = command;
+        request.id = command == VoteCommand::Yes || command == VoteCommand::No ? 0x78563412 : 0;
+        request.map = command == VoteCommand::Map ? "E1M2.MAP" : "";
+        voteRoundtrip(request, writeVoteRequest, readVoteRequest);
+    }
+    request.command = VoteCommand::Map; request.id = 0; request.map = "E1M2";
+    Writer encoded; CHECK(writeVoteRequest(encoded, request));
+    CHECK(encoded.data == std::vector<uint8_t>({2,0,0,0, 0,0,0,0, 4,0,'E','1','M','2'}));
+    for (const std::string& map : {std::string(), std::string(256, 'x'), std::string("A\nB"),
+                                  std::string("A\0B", 3), std::string("A\x7f")}) {
+        request.map = map; voteInvalid(request, writeVoteRequest);
+    }
+    request.map = std::string(255, 'x'); voteRoundtrip(request, writeVoteRequest, readVoteRequest);
+    request.id = 1; voteInvalid(request, writeVoteRequest);
+    request.map.clear(); request.command = VoteCommand::Yes; request.id = 0;
+    voteInvalid(request, writeVoteRequest);
+    for (uint32_t command : {0u, 8u, UINT32_MAX}) {
+        request.command = VoteCommand(command); voteInvalid(request, writeVoteRequest);
+    }
+    const std::pair<unsigned, uint32_t> invalidRequest[] = {{0,0}, {0,8}, {4,1}};
+    for (const auto& mutation : invalidRequest) {
+        auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
+        Reader reader(bytes.data(), bytes.size());
+        request.command = VoteCommand::QueryStatus;
+        CHECK(!readVoteRequest(reader, request) && request.command == VoteCommand::QueryStatus);
+    }
+
+    VoteStatusPayload status;
+    voteRoundtrip(status, writeVoteStatus, readVoteStatus);
+    status.id = 0x78563412; status.state = VoteState::Active; status.action = 1;
+    status.remainingMs = 30000; status.eligible = 3; status.yes = 1; status.no = 1; status.required = 2;
+    status.caller = 2; status.canVote = 1; status.cooldownMs = 120000; status.rejected = 1;
+    status.target = "E1M2"; status.notice = "Another map vote is already active.";
+    voteRoundtrip(status, writeVoteStatus, readVoteStatus);
+    encoded.data.clear(); CHECK(writeVoteStatus(encoded, status));
+    const std::pair<unsigned, uint32_t> invalidStatus[] = {
+        {0,0}, {4,5}, {8,0}, {8,4}, {12,30001}, {16,0}, {16,9}, {20,4}, {24,3},
+        {28,1}, {28,3}, {32,8}, {36,2}, {40,2}, {44,120001}, {48,2}};
+    for (const auto& mutation : invalidStatus) {
+        auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
+        Reader reader(bytes.data(), bytes.size());
+        VoteStatusPayload ignored; ignored.id = 73;
+        CHECK(!readVoteStatus(reader, ignored) && ignored.id == 73);
+    }
+    for (VoteState state : {VoteState::Passed, VoteState::Failed, VoteState::Cancelled}) {
+        status.state = state; status.remainingMs = 0; status.canVote = 0;
+        voteRoundtrip(status, writeVoteStatus, readVoteStatus);
+        status.remainingMs = 1; voteInvalid(status, writeVoteStatus); status.remainingMs = 0;
+        status.canVote = 1; voteInvalid(status, writeVoteStatus); status.canVote = 0;
+    }
+    status.target = ""; voteInvalid(status, writeVoteStatus);
+    status.target = "E1M2"; status.notice = std::string(161, 'x'); voteInvalid(status, writeVoteStatus);
+    status = VoteStatusPayload(); status.id = 1; voteInvalid(status, writeVoteStatus);
+
+    VoteOptionsPayload options;
+    voteRoundtrip(options, writeVoteOptions, readVoteOptions);
+    options.enabled = 1; options.actions = 6; options.listRequested = 1;
+    voteRoundtrip(options, writeVoteOptions, readVoteOptions);
+    options.actions = 1; options.maps = {"E1M1", "E1M2.MAP"};
+    voteRoundtrip(options, writeVoteOptions, readVoteOptions);
+    encoded.data.clear(); CHECK(writeVoteOptions(encoded, options));
+    for (const auto& mutation : std::vector<std::pair<unsigned, uint32_t>>{
+            {0,0}, {0,2}, {4,0}, {4,8}, {8,2}, {12,257}, {12,UINT32_MAX}}) {
+        auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
+        Reader reader(bytes.data(), bytes.size());
+        VoteOptionsPayload ignored; ignored.maps = {"unchanged"};
+        CHECK(!readVoteOptions(reader, ignored) && ignored.maps == std::vector<std::string>({"unchanged"}));
+    }
+    options.maps = {""}; voteInvalid(options, writeVoteOptions);
+    options.maps = {"E1M1\nE1M2"}; voteInvalid(options, writeVoteOptions);
+    options.maps.assign(257, "E1M1"); voteInvalid(options, writeVoteOptions);
+    options.maps.assign(256, "E1M1"); voteRoundtrip(options, writeVoteOptions, readVoteOptions);
+    std::puts("PASS: map-vote requests, statuses and options; bounds, truncation, control characters and unchanged rejected output");
+}
+
 void commands()
 {
     for (int32_t turn : {INT32_MIN, INT32_MAX, -134217728, -1, 0, 1, 134217727, 134217728}) {
@@ -388,6 +505,12 @@ void malformedCorpus()
         netwire::readMapData(chunk, ignoredChunk);
         netwire::Reader rules(bytes.data(), bytes.size()); netwire::ServerRules ignoredRules;
         netwire::readServerRules(rules, ignoredRules);
+        netwire::Reader voteRequest(bytes.data(), bytes.size()); netwire::VoteRequestPayload ignoredVoteRequest;
+        netwire::readVoteRequest(voteRequest, ignoredVoteRequest);
+        netwire::Reader voteStatus(bytes.data(), bytes.size()); netwire::VoteStatusPayload ignoredVoteStatus;
+        netwire::readVoteStatus(voteStatus, ignoredVoteStatus);
+        netwire::Reader voteOptions(bytes.data(), bytes.size()); netwire::VoteOptionsPayload ignoredVoteOptions;
+        netwire::readVoteOptions(voteOptions, ignoredVoteOptions);
         std::string error;
         const std::vector<uint8_t> sentinel = {1,2,3}; auto output = sentinel;
         bool accepted = netSnapshotUnpack(bytes, nullptr, output, error);
@@ -398,6 +521,6 @@ void malformedCorpus()
 }
 int main()
 {
-    framing(); serverRules(); commands(); mapTransfer(); snapshots(); malformedCorpus();
+    framing(); serverRules(); mapVotes(); commands(); mapTransfer(); snapshots(); malformedCorpus();
     std::printf("PASS: network codecs (%u assertions)\n", checks);
 }

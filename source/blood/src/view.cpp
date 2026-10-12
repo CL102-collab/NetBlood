@@ -4130,6 +4130,7 @@ RORHACK:
     }
     viewDrawInterface(delta);
     netLagDraw();
+    netDrawMapVote();
     if (IsPlayerSprite(gView->pSprite) && (gView->hand == 1))
     {
         int zn = ((gView->zWeapon-gView->zView-(12<<8))>>7)+220;

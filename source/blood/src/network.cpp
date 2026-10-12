@@ -35,6 +35,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "network.h"
 #include "netserver.h"
 #include "player.h"
+#include "osd.h"
 #include "seq.h"
 #include "sound.h"
 #include "view.h"
@@ -83,6 +84,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netmap.h"
 #include "netpredict.h"
 #include "netprotocol.h"
+#include "netvote.h"
 #include "netsnapshot.h"
 #include "timer.h"
 
@@ -128,6 +130,9 @@ struct ClientSlot
     netwire::CommandQueue commands;
     GINPUT                lastInput     = {};
     uint32_t              lastInputTime = 0;
+    netvote::Cooldown     voteCooldown;
+    std::string           voteIdentity;
+    uint32_t              voteRequestWindow = 0, voteRequests = 0;
 };
 ClientSlot                   slots[8];
 uint32_t                     session = 0, mapGeneration = 0, sendSequence = 0, serverTick = 0, snapshotId = 0, commandSequence = 0;
@@ -151,6 +156,17 @@ Bytes                        lastWelcome, lastRecordedSnapshot;
 Bytes                        serverMapBytes, clientMapBytes;
 GAMEOPTIONS                  clientMapOptions = {};
 netwire::ServerRules          clientServerRules;
+netvote::Vote                 mapVote;
+NetServerVoteAction           voteAction = NetServerVoteAction::Restart;
+size_t                       voteMapIndex = 0;
+uint32_t                     voteId = 0, voteCaller = 0, voteHeartbeat = 0;
+netwire::VoteState            voteState = netwire::VoteState::Idle;
+std::string                  voteTarget;
+netwire::VoteStatusPayload    clientVote;
+netwire::VoteOptionsPayload   clientVoteOptions;
+uint32_t                     clientVoteReceived = 0;
+struct VoteCooldownEntry { std::string identity; netvote::Cooldown cooldown; };
+std::deque<VoteCooldownEntry> voteCooldowns;
 uint32_t                     clientMapSize = 0, clientMapProgressTime = 0;
 bool                         clientDownloadingMap = false, mapDownloadDisconnected = false;
 std::string                  mapDownloadError;
@@ -336,6 +352,7 @@ netwire::ServerRules serverRules()
     netwire::ServerRules rules;
     rules.maxPlayers = gInitialNetPlayers;
     rules.autoAim = serverAutoAim();
+    rules.mapVoteEnabled = netServerSettings().mapVoteEnabled;
     if (gDedicated)
     {
         auto const& settings = netServerSettings();
@@ -345,6 +362,256 @@ netwire::ServerRules serverRules()
         rules.rotationCount = uint32_t(settings.rotationCount);
     }
     return rules;
+}
+const char* voteActionName(uint32_t action)
+{
+    return action == 1 ? "map" : action == 2 ? "restart" : action == 3 ? "next" : "none";
+}
+bool readyVoter(int p)
+{
+    if (!gGameStarted || !ready2send || p < 0 || p >= 8 || !slots[p].active || !slots[p].ready || slots[p].pendingDrop) return false;
+    if (!gDedicated && p == myconnectindex) return true;
+#ifndef NETCODE_DISABLE
+    return slots[p].peer != nullptr;
+#else
+    return false;
+#endif
+}
+netwire::VoteStatusPayload voteStatus(int recipient)
+{
+    uint32_t const now = timerGetTicks();
+    netwire::VoteStatusPayload status;
+    status.state = voteState;
+    if (voteState != netwire::VoteState::Idle)
+    {
+        status.id = voteId;
+        status.action = voteAction == NetServerVoteAction::Map ? 1 : voteAction == NetServerVoteAction::Restart ? 2 : 3;
+        status.target = voteTarget;
+        status.caller = voteCaller;
+        status.remainingMs = mapVote.remaining(now);
+        status.eligible = mapVote.eligibleCount();
+        status.yes = mapVote.yesCount();
+        status.no = mapVote.noCount();
+        status.required = mapVote.requiredCount();
+        if (recipient >= 0 && recipient < 8)
+        {
+            status.voted = mapVote.hasVoted(recipient, slots[recipient].generation);
+            status.canVote = mapVote.active() && readyVoter(recipient) && !status.voted
+                && mapVote.eligible(recipient, slots[recipient].generation) && status.remainingMs;
+        }
+    }
+    if (recipient >= 0 && recipient < 8) status.cooldownMs = slots[recipient].voteCooldown.remaining(now);
+    return status;
+}
+netwire::VoteOptionsPayload voteOptions(bool requested)
+{
+    netwire::VoteOptionsPayload options;
+    options.enabled = netServerSettings().mapVoteEnabled;
+    options.listRequested = requested;
+    options.maps = netServerVoteMaps();
+    if (!options.maps.empty()) options.actions |= 1;
+    if (options.enabled && gGameOptions.nGameType == kGameTypeCoop)
+    {
+        options.actions |= 2;
+        size_t index = 0;
+        std::string error;
+        if (netServerResolveVote(NetServerVoteAction::Next, "", index, error)) options.actions |= 4;
+    }
+    return options;
+}
+void logVoteStatus(const netwire::VoteStatusPayload& status)
+{
+    LOG_F(INFO, "NET vote active=%d id=%u eligible=%u yes=%u no=%u required=%u remaining_ms=%u action=%s target=%s can_vote=%u voted=%u cooldown_ms=%u",
+          int(status.state == netwire::VoteState::Active), status.id, status.eligible, status.yes, status.no,
+          status.required, status.remainingMs, voteActionName(status.action), status.target.c_str(), status.canVote, status.voted, status.cooldownMs);
+}
+void showVoteStatus(const netwire::VoteStatusPayload& status)
+{
+    bool const changed = status.id != clientVote.id || status.state != clientVote.state
+        || status.yes != clientVote.yes || status.no != clientVote.no;
+    clientVote = status;
+    clientVoteReceived = timerGetTicks();
+    if (changed || !status.notice.empty()) logVoteStatus(status);
+    if (status.rejected) LOG_F(INFO, "NET vote rejected: %s", status.notice.c_str());
+    if (!status.notice.empty()) viewSetMessage(status.notice.c_str(), 10);
+    if (changed && status.state >= netwire::VoteState::Passed)
+    {
+        const char* result = status.state == netwire::VoteState::Passed ? "passed" : status.state == netwire::VoteState::Failed ? "failed" : "cancelled";
+        LOG_F(INFO, "NET vote result=%s id=%u eligible=%u yes=%u no=%u required=%u", result, status.id,
+              status.eligible, status.yes, status.no, status.required);
+        if (status.notice.empty())
+        {
+            char message[128];
+            Bsnprintf(message, sizeof(message), "Map vote %s: %u yes, %u no (%u yes required)", result, status.yes, status.no, status.required);
+            viewSetMessage(message, 10);
+        }
+    }
+}
+void showVoteOptions(const netwire::VoteOptionsPayload& options)
+{
+    clientVoteOptions = options;
+    if (!options.listRequested) return;
+    LOG_F(INFO, "NET vote options enabled=%u actions=%u maps=%u", options.enabled, options.actions, unsigned(options.maps.size()));
+    if (!options.enabled) OSD_Printf("Map voting is disabled by the server.\n");
+    else if (options.actions & 2) OSD_Printf("callvote restart%s\n", options.actions & 4 ? " or callvote next" : " (no next level available)");
+    else if (options.maps.empty()) OSD_Printf("Map voting requires a server map rotation.\n");
+    for (size_t n = 0; n < options.maps.size(); ++n)
+        LOG_F(INFO, "NET vote map index=%u name=%s", unsigned(n), options.maps[n].c_str());
+}
+void sendVoteStatus(int p, const std::string& notice = {}, bool rejected = false)
+{
+    netwire::VoteStatusPayload status = voteStatus(p);
+    status.notice = notice.substr(0, 160);
+    status.rejected = rejected;
+    if (!gDedicated && p == myconnectindex) showVoteStatus(status);
+#ifndef NETCODE_DISABLE
+    else if (p >= 0 && p < 8 && slots[p].peer)
+    {
+        netwire::Writer w;
+        if (netwire::writeVoteStatus(w, status)) sendTo(slots[p].peer, netwire::VoteStatus, w.data);
+    }
+#endif
+}
+void sendVoteOptions(int p, bool requested = false)
+{
+    auto options = voteOptions(requested);
+    if (!gDedicated && p == myconnectindex) showVoteOptions(options);
+#ifndef NETCODE_DISABLE
+    else if (p >= 0 && p < 8 && slots[p].peer)
+    {
+        netwire::Writer w;
+        if (netwire::writeVoteOptions(w, options)) sendTo(slots[p].peer, netwire::VoteOptions, w.data);
+    }
+#endif
+}
+void broadcastVote(const std::string& notice = {})
+{
+    logVoteStatus(voteStatus(-1));
+    for (int p = 0; p < 8; ++p) if (readyVoter(p)) sendVoteStatus(p, notice);
+    if (netDemoIsRecording() && !recordNeedsWelcome && recordSlot >= 0 && slots[recordSlot].active)
+    {
+        auto status = voteStatus(recordSlot);
+        status.notice = notice.substr(0, 160);
+        netwire::Writer w;
+        if (netwire::writeVoteStatus(w, status)) netDemoRecordPacket(serverTick, envelope(netwire::VoteStatus, w.data));
+    }
+    voteHeartbeat = timerGetTicks();
+}
+void rejectVote(int p, const std::string& reason)
+{
+    LOG_F(INFO, "NET vote rejected: %s", reason.c_str());
+    sendVoteStatus(p, reason, true);
+}
+void rememberVoteCooldown(int p)
+{
+    uint32_t const now = timerGetTicks();
+    auto const& identity = slots[p].voteIdentity;
+    for (auto it = voteCooldowns.begin(); it != voteCooldowns.end();)
+        if (it->cooldown.ready(now) || it->identity == identity) it = voteCooldowns.erase(it);
+        else ++it;
+    if (identity.empty()) return; // Local listen-server player stays in its slot.
+    if (voteCooldowns.size() >= 128) voteCooldowns.pop_front();
+    voteCooldowns.push_back({identity, slots[p].voteCooldown});
+}
+void cancelVote(const char* reason)
+{
+    if (!mapVote.active()) return;
+    voteState = netwire::VoteState::Cancelled;
+    LOG_F(INFO, "NET vote result=cancelled id=%u eligible=%u yes=%u no=%u required=%u", voteId,
+          mapVote.eligibleCount(), mapVote.yesCount(), mapVote.noCount(), mapVote.requiredCount());
+    // End its clock before serializing the terminal state; retain the tally.
+    mapVote.cancel(true);
+    broadcastVote(reason);
+}
+void updateVote()
+{
+    if (!netIsServer() || !mapVote.active()) return;
+    if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
+    {
+        cancelVote("Map vote cancelled because the server is changing levels");
+        return;
+    }
+    uint32_t const now = timerGetTicks();
+    auto const result = mapVote.poll(now);
+    if (result != netvote::Result::NoResult)
+    {
+        std::string error;
+        bool const passed = result == netvote::Result::Passed;
+        bool const applied = passed && netServerApplyVote(voteAction, voteMapIndex, error);
+        voteState = applied ? netwire::VoteState::Passed : passed ? netwire::VoteState::Cancelled : netwire::VoteState::Failed;
+        const char* outcome = applied ? "passed" : passed ? "cancelled" : "failed";
+        LOG_F(INFO, "NET vote result=%s id=%u eligible=%u yes=%u no=%u required=%u", outcome, voteId,
+              mapVote.eligibleCount(), mapVote.yesCount(), mapVote.noCount(), mapVote.requiredCount());
+        std::string notice = "Map vote "; notice += outcome;
+        if (!error.empty()) notice += ": " + error;
+        broadcastVote(notice);
+    }
+    else if (uint32_t(now - voteHeartbeat) >= 1000) broadcastVote();
+}
+void handleVoteRequest(int p, const netwire::VoteRequestPayload& request)
+{
+    updateVote(); // Expire before accepting a ballot from this service batch.
+    if (!readyVoter(p)) { rejectVote(p, "Join the current map before voting"); return; }
+    if (request.command == netwire::VoteCommand::List) { sendVoteOptions(p, true); return; }
+    if (request.command == netwire::VoteCommand::QueryStatus) { sendVoteStatus(p, "Map vote status"); return; }
+    if (!netServerSettings().mapVoteEnabled) { rejectVote(p, "Map voting is disabled by the server"); return; }
+    if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
+    { rejectVote(p, "The server is changing levels"); return; }
+    uint32_t const now = timerGetTicks();
+    if (request.command == netwire::VoteCommand::Yes || request.command == netwire::VoteCommand::No)
+    {
+        if (!mapVote.active() || request.id != voteId) { rejectVote(p, "No matching map vote is active"); return; }
+        if (!mapVote.eligible(p, slots[p].generation)) { rejectVote(p, "You joined after this vote started and cannot vote in it"); return; }
+        if (mapVote.hasVoted(p, slots[p].generation)) { rejectVote(p, "You have already voted"); return; }
+        if (!mapVote.cast(now, p, slots[p].generation, request.command == netwire::VoteCommand::Yes))
+        { rejectVote(p, "The voting period has ended"); return; }
+        broadcastVote();
+        return;
+    }
+    if (mapVote.active()) { rejectVote(p, "Another map vote is already in progress"); return; }
+    if (!slots[p].voteCooldown.ready(now))
+    {
+        char reason[128];
+        Bsnprintf(reason, sizeof(reason), "Wait %u seconds before calling another map vote", (slots[p].voteCooldown.remaining(now) + 999) / 1000);
+        rejectVote(p, reason); return;
+    }
+    NetServerVoteAction action = request.command == netwire::VoteCommand::Map ? NetServerVoteAction::Map
+        : request.command == netwire::VoteCommand::Restart ? NetServerVoteAction::Restart : NetServerVoteAction::Next;
+    size_t index = 0;
+    std::string error;
+    if (!netServerResolveVote(action, request.map, index, error)) { rejectVote(p, error); return; }
+    netvote::Roster roster{};
+    for (int n = 0; n < 8; ++n) if (readyVoter(n)) roster[n] = slots[n].generation;
+    if (!mapVote.start(now, roster, p, slots[p].generation)) { rejectVote(p, "Could not start map vote"); return; }
+    voteAction = action;
+    voteMapIndex = index;
+    voteCaller = p;
+    if (!++voteId) voteId = 1;
+    voteState = netwire::VoteState::Active;
+    voteTarget = action == NetServerVoteAction::Map ? netServerVoteMaps()[index] : action == NetServerVoteAction::Restart ? "current level" : "next level";
+    slots[p].voteCooldown.accept(now);
+    rememberVoteCooldown(p);
+    broadcastVote("Map vote started (30 seconds; use vote yes or vote no)");
+}
+bool recordVoteBaseline()
+{
+    auto status = netIsServer() ? voteStatus(recordSlot) : clientVote;
+    auto options = netIsServer() ? voteOptions(false) : clientVoteOptions;
+    options.listRequested = 0;
+    status.notice.clear(); status.rejected = 0;
+    if (!netIsServer())
+    {
+        uint32_t const elapsed = timerGetTicks() - clientVoteReceived;
+        status.remainingMs -= std::min(elapsed, status.remainingMs);
+        status.cooldownMs -= std::min(elapsed, status.cooldownMs);
+    }
+    netwire::Writer a, b;
+    if (!netwire::writeVoteOptions(a, options) || !netwire::writeVoteStatus(b, status)) return false;
+    netwire::Header h; h.session = session; h.generation = mapGeneration;
+    h.type = netwire::VoteOptions;
+    if (!netDemoRecordPacket(serverTick, netwire::encode(h, a.data))) return false;
+    h.type = netwire::VoteStatus;
+    return netDemoRecordPacket(serverTick, netwire::encode(h, b.data));
 }
 void configureStart(const GAMEOPTIONS &options)
 {
@@ -488,6 +755,8 @@ void sendWelcome(int p)
     sendTo(slots[p].peer, netwire::Welcome, w.data);
     slots[p].ready       = false;
     slots[p].pendingReady = false;
+    sendVoteOptions(p);
+    sendVoteStatus(p);
     slots[p].snapshotAck = 0;
     slots[p].mapDownloadNext = 0;
     slots[p].mapDownloadStarted = false;
@@ -596,7 +865,7 @@ bool recordServerSnapshot(const Bytes &state, uint32_t id)
     if (recordNeedsWelcome)
     {
         recordNeedsWelcome = false;
-        return recordLoopBaseline();
+        return recordLoopBaseline() && recordVoteBaseline();
     }
     return true;
 }
@@ -719,6 +988,9 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         clientSlotGeneration = slotGeneration;
         clientMapCRC         = crc;
         clientServerRules    = rules;
+        clientVote = {};
+        clientVoteOptions = {};
+        clientVoteReceived = timerGetTicks();
         std::fill(std::begin(clientReceived), std::end(clientReceived), 0);
         clientReceived[h.type] = h.sequence;
         myconnectindex         = slot;
@@ -927,7 +1199,7 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
                   netSnapshotHash(canonical));
         return true;
     }
-    bool syntheticBaseline = replay && h.type == netwire::Event && h.sequence == 0;
+    bool syntheticBaseline = replay && (h.type == netwire::Event || h.type == netwire::VoteStatus || h.type == netwire::VoteOptions) && h.sequence == 0;
     if (!syntheticBaseline && clientReceived[h.type] && !netwire::newer(h.sequence, clientReceived[h.type]))
     {
         duplicateMessages++;
@@ -935,6 +1207,22 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
     }
     if (!syntheticBaseline)
         clientReceived[h.type] = h.sequence;
+    if (h.type == netwire::VoteStatus)
+    {
+        netwire::VoteStatusPayload status;
+        if (!netwire::readVoteStatus(r, status)) return false;
+        showVoteStatus(status);
+        if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
+        return true;
+    }
+    if (h.type == netwire::VoteOptions)
+    {
+        netwire::VoteOptionsPayload options;
+        if (!netwire::readVoteOptions(r, options)) return false;
+        showVoteOptions(options);
+        if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
+        return true;
+    }
     if (h.type == netwire::Event)
     {
         uint32_t eventTick = r.u32();
@@ -1011,6 +1299,14 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         gProfile[slot].nAutoAim      = serverAutoAim();
         gProfile[slot].nWeaponSwitch = weapon;
         gProfile[slot].skill         = serverPlayerSkill();
+        // Rejoining with the same endpoint/name retains the recent cooldown.
+        // Ports are intentionally excluded: reconnecting chooses a new port.
+        c.voteIdentity.assign(reinterpret_cast<const char*>(&peer->address.host), sizeof(peer->address.host));
+        std::string voteName = name;
+        for (char& ch : voteName) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+        c.voteIdentity += voteName;
+        for (auto const& entry : voteCooldowns)
+            if (entry.identity == c.voteIdentity && !entry.cooldown.ready(timerGetTicks())) c.voteCooldown = entry.cooldown;
         if (capability)
         {
             if (capability != netassets::ManifestVersion)
@@ -1152,6 +1448,15 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
                 else
                     duplicateMessages++;
             }
+    }
+    else if (h.type == netwire::VoteRequest)
+    {
+        uint32_t const now = timerGetTicks();
+        if (uint32_t(now - c.voteRequestWindow) >= 1000) { c.voteRequestWindow = now; c.voteRequests = 0; }
+        if (++c.voteRequests > 8) return;
+        netwire::VoteRequestPayload request;
+        if (!netwire::readVoteRequest(r, request)) { malformedMessages++; return; }
+        handleVoteRequest(slot, request);
     }
     else if (h.type == netwire::Chat)
     {
@@ -1300,7 +1605,10 @@ void netInitialize(bool bConsole)
             session = 1;
         myconnectindex = gDedicated ? -1 : 0;
         if (!gDedicated)
+        {
             slots[0].active = slots[0].ready = true;
+            slots[0].generation = 1;
+        }
         rebuildRoster();
         LOG_F(INFO, "NET server listening UDP port=%d dedicated=%d maxplayers=%d copies=%d", gNetPort, int(gDedicated), gInitialNetPlayers, gNetPacketCopies);
     }
@@ -1352,6 +1660,14 @@ void netDeinitialize(void)
     mapDownloadError.clear();
     clientContentChecked = false;
     clientServerRules = {};
+    mapVote.cancel();
+    voteState = netwire::VoteState::Idle;
+    voteId = voteCaller = voteHeartbeat = 0;
+    voteTarget.clear();
+    clientVote = {};
+    clientVoteOptions = {};
+    clientVoteReceived = 0;
+    voteCooldowns.clear();
     netContentReportClear();
 #ifndef NETCODE_DISABLE
     if (host)
@@ -1474,6 +1790,7 @@ void netUpdate(void)
         }
     }
     pumpMapDownloads();
+    updateVote();
     enet_host_flush(host);
     servicing = false;
 #endif
@@ -1558,6 +1875,16 @@ void netDrawConnectionStatus()
         viewDrawText(3, "See console for details", 160, 100, -128, 0, 1, 1);
     }
 }
+void netOnLevelChanging()
+{
+    if (!netIsServer()) return;
+    cancelVote("Map vote cancelled because the server is changing levels");
+    mapVote.cancel();
+    voteState = netwire::VoteState::Idle;
+    voteTarget.clear();
+    clientVote = {};
+    for (auto& slot : slots) slot.ready = false;
+}
 void netOnLevelStarted()
 {
     if (!netIsLive())
@@ -1594,6 +1921,7 @@ void netOnLevelStarted()
 #endif
         }
         LOG_F(INFO, "NET map generation=%u crc=%08x players=%d", mapGeneration, gGameOptions.uMapCRC, numplayers);
+        if (!gDedicated) { sendVoteOptions(myconnectindex); sendVoteStatus(myconnectindex); }
     }
     else
     {
@@ -1655,6 +1983,8 @@ bool netServerBeginTick()
             c.lastInput     = {};
             c.lastInputTime = now;
             LOG_F(INFO, "NET joined slot=%d generation=%u players=%d tick=%u", p, c.generation, numplayers, serverTick);
+            sendVoteOptions(p);
+            sendVoteStatus(p);
             lastSnapshotTick = 0;
         }
         if (!c.active)
@@ -1906,6 +2236,114 @@ void netBroadcastMyLogoff(bool restart)
     if (restart)
         gRestartGame = true;
 }
+namespace {
+netwire::VoteStatusPayload displayedVote()
+{
+    if (netIsServer()) return voteStatus(myconnectindex);
+    auto status = clientVote;
+    uint32_t const elapsed = timerGetTicks() - clientVoteReceived;
+    status.remainingMs -= std::min(elapsed, status.remainingMs);
+    status.cooldownMs -= std::min(elapsed, status.cooldownMs);
+    return status;
+}
+void submitVoteRequest(const netwire::VoteRequestPayload& request)
+{
+    if (demoPlayback || !netIsLive() || !gGameStarted || (netIsClient() && !clientSnapshotReady))
+    {
+        OSD_Printf("Map voting requires an active multiplayer connection.\n");
+        return;
+    }
+    if (netIsServer())
+    {
+        if (gDedicated || myconnectindex < 0)
+            OSD_Printf("Only connected players can call or cast map votes.\n");
+        else
+            handleVoteRequest(myconnectindex, request);
+        return;
+    }
+#ifndef NETCODE_DISABLE
+    netwire::Writer w;
+    if (!netwire::writeVoteRequest(w, request))
+    {
+        OSD_Printf("Invalid map vote request or map name.\n");
+        return;
+    }
+    sendTo(serverPeer, netwire::VoteRequest, w.data);
+#endif
+}
+}
+void netCallMapVote(const char* action, const char* mapName)
+{
+    netwire::VoteRequestPayload request;
+    if (action && !Bstrcasecmp(action, "map")) request.command = netwire::VoteCommand::Map;
+    else if (action && !Bstrcasecmp(action, "restart")) request.command = netwire::VoteCommand::Restart;
+    else if (action && !Bstrcasecmp(action, "next")) request.command = netwire::VoteCommand::Next;
+    else { OSD_Printf("Use callvote map <name>, callvote restart, or callvote next.\n"); return; }
+    request.map = mapName ? mapName : "";
+    if (!netwire::validVoteRequest(request)) { OSD_Printf("Invalid map vote request or map name.\n"); return; }
+    submitVoteRequest(request);
+}
+void netCastMapVote(bool yes)
+{
+    auto status = displayedVote();
+    if (status.state != netwire::VoteState::Active)
+    {
+        OSD_Printf("No map vote is active.\n");
+        return;
+    }
+    netwire::VoteRequestPayload request;
+    request.command = yes ? netwire::VoteCommand::Yes : netwire::VoteCommand::No;
+    request.id = status.id;
+    submitVoteRequest(request);
+}
+void netListVoteMaps()
+{
+    if (netIsServer()) { showVoteOptions(voteOptions(true)); return; }
+    if (demoPlayback) { auto options = clientVoteOptions; options.listRequested = 1; showVoteOptions(options); return; }
+    netwire::VoteRequestPayload request;
+    request.command = netwire::VoteCommand::List;
+    submitVoteRequest(request);
+}
+void netPrintVoteStatus()
+{
+    if (netIsServer() || demoPlayback) { logVoteStatus(displayedVote()); return; }
+    netwire::VoteRequestPayload request;
+    request.command = netwire::VoteCommand::QueryStatus;
+    submitVoteRequest(request);
+}
+void netDrawMapVote()
+{
+    if (gDedicated || !netIsLive() || !gGameStarted) return;
+    auto status = displayedVote();
+    if (status.state != netwire::VoteState::Active) return;
+    char heading[128], tally[128], threshold[64];
+    Bsnprintf(heading, sizeof(heading), "MAP VOTE: %.100s", status.action == 1 ? status.target.c_str()
+              : status.action == 2 ? "Restart level" : "Next level");
+    Bsnprintf(tally, sizeof(tally), "%us left | YES %u  NO %u", (status.remainingMs + 999) / 1000, status.yes, status.no);
+    Bsnprintf(threshold, sizeof(threshold), "%u of %u YES required", status.required, status.eligible);
+    const char* prompt = demoPlayback ? "Recorded map vote" : status.voted ? "Your vote has been counted"
+        : status.canVote ? "Console: vote yes / vote no" : "You joined after this vote started";
+    auto drawLine = [](const char* text, int y)
+    {
+        char line[128];
+        Bsnprintf(line, sizeof(line), "%s", text);
+        int width = 0;
+        viewGetFontInfo(3, line, &width, nullptr);
+        // Keep the panel left of the aiming area, even in a 320-wide view.
+        for (size_t length = Bstrlen(line); width > 144 && length > 3;)
+        {
+            --length;
+            Bmemcpy(line + length - 3, "...", 4);
+            viewGetFontInfo(3, line, &width, nullptr);
+        }
+        viewDrawText(3, line, 8, y, -128, 0, 0, 1, RS_ALIGN_L);
+    };
+    // The map title occupies the center of the screen at y=50 after a load.
+    drawLine(heading, 70);
+    drawLine(tally, 79);
+    drawLine(threshold, 88);
+    drawLine(prompt, 97);
+}
 void netPrintStatus()
 {
     NetPredictionStats prediction = netPredictGetStats();
@@ -1934,10 +2372,10 @@ void netPrintStatus()
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;
-        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u",
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u",
               int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
               int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
-              gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount);
+              gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled);
     }
 #ifndef NETCODE_DISABLE
     if (host)
@@ -1987,7 +2425,7 @@ bool netStartPacketRecording(const char *path)
     }
     if (!netDemoRecordPacket(serverTick, lastWelcome) || !netDemoRecordPacket(serverTick, lastRecordedSnapshot))
         return false;
-    return recordLoopBaseline();
+    return recordLoopBaseline() && recordVoteBaseline();
 }
 
 void netStopPacketRecording()
@@ -2035,7 +2473,8 @@ bool netDemoReplayPacket(const uint8_t *data, size_t size)
     netwire::Header h;
     netwire::Reader body(nullptr, 0);
     if (!netwire::decode(data, size, h, body)
-        || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::Taunt))
+        || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::Taunt
+            && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions))
         return false;
     return acceptClientPacket(data, size, true);
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Dedicated rules live outside GAMEOPTIONS to preserve the legacy demo layout.
 struct NetServerSettings
@@ -11,6 +12,7 @@ struct NetServerSettings
     int maxPlayers = 8;
     int autoAim = 1;
     bool weaponsStay = true;
+    bool mapVoteEnabled = true;
     int timeLimitMinutes = 0;
     int scoreLimit = 0;
     int difficulty = 2;
@@ -45,3 +47,11 @@ bool netServerPrepareEpisodeLevel(int episode, int level);
 void netServerCheckLimits();
 bool netServerHandleLevelExit(int exitType);
 void netServerAdvanceMap();
+
+enum class NetServerVoteAction { Map, Restart, Next };
+// Competitive targets are the configured rotation entries; coop exposes only
+// Restart and Next. The network layer binds resolved votes to a map generation.
+std::vector<std::string> netServerVoteMaps();
+bool netServerResolveVote(NetServerVoteAction action, const std::string& map,
+                          size_t& rotationIndex, std::string& error);
+bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::string& error);

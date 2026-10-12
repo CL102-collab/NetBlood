@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 2;
+constexpr uint32_t Version    = 3;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -33,6 +33,9 @@ enum Type : uint32_t
     MapData,
     ContentManifest,
     ContentReady,
+    VoteRequest,
+    VoteStatus,
+    VoteOptions,
     TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.
@@ -232,13 +235,15 @@ struct ServerRules
 {
     uint32_t timeLimitMinutes = 0, scoreLimit = 0, maxPlayers = 8, autoAim = 1;
     uint32_t rotationIndex = 0, rotationCount = 0;
+    uint32_t mapVoteEnabled = 1;
 };
-constexpr size_t ServerRulesBytes = 6 * sizeof(uint32_t);
+constexpr size_t ServerRulesBytes = 7 * sizeof(uint32_t);
 inline void writeServerRules(Writer& w, const ServerRules& rules)
 {
     w.u32(rules.timeLimitMinutes); w.u32(rules.scoreLimit);
     w.u32(rules.maxPlayers); w.u32(rules.autoAim);
     w.u32(rules.rotationIndex); w.u32(rules.rotationCount);
+    w.u32(rules.mapVoteEnabled);
 }
 inline bool readServerRules(Reader& r, ServerRules& rules)
 {
@@ -246,12 +251,120 @@ inline bool readServerRules(Reader& r, ServerRules& rules)
     candidate.timeLimitMinutes = r.u32(); candidate.scoreLimit = r.u32();
     candidate.maxPlayers = r.u32(); candidate.autoAim = r.u32();
     candidate.rotationIndex = r.u32(); candidate.rotationCount = r.u32();
+    candidate.mapVoteEnabled = r.u32();
     if (!r.ok || candidate.timeLimitMinutes > 10080 || candidate.scoreLimit > INT32_MAX
         || !candidate.maxPlayers || candidate.maxPlayers > 8 || candidate.autoAim > 3
-        || candidate.rotationCount > 256
+        || candidate.rotationCount > 256 || candidate.mapVoteEnabled > 1
         || (candidate.rotationCount ? candidate.rotationIndex >= candidate.rotationCount : candidate.rotationIndex != 0))
         return false;
     rules = candidate;
+    return true;
+}
+enum class VoteCommand : uint32_t { List = 1, Map, Restart, Next, Yes, No, QueryStatus };
+enum class VoteState : uint32_t { Idle, Active, Passed, Failed, Cancelled };
+constexpr size_t VoteNameBytes = 255;
+inline bool voteText(const std::string& text, size_t maximum)
+{
+    if (text.size() > maximum) return false;
+    for (unsigned char c : text) if (c < 32 || c == 127) return false;
+    return true;
+}
+struct VoteRequestPayload
+{
+    VoteCommand command = VoteCommand::QueryStatus;
+    uint32_t id = 0;
+    std::string map;
+};
+inline bool validVoteRequest(const VoteRequestPayload& request)
+{
+    uint32_t const command = uint32_t(request.command);
+    bool const ballot = request.command == VoteCommand::Yes || request.command == VoteCommand::No;
+    return command >= 1 && command <= 7 && (ballot ? request.id != 0 : request.id == 0)
+        && voteText(request.map, VoteNameBytes)
+        && (request.command == VoteCommand::Map ? !request.map.empty() : request.map.empty());
+}
+inline bool writeVoteRequest(Writer& w, const VoteRequestPayload& request)
+{
+    if (!validVoteRequest(request)) return false;
+    w.u32(uint32_t(request.command)); w.u32(request.id); w.text(request.map, VoteNameBytes);
+    return true;
+}
+inline bool readVoteRequest(Reader& r, VoteRequestPayload& request)
+{
+    VoteRequestPayload candidate;
+    candidate.command = VoteCommand(r.u32()); candidate.id = r.u32(); candidate.map = r.text(VoteNameBytes);
+    if (!r.end() || !validVoteRequest(candidate)) return false;
+    request = candidate;
+    return true;
+}
+struct VoteStatusPayload
+{
+    uint32_t id = 0;
+    VoteState state = VoteState::Idle;
+    uint32_t action = 0, remainingMs = 0, eligible = 0, yes = 0, no = 0, required = 0;
+    uint32_t caller = 0, canVote = 0, voted = 0, cooldownMs = 0, rejected = 0;
+    std::string target, notice;
+};
+inline bool validVoteStatus(const VoteStatusPayload& s)
+{
+    if (uint32_t(s.state) > 4 || s.action > 3 || s.remainingMs > 30000 || s.eligible > 8
+        || s.yes > s.eligible || s.no > s.eligible - s.yes || s.required != (s.eligible * 51 + 99) / 100
+        || s.caller >= 8 || s.canVote > 1 || s.voted > 1 || s.cooldownMs > 120000 || s.rejected > 1
+        || !voteText(s.target, VoteNameBytes) || !voteText(s.notice, 160)) return false;
+    if (s.state == VoteState::Idle)
+        return !s.id && !s.action && !s.eligible && !s.remainingMs && !s.canVote && !s.voted && s.target.empty();
+    return s.id && s.action && s.eligible && !s.target.empty()
+        && (s.state == VoteState::Active || (!s.remainingMs && !s.canVote));
+}
+inline bool writeVoteStatus(Writer& w, const VoteStatusPayload& s)
+{
+    if (!validVoteStatus(s)) return false;
+    w.u32(s.id); w.u32(uint32_t(s.state)); w.u32(s.action); w.u32(s.remainingMs);
+    w.u32(s.eligible); w.u32(s.yes); w.u32(s.no); w.u32(s.required);
+    w.u32(s.caller); w.u32(s.canVote); w.u32(s.voted); w.u32(s.cooldownMs); w.u32(s.rejected);
+    w.text(s.target, VoteNameBytes); w.text(s.notice, 160);
+    return true;
+}
+inline bool readVoteStatus(Reader& r, VoteStatusPayload& s)
+{
+    VoteStatusPayload candidate;
+    candidate.id = r.u32(); candidate.state = VoteState(r.u32()); candidate.action = r.u32(); candidate.remainingMs = r.u32();
+    candidate.eligible = r.u32(); candidate.yes = r.u32(); candidate.no = r.u32(); candidate.required = r.u32();
+    candidate.caller = r.u32(); candidate.canVote = r.u32(); candidate.voted = r.u32(); candidate.cooldownMs = r.u32(); candidate.rejected = r.u32();
+    candidate.target = r.text(VoteNameBytes); candidate.notice = r.text(160);
+    if (!r.end() || !validVoteStatus(candidate)) return false;
+    s = candidate;
+    return true;
+}
+struct VoteOptionsPayload
+{
+    uint32_t enabled = 0, actions = 0, listRequested = 0; // action bits: map=1, restart=2, next=4
+    std::vector<std::string> maps;
+};
+inline bool validVoteOptions(const VoteOptionsPayload& options)
+{
+    if (options.enabled > 1 || options.actions > 7 || options.listRequested > 1 || options.maps.size() > 256
+        || (!options.enabled && (options.actions || !options.maps.empty()))
+        || (bool(options.actions & 1) != !options.maps.empty())) return false;
+    for (const auto& map : options.maps) if (map.empty() || !voteText(map, VoteNameBytes)) return false;
+    return true;
+}
+inline bool writeVoteOptions(Writer& w, const VoteOptionsPayload& options)
+{
+    if (!validVoteOptions(options)) return false;
+    w.u32(options.enabled); w.u32(options.actions); w.u32(options.listRequested); w.u32(uint32_t(options.maps.size()));
+    for (const auto& map : options.maps) w.text(map, VoteNameBytes);
+    return true;
+}
+inline bool readVoteOptions(Reader& r, VoteOptionsPayload& options)
+{
+    VoteOptionsPayload candidate;
+    candidate.enabled = r.u32(); candidate.actions = r.u32(); candidate.listRequested = r.u32();
+    uint32_t const count = r.u32();
+    if (!r.ok || count > 256) return false;
+    for (uint32_t n = 0; n < count && r.ok; ++n) candidate.maps.push_back(r.text(VoteNameBytes));
+    if (!r.end() || !validVoteOptions(candidate)) return false;
+    options = candidate;
     return true;
 }
 struct Command

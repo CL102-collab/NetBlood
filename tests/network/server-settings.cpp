@@ -8,12 +8,32 @@
 #include <limits>
 
 bool gDedicated = true, gGameStarted = true, gStartNewGame = false;
+bool ready2send = true;
 int gLevelTime = 0;
 int connecthead = -1, connectpoint2[MAXMULTIPLAYERS];
 GAMEOPTIONS gGameOptions = {};
+PKT_STARTGAME gPacketStartGame = {};
 EPISODEINFO gEpisodeInfo[kMaxEpisodes] = {};
+int gEpisodeCount = kMaxEpisodes;
 static bool isServer = true;
+static int preparedMaps = 0;
+static std::string readMapName;
 bool netIsServer() { return isServer; }
+bool netMapRead(const char* name, std::vector<uint8_t>&, std::string&)
+{
+    readMapName = name;
+    return true; // File I/O is outside this policy test.
+}
+void netPrepareCurrentMapSettings()
+{
+    ++preparedMaps;
+    // The real network bootstrap marks named custom maps for registration.
+    // Restart must suppress that registration while preserving the map's
+    // standalone identity in GAMEOPTIONS for subsequent voting policy.
+    gPacketStartGame.userMap = gGameOptions.szUserMap[0] != 0;
+    gPacketStartGame.episodeId = gGameOptions.nEpisode;
+    gPacketStartGame.levelId = gGameOptions.nLevel;
+}
 int seqRegisterClient(void (*)(int, int)) { return 0; }
 void levelGetNextLevels(int episode, int level, int* normal, int* secret)
 {
@@ -40,8 +60,10 @@ void reset()
     settings.gameType = kGameTypeBloodBath;
     pendingAdvance = false;
     rotation.clear();
+    initialMaps.clear();
     gDedicated = gGameStarted = isServer = true;
     gStartNewGame = false;
+    ready2send = 1;
     gLevelTime = 0;
     gGameOptions = {};
     gGameOptions.nEpisode = 1;
@@ -194,10 +216,119 @@ void coopRoutes()
     reset(); isServer = false;
     CHECK(!netServerHandleLevelExit(kLevelExitNormal) && !pendingAdvance);
 }
+
+void mapVotePolicy()
+{
+    std::string error, target;
+    size_t index = 77;
+    reset();
+    CHECK(settings.mapVoteEnabled);
+    CHECK(netServerVoteMaps().empty());
+    CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M2", index, error));
+    CHECK(error.find("rotation") != std::string::npos && index == 77);
+    rotation = {"E1M1", "E1M2.MAP", "maps/custom.map"};
+    settings.rotationCount = rotation.size();
+    CHECK(netServerVoteMaps() == rotation);
+    const GAMEOPTIONS original = gGameOptions;
+    for (const auto& name : {"E1M2", "e1m2", "E1M2.MAP", "e1m2.map"}) {
+        CHECK(netServerResolveVote(NetServerVoteAction::Map, name, index, error));
+        CHECK(index == 1 && error.empty());
+        CHECK(std::memcmp(&gGameOptions, &original, sizeof(original)) == 0);
+    }
+    CHECK(netServerResolveVote(NetServerVoteAction::Map, "MAPS\\CUSTOM.MAP", index, error) && index == 2);
+    for (const auto& name : {"E1M3", "E1M", "../E1M2", "E1M2.MAP extra", ""}) {
+        index = 77;
+        CHECK(!netServerResolveVote(NetServerVoteAction::Map, name, index, error));
+        CHECK(index == 77 && !error.empty());
+    }
+    for (auto action : {NetServerVoteAction::Restart, NetServerVoteAction::Next})
+        CHECK(!netServerResolveVote(action, "", index, error));
+    settings.gameType = kGameTypeTeams;
+    CHECK(netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error) && index == 0);
+    CHECK(netServerVoteMaps() == rotation);
+    settings.mapVoteEnabled = false;
+    CHECK(netServerVoteMaps().empty());
+    CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
+    CHECK(error.find("disabled") != std::string::npos);
+
+    for (int guard = 0; guard < 6; ++guard) {
+        reset(); rotation = {"E1M1"};
+        if (guard == 0) isServer = false;
+        if (guard == 1) gGameStarted = false;
+        if (guard == 2) gStartNewGame = true;
+        if (guard == 3) pendingAdvance = true;
+        if (guard == 4) gGameOptions.uGameFlags = kGameFlagContinuing;
+        if (guard == 5) ready2send = 0;
+        CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
+        CHECK(!error.empty());
+    }
+
+    reset(); settings.gameType = kGameTypeCoop; settings.episode = 2;
+    gEpisodeInfo[1].nLevels = 3;
+    gEpisodeInfo[1].levelsInfo[0].EndingA = 1;
+    gEpisodeInfo[1].levelsInfo[0].EndingB = 2;
+    std::strcpy(gEpisodeInfo[1].levelsInfo[0].Filename, "E2M1");
+    std::strcpy(gEpisodeInfo[1].levelsInfo[1].Filename, "E2M2");
+    std::strcpy(gEpisodeInfo[1].levelsInfo[2].Filename, "E2M3");
+    std::strcpy(gGameOptions.zLevelName, "E2M1");
+    CHECK(netServerVoteMaps().empty());
+    CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E2M2", index, error));
+    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(netServerResolveVote(NetServerVoteAction::Next, "", index, error));
+    CHECK(nextVoteMap(target, error) && target == "E2M2");
+    VoteNextLevel next;
+    CHECK(nextVoteEpisode(next, error) && next.episode == 1 && next.level == 1 && next.preserveInventory);
+    CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "E2M1", index, error));
+    CHECK(!netServerResolveVote(NetServerVoteAction::Next, "E2M2", index, error));
+    gEpisodeInfo[1].levelsInfo[0].EndingA = -1;
+    CHECK(nextVoteMap(target, error) && target == "E2M1");
+    CHECK(nextVoteEpisode(next, error) && next.episode == 1 && next.level == 0 && !next.preserveInventory);
+    rotation = {"E1M1", "E1M2"}; settings.rotationIndex = 1;
+    CHECK(nextVoteMap(target, error) && target == "E1M1");
+    rotation.clear();
+    std::strcpy(gGameOptions.szUserMap, "custom.map");
+    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(!netServerResolveVote(NetServerVoteAction::Next, "", index, error));
+    gGameOptions.szUserMap[0] = 0;
+
+    // Listen servers use their actual game mode, never stale dedicated rules.
+    gDedicated = false; gGameOptions.nGameType = kGameTypeCoop;
+    settings.gameType = kGameTypeBloodBath;
+    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(netServerResolveVote(NetServerVoteAction::Next, "", index, error));
+    CHECK(nextVoteMap(target, error) && target == "E2M1");
+    rotation = {"E1M1"}; settings.gameType = kGameTypeCoop;
+    gGameOptions.nGameType = kGameTypeBloodBath;
+    CHECK(netServerVoteMaps().empty());
+    CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
+    CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+}
+
+void listenCustomRestart()
+{
+    reset();
+    gDedicated = false;
+    gGameOptions.nGameType = kGameTypeCoop;
+    gGameOptions.nEpisode = 0;
+    gGameOptions.nLevel = 9;
+    // GUI hosting reaches this path with an already registered map slot and
+    // szUserMap populated by netBroadcastNewGame, unlike CLI -map startup.
+    std::strcpy(gGameOptions.szUserMap, "custom.map");
+    std::strcpy(gGameOptions.zLevelName, "custom");
+    gPacketStartGame = {};
+    preparedMaps = 0;
+    const GAMEOPTIONS original = gGameOptions;
+    std::string error;
+    CHECK(netServerApplyVote(NetServerVoteAction::Restart, 0, error));
+    CHECK(error.empty() && readMapName == "custom.map" && preparedMaps == 1);
+    CHECK(gStartNewGame && gPacketStartGame.userMap == 0);
+    CHECK(gPacketStartGame.episodeId == 0 && gPacketStartGame.levelId == 9);
+    CHECK(std::memcmp(&original, &gGameOptions, sizeof(original)) == 0);
+}
 }
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); coopRoutes();
-    std::printf("PASS: dedicated limits, hot-join score retention, authoritative score sources, clock/role guards and coop exits (%u assertions)\n", assertions);
+    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); coopRoutes(); mapVotePolicy(); listenCustomRestart();
+    std::printf("PASS: dedicated limits, hot-join scores, map vote policy, clock/role guards and coop exits (%u assertions)\n", assertions);
 }

@@ -622,6 +622,7 @@ int16_t startang, startsectnum;
 
 void StartLevel(GAMEOPTIONS *pOpt)
 {
+    netOnLevelChanging();
     EndLevel();
     gInput = {};
     gStartNewGame = 0;
@@ -1339,6 +1340,7 @@ SWITCH switches[] = {
     { "episode", 54, 1 },
     { "difficulty", 55, 1 },
     { "losekeys", 56, 1 },
+    { "mapvote", 57, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1382,6 +1384,7 @@ void PrintHelp(void)
         "-episode [n]\tCoop episode to play and repeat; starts at 1\n"
         "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
         "-losekeys on|off\tLose keys on coop death; Default:on\n"
+        "-mapvote on|off\tAllow players to vote for map changes; Default:on\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif
@@ -1707,9 +1710,9 @@ void ParseOptions(void)
             gDedicated = true;
             break;
         case 48: case 49: case 50: case 51: case 52:
-        case 53: case 54: case 55: case 56:
+        case 53: case 54: case 55: case 56: case 57:
         {
-            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys" };
+            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote" };
             const char* name = names[option - 48];
             if (OptArgc < 1)
                 ThrowError("Missing argument for -%s", name);

@@ -166,10 +166,11 @@ def main():
                              ("difficulty", ("-1", "5", "2x")),
                              ("episode", ("0", "8", "1x")),
                              ("autoaim", ("maybe",)), ("weaponsstay", ("2",)), ("losekeys", ("yes",)),
+                             ("mapvote", ("maybe",)),
                              ("gametype", ("invalid",))):
             for index, value in enumerate(values):
                 invalid(f"{flag}-{index}", ["-dedicated", "-" + flag, value], "game type" if flag == "gametype" else flag)
-        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys"):
+        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote"):
             invalid("missing-" + flag, ["-dedicated", "-" + flag], "game type" if flag == "gametype" else flag)
         for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off")):
             invalid("coop-only-" + flag, ["-dedicated", "-gametype", "bloodbath", "-" + flag, value], flag)
@@ -188,6 +189,7 @@ def main():
         invalid("player-cap-conflict", ["-dedicated", "-server", "2", "-maxplayers", "3"], "maxplayers")
         invalid("coop-scorelimit", ["-dedicated", "-gametype", "coop", "-scorelimit", "5"], "scorelimit")
         invalid("non-dedicated-rule", ["-maxplayers", "2"], "dedicated")
+        invalid("non-dedicated-mapvote", ["-mapvote", "off"], "dedicated")
 
         port = free_port()
         expected = {"gametype": 2, "timelimit": 1, "scorelimit": 25, "maxplayers": 2,

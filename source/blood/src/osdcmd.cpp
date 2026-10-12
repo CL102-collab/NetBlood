@@ -69,6 +69,45 @@ static int osdcmd_net_status(osdcmdptr_t parm)
     return OSDCMD_OK;
 }
 
+static int osdcmd_callvote(osdcmdptr_t parm)
+{
+    if (parm->numparms == 2 && !Bstrcasecmp(parm->parms[0], "map") && parm->parms[1][0])
+        netCallMapVote("map", parm->parms[1]);
+    else if (parm->numparms == 1 && !Bstrcasecmp(parm->parms[0], "restart"))
+        netCallMapVote("restart", nullptr);
+    else if (parm->numparms == 1 && !Bstrcasecmp(parm->parms[0], "next"))
+        netCallMapVote("next", nullptr);
+    else
+        return OSDCMD_SHOWHELP;
+    return OSDCMD_OK;
+}
+
+static int osdcmd_vote(osdcmdptr_t parm)
+{
+    if (parm->numparms != 1) return OSDCMD_SHOWHELP;
+    if (!Bstrcasecmp(parm->parms[0], "yes"))
+        netCastMapVote(true);
+    else if (!Bstrcasecmp(parm->parms[0], "no"))
+        netCastMapVote(false);
+    else
+        return OSDCMD_SHOWHELP;
+    return OSDCMD_OK;
+}
+
+static int osdcmd_vote_maps(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netListVoteMaps();
+    return OSDCMD_OK;
+}
+
+static int osdcmd_vote_status(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netPrintVoteStatus();
+    return OSDCMD_OK;
+}
+
 static int osdcmd_net_disconnect(osdcmdptr_t parm)
 {
     if (parm->numparms) return OSDCMD_SHOWHELP;
@@ -1258,6 +1297,10 @@ int32_t registerosdcommands(void)
         }
     }
     OSD_RegisterFunction("net_status", "net_status: show session and prediction statistics", osdcmd_net_status);
+    OSD_RegisterFunction("callvote", "callvote map <mapname> | restart | next: propose a map change; use vote_maps for allowed maps", osdcmd_callvote);
+    OSD_RegisterFunction("vote", "vote yes|no: cast your ballot in the active map vote", osdcmd_vote);
+    OSD_RegisterFunction("vote_maps", "vote_maps: list the server's allowed map-vote targets", osdcmd_vote_maps);
+    OSD_RegisterFunction("vote_status", "vote_status: show the active map vote and its remaining time", osdcmd_vote_status);
     OSD_RegisterFunction("net_disconnect", "net_disconnect: leave the current session", osdcmd_net_disconnect);
     OSD_RegisterFunction("net_record", "net_record <path>: record authoritative packets", osdcmd_net_record);
     OSD_RegisterFunction("net_stoprecord", "net_stoprecord: finish the packet demo", osdcmd_net_stoprecord);

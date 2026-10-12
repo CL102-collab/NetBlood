@@ -164,6 +164,7 @@ exclusive.
 | `-scorelimit` | 0–2147483647; 0 (default) means unlimited; Bloodbath or teams only |
 | `-autoaim` | `on` (default) or `off`, applied to every player |
 | `-weaponsstay` | `on` (default) or `off` |
+| `-mapvote` | `on` (default) or `off`; enables player map votes |
 | `-maplist` | A `.txt` filename, up to 256 maps and 128 KiB |
 | `-episode` | Cooperative episode, numbered from 1 |
 | `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
@@ -175,11 +176,11 @@ normal exit; without a map list or explicit episode, limits restart the current
 map. Bloodbath uses individual frag totals; teams uses team totals. The
 clock also runs while the server is empty. `net_status` prints effective rules
 and each player's effective autoaim/skill. Connected clients cannot change
-maps, restart or start games, host another server, or change server-owned
+maps or restart games directly, start games, host another server, or change server-owned
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata uses wire protocol 2. Rebuild the server and all
+The mandatory rule metadata and map-vote messages use wire protocol 3. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 
@@ -203,6 +204,70 @@ profiles; the authoritative player profiles must keep the configured values.
 The output retains exact command lines, process logs, statuses and a binary
 hash in `result.json`. It tests console authority enforcement; the separate
 menu guards are not exercised by synthetic menu navigation.
+
+## Player map votes
+
+Dedicated servers enable map voting by default. Add `-mapvote off` to disable
+it, or specify `-mapvote on` explicitly. Votes can change only the map; the
+server's game mode, time/score limits and other rules remain authoritative.
+
+Players use these console commands:
+
+| Command | Action |
+| --- | --- |
+| `vote_maps` | List maps available for a Bloodbath or teams vote |
+| `callvote map E1M2` | Propose a map from the server's configured rotation |
+| `callvote restart` | Propose restarting the current co-op map |
+| `callvote next` | Propose the next co-op map |
+| `vote yes` / `vote no` | Cast one ballot in the active vote |
+| `vote_status` | Show the current vote, counts and time remaining |
+
+Bloodbath and teams votes require a map rotation; a server started without
+`-maplist` cannot accept votes to select a map. Names match rotation entries
+case-insensitively, with an optional `.MAP` suffix. Co-op accepts only restart
+or next, following the normal episode exit (or next rotation entry). A custom
+standalone map has no next level, but can be restarted. Listen servers also
+allow co-op restart and next votes.
+
+Each vote runs for the full **30 seconds**. The caller automatically votes yes.
+The server fixes the electorate to the players present when the vote starts;
+late joiners can see the vote but cannot vote in it. Each eligible player has
+one ballot and cannot change it. A map changes only if at least **51% of that
+electorate** participates and at least **51% votes yes**, rounding the required
+count up. For example, three players require two yes votes; two players require
+both. Abstentions and disconnected players do not reduce the required count.
+
+Only one vote can run at a time. Each player must wait **two minutes** from
+their accepted vote call before calling another; unsuccessful votes also count.
+The cooldown survives map transitions. Rejected calls do not consume a
+cooldown. Ordinary server-driven map changes cancel any active vote.
+
+Exercise the system using real game clients and real vote deadlines:
+
+```sh
+python3 tests/network/map-vote.py \
+  --binary ./nblood \
+  --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-map-vote-evidence
+```
+
+The test covers no quorum, majority-no, majority-yes, fixed electorates,
+duplicate ballots, concurrent calls, cooldowns across maps, disabled voting,
+missing rotations, map-target validation, co-op restart and next. A listen
+server also restarts a map: its episode/level registry slot, map CRC and server
+rules must remain unchanged. It checks
+the resulting map generations and preserved server rules on both sides. A
+client recording begun during an active vote must restore its vote/options
+baseline and replay the result and map transition to the exact final snapshot.
+Six ballots and packet playback take about three and a half minutes, plus process startup and shutdown.
+Logs, exact commands, statuses and the tested binary hash are retained in
+`result.json`. The asset-free `vote-test.sh` and `server-settings-test.sh`
+cover clock boundaries, vote policy and map-route edge cases separately. The
+policy unit also checks that restarting a GUI-hosted custom map preserves its
+standalone identity without registering its map slot a second time.
+
+Use `--listen-restart-only` to isolate the 30-second listen-server restart
+check without repeating the dedicated-server ballots and playback.
 
 ## Automatic map downloads
 

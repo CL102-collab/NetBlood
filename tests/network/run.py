@@ -218,7 +218,7 @@ def inspect_demo(path):
             break
         require(marker in (0x31544b50, 0x31545352) and length >= 28, "unexpected packet demo record")
         magic, protocol, kind, session, generation, sequence, payload_length = struct.unpack_from("<7I", body)
-        require(magic == 0x314e424e and protocol == 2 and payload_length == len(body)-28, "bad recorded envelope")
+        require(magic == 0x314e424e and protocol == 3 and payload_length == len(body)-28, "bad recorded envelope")
         record = {"type": kind, "session": session, "generation": generation,
                   "sequence": sequence, "elapsed_ticks": elapsed, "tick": tick,
                   "sha256": hashlib.sha256(body).hexdigest()}
@@ -233,6 +233,16 @@ def inspect_demo(path):
             state_hash = struct.unpack_from("<I", body, compression+20)[0]
             require(not flags & 1, "recorded snapshot is a delta")
             record.update(snapshot=snapshot, state_tick=state_tick, hash=f"{state_hash:08x}")
+        elif kind == 17:
+            require(len(body) >= 28+56, "recorded vote status is truncated")
+            values = struct.unpack_from("<13I", body, 28)
+            record.update(vote_id=values[0], vote_state=values[1], vote_action=values[2],
+                          vote_remaining_ms=values[3], vote_eligible=values[4],
+                          vote_yes=values[5], vote_no=values[6], vote_required=values[7])
+        elif kind == 18:
+            require(len(body) >= 28+16, "recorded vote options are truncated")
+            enabled, actions, requested, count = struct.unpack_from("<4I", body, 28)
+            record.update(vote_enabled=enabled, vote_actions=actions, vote_map_count=count)
         packets.append(record)
     else:
         raise Failure("packet demo missing end marker")
