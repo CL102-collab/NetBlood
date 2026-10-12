@@ -80,6 +80,20 @@ LASER::CAMERA LASER::cam;
 unsigned int LASER::tile[2][kLaserMaxColors];
 unsigned int LASER::size[2][3][256];
 
+LASER::LASER()
+{
+    numpieces = piecescapacity = maxdist = xrepeat = yrepeat = thickness = color = 0;
+    vertical = direction = nodudes = noplayers = nothings = nomasks = nodead = 0;
+    hasignoreflags = usehitscan = troncehit = troncelast = strictcmd = raydone = 0;
+    pOwn = NULL;
+    pXOwn = NULL;
+    pieces = NULL;
+    memset(piecesectmap, 0, sizeof(piecesectmap));
+    newscan = {};
+    oldscan = {};
+    oldscan.hitsprite = -1;
+}
+
 LASER::LASER(spritetype* pLaser)
 {
     pieces = NULL;

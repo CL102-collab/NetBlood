@@ -34,6 +34,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "blood.h"
 #include "globals.h"
 #include "db.h"
+#include "netsnapshot.h"
 #include "iob.h"
 #include "eventq.h"
 #ifdef NOONE_EXTENSIONS
@@ -310,6 +311,7 @@ void RemoveSpriteStat(int nSprite)
 
 void qinitspritelists(void) // Replace
 {
+    netSnapshotResetGenerations();
     for (short i = 0; i <= kMaxSectors; i++)
     {
         headspritesect[i] = -1;
@@ -360,6 +362,8 @@ int InsertSprite(int nSector, int nStat)
 #endif
 
     Numsprites++;
+
+    netSnapshotSpriteCreated(nSprite);
 
     return nSprite;
 }

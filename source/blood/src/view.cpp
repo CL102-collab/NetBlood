@@ -50,6 +50,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "mirrors.h"
 #include "network.h"
+#include "netpredict.h"
+#include "netlag.h"
+#include "netevents.h"
 #include "player.h"
 #include "replace.h"
 #include "screen.h"
@@ -333,7 +336,7 @@ void viewInitializePrediction(void)
     predict.at40 = gMe->zWeapon;
     predict.at44 = gMe->zWeaponVel;
     predictOld = predict;
-    if (numplayers != 1)
+    if (numplayers != 1 || netPredictActive())
     {
         gViewAngle = predict.at30;
         gViewLook = predict.at20;
@@ -348,13 +351,37 @@ void viewUpdatePrediction(GINPUT *pInput)
     fakePlayerProcess(gMe, pInput);
     fakeActProcessSprites();
     gMe->pSprite->cstat = bakCstat;
-    predictFifo[gPredictTail&255] = predict;
-    gPredictTail++;
-    if (numplayers != 1)
+    if (!netPredictActive())
+    {
+        predictFifo[gPredictTail&255] = predict;
+        gPredictTail++;
+    }
+    if (numplayers != 1 || netPredictActive())
     {
         gViewAngle = predict.at30;
         gViewLook = predict.at20;
     }
+}
+
+vec3_t viewPredictionPosition()
+{
+    return { predict.at50, predict.at54, predict.at58 };
+}
+
+vec2_t viewPredictionPendingLook()
+{
+    return { ((gViewAngle - predict.at30 + 0x4000000) & 0x7ffffff) - 0x4000000, gViewLook - predict.at20 };
+}
+
+void viewPredictionApplyPendingLook(vec2_t pending)
+{
+    gViewAngle = (predict.at30 + pending.x) & 0x7ffffff;
+    gViewLook = fix16_clamp(predict.at20 + pending.y, F16(-347), F16(289));
+}
+
+void viewPredictionSnap()
+{
+    predictOld = predict;
 }
 
 void sub_158B4(PLAYER *pPlayer)
@@ -367,7 +394,7 @@ void fakeProcessInput(PLAYER *pPlayer, GINPUT *pInput)
 {
     POSTURE *pPosture = &pPlayer->pPosture[pPlayer->lifeMode][predict.at48];
 
-    if (numplayers > 1 && gPrediction)
+    if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gPrediction)
     {
         gViewAngleAdjust = 0.f;
         gViewLookRecenter = false;
@@ -446,7 +473,7 @@ void fakeProcessInput(PLAYER *pPlayer, GINPUT *pInput)
         const int speed = (predict.at48 == 1) ? 64 : 128;
         predict.at4c = min(predict.at4c+speed, 0);
         predict.at30 += fix16_from_int(speed);
-        if (numplayers > 1 && gPrediction)
+        if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gPrediction)
             gViewAngleAdjust += float(ClipHigh(-predict.at4c, speed)); // don't overturn when nearing end of spin
     }
 
@@ -521,7 +548,7 @@ void fakeProcessInput(PLAYER *pPlayer, GINPUT *pInput)
         if (pInput->buttonFlags.lookDown)
             predict.at20 = fix16_max(predict.at20-F16(lookStepDown), F16(downAngle));
     }
-    if (numplayers > 1 && gPrediction)
+    if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gPrediction)
     {
         if (pInput->buttonFlags.lookUp)
         {
@@ -950,6 +977,17 @@ void fakeActProcessSprites(void)
 
 void viewCorrectPrediction(void)
 {
+    if (netIsLive())
+    {
+        // Clients reconcile against command ACKs; a listen server's local
+        // player is already authoritative and needs no FIFO predictor.
+        if (netIsServer() && gMe)
+        {
+            gViewLook = gMe->q16look;
+            gViewAngle = gMe->q16ang;
+        }
+        return;
+    }
     if (numplayers == 1)
     {
         gViewLook = gMe->q16look;
@@ -2711,6 +2749,10 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
             pTSprite->z = gViewSpritePredictLoc.z;
             pTSprite->ang = fix16_to_int(gViewSpritePredictLoc.ang);
         }
+        else if (netPredictActive())
+        {
+            netPredictInterpolateSprite(nSprite, pTSprite);
+        }
         else if (gViewInterpolate && TestBitString(gInterpolateSprite, nSprite) && !(pTSprite->flags&512))
         {
             LOCATION *pPrevLoc = &gPrevSpriteLoc[nSprite];
@@ -2818,11 +2860,13 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
                 break;
             }
         }
-        while (nAnim > 0)
+        const int animatedTile = viewAnimatedTile(pTSprite->picnum, nAnim);
+        if (animatedTile < 0)
         {
-            pTSprite->picnum += picanm[pTSprite->picnum].num+1;
-            nAnim--;
+            pTSprite->xrepeat = 0;
+            continue;
         }
+        pTSprite->picnum = int16_t(animatedTile);
 
         if (!(tsprflags & TSPR_FLAGS_SLAB) && usevoxels && videoGetRenderMode() != REND_POLYMER && !(spriteext[nSprite].flags&SPREXT_NOTMD))
         {
@@ -2847,6 +2891,11 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
         {
             int const nRootTile = pTSprite->picnum;
             int nAnimTile = pTSprite->picnum + animateoffs_replace(pTSprite->picnum, 32768+nSprite);
+            if (nAnimTile < 0 || nAnimTile >= kMaxTiles)
+            {
+                pTSprite->xrepeat = 0;
+                continue;
+            }
 
             if (usemodels && tile2model[Ptile2tile(nAnimTile, pTSprite->pal)].modelid >= 0 &&
                 tile2model[Ptile2tile(nAnimTile, pTSprite->pal)].framenum >= 0)
@@ -3124,6 +3173,11 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
     for (int nTSprite = spritesortcnt-1; nTSprite >= nViewSprites; nTSprite--)
     {
         tspritetype *pTSprite = &tsprite[nTSprite];
+        if (pTSprite->picnum < 0 || pTSprite->picnum >= kMaxTiles)
+        {
+            pTSprite->xrepeat = 0;
+            continue;
+        }
         int nAnim = 0;
         switch (picanm[pTSprite->picnum].extra&7)
         {
@@ -3153,11 +3207,13 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
                 break;
             }
         }
-        while (nAnim > 0)
+        const int animatedTile = viewAnimatedTile(pTSprite->picnum, nAnim);
+        if (animatedTile < 0)
         {
-            pTSprite->picnum += picanm[pTSprite->picnum].num+1;
-            nAnim--;
+            pTSprite->xrepeat = 0;
+            continue;
         }
+        pTSprite->picnum = int16_t(animatedTile);
     }
 
 #ifdef NOONE_EXTENSIONS
@@ -3275,6 +3331,7 @@ void viewSetSystemMessage(const char* pMessage, ...) {
 
 void viewSetMessage(const char *pMessage, const int pal, const MESSAGE_PRIORITY priority)
 {
+    netMessageBroadcast(pMessage, pal, int(priority));
     OSD_Printf("%s\n", pMessage);
     gGameMessageMgr.Add(pMessage, 15, pal, priority);
 }
@@ -3541,7 +3598,12 @@ void viewDrawScreen(void)
     {
         gInterpolate = ClipRange(gInterpolate, 0, 65536);
     }
-    if (gViewInterpolate)
+    if (netPredictActive())
+    {
+        gInterpolate = netPredictLocalFraction();
+        netPredictBeginRender();
+    }
+    else if (gViewInterpolate)
     {
         CalcInterpolations();
     }
@@ -3579,9 +3641,10 @@ void viewDrawScreen(void)
         int v4c = gView->swayWidth;
         int v48 = gView->swayHeight;
         int nSectnum = gView->pSprite->sectnum;
-        if (gViewInterpolate)
+        if (gViewInterpolate || netPredictActive())
         {
-            if (numplayers > 1 && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
+            if (netPredictActive() && !gViewInterpolate) gInterpolate = 65536;
+            if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
             {
                 nSectnum = predict.at68;
                 cX = interpolate(predictOld.at50, predict.at50, gInterpolate);
@@ -4042,7 +4105,7 @@ RORHACK:
                 fix16_t cA = gView->q16ang;
                 if (gViewInterpolate)
                 {
-                    if (numplayers > 1 && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
+                    if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
                     {
                         cX = interpolate(predictOld.at50, predict.at50, gInterpolate);
                         cY = interpolate(predictOld.at54, predict.at54, gInterpolate);
@@ -4066,6 +4129,7 @@ RORHACK:
         UpdateGotSectorSectorFX();
     }
     viewDrawInterface(delta);
+    netLagDraw();
     if (IsPlayerSprite(gView->pSprite) && (gView->hand == 1))
     {
         int zn = ((gView->zWeapon-gView->zView-(12<<8))>>7)+220;
@@ -4124,7 +4188,9 @@ RORHACK:
     {
         viewDrawText(0, errMsg, 160, 20, 0, 0, 1, 0);
     }
-    if (gViewInterpolate)
+    if (netPredictActive())
+        netPredictEndRender();
+    else if (gViewInterpolate)
     {
         RestoreInterpolations();
     }

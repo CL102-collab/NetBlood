@@ -39,6 +39,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "loadsave.h"
 #include "map2d.h"
 #include "network.h"
+#include "netevents.h"
 #include "player.h"
 #include "seq.h"
 #include "sfx.h"
@@ -1427,10 +1428,11 @@ void PickUp(PLAYER *pPlayer, spritetype *pSprite)
     if (showEff)
         pPlayer->pickupEffect = 30;
 
-    if (pPlayer == gMe && showMsg)
+    if (showMsg && (pPlayer == gMe || netIsServer()))
     {
-        if (customMsg > 0) trTextOver(customMsg - 1);
-        else viewSetMessage(buffer, 0, MESSAGE_PRIORITY_PICKUP);
+        if (customMsg > 0)
+            netMessageForPlayer(pPlayer->nPlayer, levelGetMessage(customMsg - 1), VanillaMode() ? 0 : 8, MESSAGE_PRIORITY_INI);
+        else netMessageForPlayer(pPlayer->nPlayer, buffer, 0, MESSAGE_PRIORITY_PICKUP);
     }
 }
 
@@ -1753,17 +1755,17 @@ void ProcessInput(PLAYER *pPlayer)
             {
                 XSECTOR *pXSector = &xsector[a3];
                 int key = pXSector->Key;
-                if (pXSector->locked && pPlayer == gMe)
+                if (pXSector->locked)
                 {
-                    viewSetMessage("It's locked");
-                    sndStartSample(3062, 255, 2, 0);
+                    netMessageForPlayer(pPlayer->nPlayer, "It's locked");
+                    netSoundForPlayer(pPlayer->nPlayer, 3062, 255, 2);
                 }
                 if (!key || pPlayer->hasKey[key])
                     trTriggerSector(a2, pXSector, kCmdSpritePush, pPlayer->nSprite);
-                else if (pPlayer == gMe)
+                else
                 {
-                    viewSetMessage("That requires a key.");
-                    sndStartSample(3063, 255, 2, 0);
+                    netMessageForPlayer(pPlayer->nPlayer, "That requires a key.");
+                    netSoundForPlayer(pPlayer->nPlayer, 3063, 255, 2);
                 }
             }
             break;
@@ -1771,19 +1773,19 @@ void ProcessInput(PLAYER *pPlayer)
         {
             XWALL *pXWall = &xwall[a3];
             int key = pXWall->key;
-            if (pXWall->locked && pPlayer == gMe)
+            if (pXWall->locked)
             {
-                viewSetMessage("It's locked");
-                sndStartSample(3062, 255, 2, 0);
+                netMessageForPlayer(pPlayer->nPlayer, "It's locked");
+                netSoundForPlayer(pPlayer->nPlayer, 3062, 255, 2);
             }
             if (!key || pPlayer->hasKey[key])
             {
                 trTriggerWall(a2, pXWall, kCmdWallPush, pPlayer->nSprite);
             }
-            else if (pPlayer == gMe)
+            else
             {
-                viewSetMessage("That requires a key.");
-                sndStartSample(3063, 255, 2, 0);
+                netMessageForPlayer(pPlayer->nPlayer, "That requires a key.");
+                netSoundForPlayer(pPlayer->nPlayer, 3063, 255, 2);
             }
             break;
         }
@@ -1791,14 +1793,14 @@ void ProcessInput(PLAYER *pPlayer)
         {
             XSPRITE *pXSprite = &xsprite[a3];
             int key = pXSprite->key;
-            if (pXSprite->locked && pPlayer == gMe && pXSprite->lockMsg)
-                trTextOver(pXSprite->lockMsg);
+            if (pXSprite->locked && pXSprite->lockMsg)
+                netMessageForPlayer(pPlayer->nPlayer, levelGetMessage(pXSprite->lockMsg), VanillaMode() ? 0 : 8, MESSAGE_PRIORITY_INI);
             if (!key || pPlayer->hasKey[key])
                 trTriggerSprite(a2, pXSprite, kCmdSpritePush, pPlayer->nSprite);
-            else if (pPlayer == gMe)
+            else
             {
-                viewSetMessage("That requires a key.");
-                sndStartSample(3063, 255, 2, 0);
+                netMessageForPlayer(pPlayer->nPlayer, "That requires a key.");
+                netSoundForPlayer(pPlayer->nPlayer, 3063, 255, 2);
             }
             break;
         }
@@ -1947,7 +1949,8 @@ void ProcessInput(PLAYER *pPlayer)
         if (pPlayer->curWeapon)
         {
             WeaponLower(pPlayer);
-            viewSetMessage("Holstering weapon");
+            if (netIsServer()) netMessageForPlayer(pPlayer->nPlayer, "Holstering weapon");
+            else viewSetMessage("Holstering weapon");
         }
     }
     CheckPickUp(pPlayer);
@@ -2122,15 +2125,23 @@ void playerFrag(PLAYER *pKiller, PLAYER *pVictim)
             gPlayerScores[pVictim->teamId]--;
         int nMessage = Random(5);
         int nSound = gSuicide[nMessage].at4;
+        if (pVictim->handTime <= 0 && gGameOptions.nGameType != kGameTypeSinglePlayer && nSound >= 0)
+            netSoundForPlayer(pVictim->nPlayer, nSound, 255, 2);
         if (pVictim == gMe && gMe->handTime <= 0)
         {
             sprintf(buffer, "You killed yourself!");
-            if (gGameOptions.nGameType != kGameTypeSinglePlayer && nSound >= 0)
-                sndStartSample(nSound, 255, 2, 0);
         }
         else
         {
             sprintf(buffer, gSuicide[nMessage].at0, gProfile[nVictim].name);
+        }
+        if (netIsServer())
+        {
+            char shared[128];
+            sprintf(shared, gSuicide[nMessage].at0, gProfile[nVictim].name);
+            for (int player = connecthead; player >= 0; player = connectpoint2[player])
+                netMessageForPlayer(player, player == nVictim && pVictim->handTime <= 0 ? "You killed yourself!" : shared);
+            buffer[0] = 0;
         }
     }
     else
@@ -2154,10 +2165,10 @@ void playerFrag(PLAYER *pKiller, PLAYER *pVictim)
         int nSound = gVictory[nMessage].at4;
         const char* pzMessage = gVictory[nMessage].at0;
         sprintf(buffer, pzMessage, gProfile[nKiller].name, gProfile[nVictim].name);
-        if (gGameOptions.nGameType != kGameTypeSinglePlayer && nSound >= 0 && pKiller == gMe)
-            sndStartSample(nSound, 255, 2, 0);
+        if (gGameOptions.nGameType != kGameTypeSinglePlayer && nSound >= 0)
+            netSoundForPlayer(pKiller->nPlayer, nSound, 255, 2);
     }
-    viewSetMessage(buffer);
+    if (buffer[0]) viewSetMessage(buffer);
 }
 
 void FragPlayer(PLAYER *pPlayer, int nSprite)
@@ -2520,7 +2531,13 @@ void PlayerSurvive(int, int nXSprite)
         if (IsPlayerSprite(pSprite))
         {
             PLAYER *pPlayer = &gPlayer[pSprite->type-kDudePlayer1];
-            if (pPlayer == gMe)
+            if (netIsServer())
+            {
+                sprintf(buffer, "%s lives again!", gProfile[pPlayer->nPlayer].name);
+                for (int player = connecthead; player >= 0; player = connectpoint2[player])
+                    netMessageForPlayer(player, player == pPlayer->nPlayer ? "I LIVE...AGAIN!!" : buffer);
+            }
+            else if (pPlayer == gMe)
                 viewSetMessage("I LIVE...AGAIN!!");
             else
             {

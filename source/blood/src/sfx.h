@@ -30,6 +30,7 @@ struct BONKLE
     DICTNODE* hSnd;
     int sfxId;
     spritetype* pSndSpr;
+    uint32_t netSpriteGeneration;
     int chanId;
     int pitch;
     int vol;

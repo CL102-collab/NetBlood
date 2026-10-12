@@ -46,7 +46,6 @@ enum PLAYERKEYSMODE {
 
 #define kNetDefaultPort 23513
 
-extern char packet[576];
 extern bool gStartNewGame;
 extern PACKETMODE gPacketMode;
 extern ClockTicks gNetFifoClock;
@@ -89,59 +88,6 @@ struct PKT_STARTGAME {
 extern PKT_STARTGAME gPacketStartGame;
 
 
-inline void PutPacketByte(char *&p, int a2)
-{
-    //dassert(p - packet + 1 < sizeof(packet));
-    *p++ = a2;
-}
-
-inline void PutPacketWord(char *&p, int a2)
-{
-    //dassert(p - packet + 2 < sizeof(packet));
-    *(short*)p = a2;
-    p += 2;
-}
-
-inline void PutPacketDWord(char *&p, int a2)
-{
-    //dassert(p - packet + 4 < sizeof(packet));
-    *(int*)p = a2;
-    p += 4;
-}
-
-inline void PutPacketBuffer(char *&p, const void *pBuffer, int size)
-{
-    //dassert(p + size < packet + sizeof(packet));
-    memcpy(p, pBuffer, size);
-    p += size;
-}
-
-inline char GetPacketByte(char *&p)
-{
-    return *p++;
-}
-
-inline short GetPacketWord(char *&p)
-{
-    short t = *(short*)p;
-    p += 2;
-    return t;
-}
-
-inline int GetPacketDWord(char *&p)
-{
-    int t = *(int*)p;
-    p += 4;
-    return t;
-}
-
-inline void GetPacketBuffer(char *&p, void *pBuffer, int size)
-{
-    //dassert(p + size < packet + sizeof(packet));
-    memcpy(pBuffer, p, size);
-    p += size;
-}
-
 void netResetState(void);
 void netResetToSinglePlayer(void);
 void netBroadcastMessage(int nPlayer, const char *pzMessage);
@@ -161,3 +107,26 @@ void netPlayerQuit(int nPlayer);
 void netUpdate(void);
 void netDeinitialize(void);
 void netBroadcastNewGame(void);
+
+// Authoritative protocol lifecycle; offline FIFO/demo behavior is unchanged.
+extern int gNetPacketCopies;
+extern int gNetSnapshotRate;
+bool netIsLive();
+bool netIsServer();
+bool netIsClient();
+bool netClientHasSnapshot();
+bool netServerBeginTick();
+void netServerEndTick();
+void netOnLevelStarted();
+void netClientPump();
+void netPrintStatus();
+void netDisconnect();
+bool netStartPacketRecording(const char *path);
+void netStopPacketRecording();
+bool netStartPacketPlayback(const char *path);
+bool netDemoReplayPacket(const uint8_t *data, size_t size);
+
+void netBroadcastEvent(const uint8_t *data, size_t size);
+bool netInServerTick();
+uint32_t netAppliedCommandSequence(int player);
+void netPrepareCurrentMapSettings();

@@ -77,6 +77,8 @@ extern char gStatsColor;
 extern char gGameTitle[32];
 
 extern bool bVanilla;
+// A dedicated server owns no local player, video window, or audio device.
+extern bool gDedicated;
 
 void QuitGame(void);
 void ShutDown(void);

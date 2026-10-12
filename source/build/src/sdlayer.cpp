@@ -173,6 +173,11 @@ int32_t wm_msgbox(const char *name, const char *fmt, ...)
     Bvsnprintf(buf,MSGBOX_PRINTF_MAX,fmt,va);
     va_end(va);
     buf[MSGBOX_PRINTF_MAX-1] = 0;
+    if (novideo)
+    {
+        fprintf(stderr, "%s: %s\n", name ? name : "Message", buf);
+        return 0;
+    }
 #if defined EDUKE32_OSX
     auto result = osx_msgbox(name, buf);
     return result;
@@ -220,6 +225,11 @@ int32_t wm_ynbox(const char *name, const char *fmt, ...)
     Bvsnprintf(buf,MSGBOX_PRINTF_MAX,fmt,va);
     va_end(va);
     buf[MSGBOX_PRINTF_MAX-1] = 0;
+    if (novideo)
+    {
+        fprintf(stderr, "%s: %s\n", name ? name : "Message", buf);
+        return 0;
+    }
 #if defined EDUKE32_OSX
     auto result = osx_ynbox(name, buf);
     return result;
@@ -480,6 +490,42 @@ int main(int argc, char *argv[])
     argv[argc] = NULL;
 #endif
 
+    // Dedicated Blood servers must not touch a display server, including the
+    // launcher that normally opens before app_main parses the game options.
+    bool headless = false;
+    for (int i = 1; i < argc; ++i)
+        if (!Bstrcasecmp(argv[i], "-dedicated") || !Bstrcasecmp(argv[i], "/dedicated"))
+            headless = true;
+    if (headless)
+        novideo = 1;
+
+#ifdef _WIN32
+    if (headless)
+    {
+        // This is a GUI executable. Reuse its launcher's console for server
+        // administration, without allocating a window or replacing pipe/file
+        // redirection supplied by a service manager.
+        HANDLE const input = GetStdHandle(STD_INPUT_HANDLE);
+        HANDLE const output = GetStdHandle(STD_OUTPUT_HANDLE);
+        HANDLE const error = GetStdHandle(STD_ERROR_HANDLE);
+        if (AttachConsole(ATTACH_PARENT_PROCESS))
+        {
+            if (!input || input == INVALID_HANDLE_VALUE)
+                freopen("CONIN$", "r", stdin);
+            else
+                SetStdHandle(STD_INPUT_HANDLE, input);
+            if (!output || output == INVALID_HANDLE_VALUE)
+                freopen("CONOUT$", "w", stdout);
+            else
+                SetStdHandle(STD_OUTPUT_HANDLE, output);
+            if (!error || error == INVALID_HANDLE_VALUE)
+                freopen("CONOUT$", "w", stderr);
+            else
+                SetStdHandle(STD_ERROR_HANDLE, error);
+        }
+    }
+#endif
+
     engineSetupAllocator();
 
 #ifndef __ANDROID__
@@ -548,16 +594,19 @@ int main(int argc, char *argv[])
 #elif defined(HAVE_GTK2)
     // Pre-initialize SDL video system in order to make sure XInitThreads() is called
     // before GTK starts talking to X11.
-    if (SDL_WasInit(SDL_INIT_VIDEO) != SDL_INIT_VIDEO)
-        SDL_InitSubSystem(SDL_INIT_VIDEO);
-
-    gtkbuild_init(&argc, &argv);
+    if (!headless)
+    {
+        if (SDL_WasInit(SDL_INIT_VIDEO) != SDL_INIT_VIDEO)
+            SDL_InitSubSystem(SDL_INIT_VIDEO);
+        gtkbuild_init(&argc, &argv);
+    }
 #endif
 
 #ifdef EDUKE32_OSX
     osx_preopen();
 #endif
-    startwin_open();
+    if (!headless)
+        startwin_open();
 #ifdef EDUKE32_OSX
     osx_postopen();
 #endif
@@ -570,10 +619,12 @@ int main(int argc, char *argv[])
 #endif
     int const r = app_main(argc, argv);
 
-    startwin_close();
+    if (!headless)
+        startwin_close();
 
 #if defined(HAVE_GTK2)
-    gtkbuild_exit(r);
+    if (!headless)
+        gtkbuild_exit(r);
 #endif
 
     return r;
@@ -716,7 +767,7 @@ int32_t initsystem(void)
 
     int32_t err = 0;
 
-    if (SDL_WasInit(SDL_INIT_VIDEO) != SDL_INIT_VIDEO)
+    if (!novideo && SDL_WasInit(SDL_INIT_VIDEO) != SDL_INIT_VIDEO)
         err = SDL_InitSubSystem(SDL_INIT_VIDEO);
 
     if (err)
@@ -732,7 +783,8 @@ int32_t initsystem(void)
     }
 
 #if SDL_MAJOR_VERSION >= 2
-    SDL_StopTextInput();
+    if (!novideo)
+        SDL_StopTextInput();
     SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
 #endif
 

@@ -50,6 +50,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "nnexts.h"
 #endif
 #include "view.h"
+#include "netpredict.h"
 #include "warp.h"
 
 #define kQAVEndVanilla  125
@@ -257,22 +258,245 @@ void WeaponPrecache(void)
     }
 }
 
+namespace
+{
+// This is a presentation state, deliberately not a PLAYER copy. In particular,
+// prediction never calls WeaponProcess, StartQAV, QAV::Play, or an attack
+// callback: those can consume ammo, create actors, deal damage, and advance RNG.
+struct PredictedWeapon
+{
+    int weapon = kWeaponNone, qav = -1, timer = 0, state = 0;
+    bool loop = false, valid = false;
+} predictedWeapon;
+
+void predictedWeaponSounds(int qavIndex, int start, int end, bool replay)
+{
+    if (replay || qavIndex < 0 || qavIndex >= kQAVEnd) return;
+    QAV const *qav = weaponQAV[qavIndex];
+    if (!qav || qav->ticksPerFrame <= 0) return;
+    // Sound variation is cosmetic, so use the first variant without calling
+    // the simulation RNG. Replay of old input never emits sound a second time.
+    for (int i = max(0, start / qav->ticksPerFrame + 1); i < qav->nFrames && i * qav->ticksPerFrame <= end; ++i)
+        if (qav->frames[i].sound.sound > 0)
+        {
+            SOUNDINFO const &sound = qav->frames[i].sound;
+            const int variants = !VanillaMode() && sound.sndRange > 0 ? (sound.sndRange == 1 ? 2 : sound.sndRange) : 1;
+            netPredictLocalSound(sound.sound, variants, 16 + sound.priority);
+            sndStartSample(qav->frames[i].sound.sound, -1, -1, 0);
+        }
+}
+
+void predictedWeaponStart(int qav, bool replay, bool loop = false)
+{
+    if (qav < 0 || qav >= kQAVEnd || !weaponQAV[qav]) return;
+    predictedWeapon.qav = qav;
+    predictedWeapon.timer = max(0, weaponQAV[qav]->at10 - kTicsPerFrame);
+    predictedWeapon.loop = loop;
+    predictedWeaponSounds(qav, -kTicsPerFrame, 0, replay);
+}
+}
+
+void WeaponPredictReset(PLAYER const *player)
+{
+    predictedWeapon = {};
+    if (!player) return;
+    predictedWeapon.weapon = player->curWeapon;
+    predictedWeapon.qav = player->weaponQav;
+    predictedWeapon.timer = player->weaponTimer;
+    predictedWeapon.state = player->weaponState;
+    predictedWeapon.loop = player->qavLoop;
+    predictedWeapon.valid = true;
+}
+
+static void predictedWeaponRest(PLAYER *player, bool replay)
+{
+    auto &w = predictedWeapon;
+    const bool akimbo = powerupCheck(player, kPwUpTwoGuns) != 0;
+    switch (w.weapon)
+    {
+    case kWeaponPitchfork: w.qav = 1; break;
+    case kWeaponFlare: w.qav = akimbo && w.state == 3 && checkAmmo2(player, 1, 2) ? 46 : 42; break;
+    case kWeaponShotgun:
+        if (w.state == 6) { w.state = akimbo && checkAmmo2(player, 2, 4) ? 7 : 1; break; }
+        if (w.state == 1 && CheckAmmo(player, 2, 1))
+        {
+            w.state = akimbo && checkAmmo2(player, 2, 4) ? 7 : (checkAmmo2(player, 2, 2) ? 3 : 2);
+            predictedWeaponStart(57, replay);
+        }
+        else w.qav = w.state == 7 ? 60 : (w.state == 3 ? 53 : (w.state == 2 ? 52 : 51));
+        break;
+    case kWeaponTommy: w.qav = akimbo && checkAmmo2(player, 3, 2) ? 70 : 65; break;
+    case kWeaponNapalm: w.qav = akimbo && w.state == 3 && checkAmmo2(player, 4, 2) ? 121 : 90; break;
+    case kWeaponSprayCan:
+        if (w.state == 4) w.state = 3;
+        if (w.state == 3) w.qav = 9;
+        else if (w.state == 1) { w.state = 3; predictedWeaponStart(8, replay); }
+        break;
+    case kWeaponTNT:
+        if (w.state == 3) w.qav = 20;
+        else if (w.state == 1 && CheckAmmo(player, 5, 1)) { w.state = 3; predictedWeaponStart(16, replay); }
+        break;
+    case kWeaponProxyTNT:
+        if (w.state == 8) { w.state = 7; predictedWeaponStart(25, replay); }
+        else if (w.state == 7) w.qav = 27;
+        break;
+    case kWeaponRemoteTNT:
+        if (w.state == 10) w.qav = 36;
+        else if (w.state == 11) w.qav = 37;
+        break;
+    case kWeaponTesla: if (w.state == 2) w.qav = akimbo && checkAmmo2(player, 7, 10) ? 83 : 75; break;
+    case kWeaponLifeLeech: if (w.state == 2) w.qav = 112; break;
+    case kWeaponVoodoo: w.qav = 101; break;
+    case kWeaponBeast: w.qav = 94; break;
+    }
+}
+
+void WeaponPredictCommand(PLAYER *player, GINPUT const &input, bool replay)
+{
+    if (!player || !player->pXSprite || !predictedWeapon.valid) return;
+#ifdef NOONE_EXTENSIONS
+    if (gPlayerCtrl[player->nPlayer].qavScene.index >= 0 && player->pXSprite->health > 0) return;
+#endif
+    if (player->pXSprite->health <= 0)
+    {
+        predictedWeapon.qav = -1;
+        predictedWeapon.loop = false;
+        return;
+    }
+    auto &w = predictedWeapon;
+    const bool primary = input.buttonFlags.shoot;
+    const bool secondary = input.buttonFlags.shoot2 && !primary;
+    if (w.qav >= 0 && w.qav < kQAVEnd && weaponQAV[w.qav] && w.timer > 0)
+    {
+        const int elapsed = weaponQAV[w.qav]->at10 - w.timer;
+        predictedWeaponSounds(w.qav, elapsed - kTicsPerFrame, elapsed, replay);
+        w.timer = max(0, w.timer - kTicsPerFrame);
+    }
+    if (w.loop)
+    {
+        if (primary && CheckAmmo(player, player->weaponAmmo, 1))
+        {
+            if (!w.timer && w.qav >= 0 && w.qav < kQAVEnd && weaponQAV[w.qav])
+                w.timer = weaponQAV[w.qav]->at10;
+            return;
+        }
+        w.loop = false;
+        w.timer = 0;
+        // The authoritative snapshot selects the exact lowering/idle QAV.
+        w.qav = player->weaponQav;
+    }
+    // Throw charging is presentation only. Fuses and projectile creation remain
+    // entirely on the server, including a server rejection after a correction.
+    if (w.weapon == kWeaponTNT)
+    {
+        if (w.state == 4) { if (!secondary || primary) w.state = 5; return; }
+        if (w.state == 5)
+        {
+            if (secondary) { w.state = 1; predictedWeaponStart(22, replay); }
+            else if (primary) w.state = 6;
+            return;
+        }
+        if (w.state == 6) { if (!primary) { w.state = 1; predictedWeaponStart(23, replay); } return; }
+    }
+    if (w.weapon == kWeaponSprayCan)
+    {
+        if (w.state == 5) { if (!secondary || primary) w.state = 6; return; }
+        if (w.state == 6)
+        {
+            if (secondary) { w.state = 3; predictedWeaponStart(13, replay); }
+            else if (primary) w.state = 7;
+            return;
+        }
+        if (w.state == 7) { if (!primary) { w.state = 1; predictedWeaponStart(14, replay); } return; }
+    }
+    if (w.weapon == kWeaponProxyTNT && w.state == 9)
+    { if (!primary) { w.state = 8; predictedWeaponStart(29, replay); } return; }
+    if (w.weapon == kWeaponRemoteTNT && w.state == 13)
+    { if (!primary) { w.state = 11; predictedWeaponStart(39, replay); } return; }
+    if (w.timer > 0) return;
+    if (w.weapon == kWeaponTesla && w.state == 4)
+    {
+        w.state = 5;
+        predictedWeaponStart(powerupCheck(player, kPwUpTwoGuns) && checkAmmo2(player, 7, 10) ? 84 : 77, replay, true);
+        return;
+    }
+    if (w.weapon == kWeaponTesla && ((w.state == 5 && !primary) || w.state == 7))
+    {
+        w.state = 2;
+        predictedWeaponStart(powerupCheck(player, kPwUpTwoGuns) && checkAmmo2(player, 7, 10) ? 87 : 80, replay);
+        return;
+    }
+    if (!primary && !secondary) { predictedWeaponRest(player, replay); return; }
+    if (input.newWeapon || input.keyFlags.nextWeapon || input.keyFlags.prevWeapon ||
+        input.keyFlags.lastWeapon || input.keyFlags.holsterWeapon) return;
+    if (player->isUnderwater && BannedUnderwater(w.weapon)) return;
+    if (!CheckAmmo(player, player->weaponAmmo, 1)) return;
+    const bool akimbo = powerupCheck(player, kPwUpTwoGuns) != 0;
+    switch (w.weapon)
+    {
+    case kWeaponPitchfork: predictedWeaponStart(2, replay); break;
+    case kWeaponSprayCan:
+        if (w.state == 3) { w.state = secondary ? 5 : 4; predictedWeaponStart(secondary ? 12 : 10, replay, primary); }
+        break;
+    case kWeaponTNT:
+        if (w.state == 3) { w.state = secondary ? 4 : 6; predictedWeaponStart(21, replay); }
+        break;
+    case kWeaponProxyTNT:
+        if (w.state == 7) { w.state = secondary ? 8 : 9; predictedWeaponStart(secondary ? 28 : 27, replay); }
+        break;
+    case kWeaponRemoteTNT:
+        if (w.state == 10) { w.state = secondary ? 11 : 13; predictedWeaponStart(secondary ? 38 : 36, replay); }
+        else if (w.state == 11 && primary) { w.state = 12; predictedWeaponStart(40, replay); }
+        break;
+    case kWeaponShotgun:
+        if (w.state == 1 || w.state == 6) { predictedWeaponRest(player, replay); break; }
+        if (w.state == 7) { w.state = 6; predictedWeaponStart(secondary ? 62 : 61, replay); }
+        else if (w.state == 3) { w.state = secondary ? 1 : 2; predictedWeaponStart(secondary ? 56 : 54, replay); }
+        else if (w.state == 2) { w.state = 1; predictedWeaponStart(55, replay); }
+        break;
+    case kWeaponTommy:
+        predictedWeaponStart(akimbo && checkAmmo2(player, 3, 2) ? (secondary ? 73 : 71) : (secondary ? 67 : 66), replay, primary);
+        break;
+    case kWeaponFlare:
+        predictedWeaponStart(akimbo && checkAmmo2(player, 1, secondary ? 16 : 2) ? 48 : 43, replay); break;
+    case kWeaponTesla:
+        if (w.state == 2 || w.state == 5)
+        { w.state = secondary ? 7 : 4; predictedWeaponStart(akimbo && checkAmmo2(player, 7, 10) ? (secondary ? 85 : 84) : (secondary ? 78 : 77), replay); }
+        break;
+    case kWeaponNapalm:
+        predictedWeaponStart(akimbo && checkAmmo2(player, 4, 2) ? (secondary && gGameOptions.weaponsV10x ? 123 : 122) : 91, replay); break;
+    case kWeaponLifeLeech: predictedWeaponStart(116, replay); break;
+    case kWeaponVoodoo:
+        // The authoritative hit selection uses RNG; the prediction shows a
+        // fixed stab and will reconcile to the selected animation on receipt.
+        predictedWeaponStart(secondary ? 110 : (player->aimTarget < 0 ? 107 : 103), replay); break;
+    case kWeaponBeast: predictedWeaponStart(95, replay); break;
+    }
+}
+
 void WeaponDraw(PLAYER *pPlayer, int a2, int x, int y, int a5)
 {
     dassert(pPlayer != NULL);
-    if (pPlayer->weaponQav == -1)
-        return;
-    QAV * pQAV = weaponQAV[pPlayer->weaponQav];
-    int v4;
-    if (pPlayer->weaponTimer == 0)
+    int qav = pPlayer->weaponQav, timer = pPlayer->weaponTimer, state = pPlayer->weaponState;
+    if (netPredictActive() && pPlayer == gMe && predictedWeapon.valid)
     {
-        if (((pPlayer->weaponState == -1) || (pPlayer->curWeapon == kWeaponShotgun && pPlayer->weaponState == 7)) && !VanillaMode()) // if shotgun with guns akimbo, or ran out of ammo, set to last seq frame
+        qav = predictedWeapon.qav;
+        timer = predictedWeapon.timer;
+        state = predictedWeapon.state;
+    }
+    if (qav < 0 || qav >= kQAVEnd || !weaponQAV[qav])
+        return;
+    QAV * pQAV = weaponQAV[qav];
+    int v4;
+    if (timer == 0)
+    {
+        if (((state == -1) || (pPlayer->curWeapon == kWeaponShotgun && state == 7)) && !VanillaMode()) // if shotgun with guns akimbo, or ran out of ammo, set to last seq frame
             v4 = pQAV->at10-1;
         else
             v4 = (int)totalclock % pQAV->at10;
     }
     else
-        v4 = pQAV->at10 - pPlayer->weaponTimer;
+        v4 = ClipRange(pQAV->at10 - timer, 0, pQAV->at10-1);
     pQAV->x = x;
     pQAV->y = y;
     int flags = 2 | kQavOrientationQ16;

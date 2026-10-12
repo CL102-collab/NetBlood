@@ -739,6 +739,7 @@ extern "C" {
         ENetAddress           address;           /**< Internet address of the host */
         enet_uint32           incomingBandwidth; /**< downstream bandwidth of the host */
         enet_uint32           outgoingBandwidth; /**< upstream bandwidth of the host */
+        enet_uint32           packetCopies;      /**< identical UDP copies per datagram (1..8), defaults to 1 */
         enet_uint32           bandwidthThrottleEpoch;
         enet_uint32           mtu;
         enet_uint32           randomSeed;
@@ -3129,15 +3130,35 @@ extern "C" {
 
                 currentPeer->lastSendTime = host->serviceTime;
                 sentLength = enet_socket_send(host->socket, &currentPeer->address, host->buffers, host->bufferCount);
-                enet_protocol_remove_sent_unreliable_commands(currentPeer);
-
                 if (sentLength < 0) {
+                    enet_protocol_remove_sent_unreliable_commands(currentPeer);
                     return -1;
                 }
 
                 host->totalSentData += sentLength;
                 currentPeer->totalDataSent += sentLength;
                 host->totalSentPackets++;
+
+                /* Keep the ENet sequence numbers, acknowledgements and fragment
+                 * IDs identical. Receivers discard redundant protocol commands;
+                 * application messages must not be independently queued again.
+                 * Buffers remain owned until all copies have been sent. */
+                if (sentLength > 0) {
+                    enet_uint32 copy;
+                    enet_uint32 copies = host->packetCopies > 8 ? 8 : host->packetCopies;
+                    for (copy = 1; copy < copies; ++copy) {
+                        int duplicateLength = enet_socket_send(host->socket, &currentPeer->address,
+                                                              host->buffers, host->bufferCount);
+                        /* A redundant copy is best effort if the socket is full;
+                         * the first copy has already been accepted for delivery. */
+                        if (duplicateLength <= 0) break;
+                        host->totalSentData += duplicateLength;
+                        currentPeer->totalDataSent += duplicateLength;
+                        currentPeer->outgoingDataTotal += duplicateLength;
+                        host->totalSentPackets++;
+                    }
+                }
+                enet_protocol_remove_sent_unreliable_commands(currentPeer);
             }
 
         return 0;
@@ -4402,6 +4423,7 @@ extern "C" {
         host->channelLimit                  = channelLimit;
         host->incomingBandwidth             = incomingBandwidth;
         host->outgoingBandwidth             = outgoingBandwidth;
+        host->packetCopies                  = 1;
         host->bandwidthThrottleEpoch        = 0;
         host->recalculateBandwidthLimits    = 0;
         host->mtu                           = ENET_HOST_DEFAULT_MTU;

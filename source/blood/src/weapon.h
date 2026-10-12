@@ -33,6 +33,8 @@ extern QAV* weaponQAV[];
 char checkLitSprayOrTNT(PLAYER *pPlayer);
 void WeaponInit(void);
 void WeaponDraw(PLAYER *pPlayer, int a2, int a3, int a4, int a5);
+void WeaponPredictReset(PLAYER const *player);
+void WeaponPredictCommand(PLAYER *player, GINPUT const &input, bool replay);
 void WeaponRaise(PLAYER *pPlayer);
 void WeaponLower(PLAYER *pPlayer);
 char WeaponIsEquipable(PLAYER *pPlayer, int nWeapon, char checkUnderwater = true);

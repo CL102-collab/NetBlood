@@ -20,6 +20,10 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
+#include <csignal>
+#include <chrono>
+#include <thread>
+
 #include "build.h"
 #include "mmulti.h"
 #include "compat.h"
@@ -53,6 +57,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "mirrors.h"
 #include "music.h"
 #include "network.h"
+#include "netcontent.h"
 #include "osdcmds.h"
 #include "replace.h"
 #include "resource.h"
@@ -74,11 +79,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #ifdef _WIN32
 # include <shellapi.h>
+# include <conio.h>
 # define UPDATEINTERVAL 604800 // 1w
 # include "winbits.h"
 #else
 # ifndef GEKKO
 #  include <sys/ioctl.h>
+#  include <sys/select.h>
+#  include <unistd.h>
 # endif
 #endif /* _WIN32 */
 
@@ -93,6 +101,10 @@ INPUT_MODE gInputMode;
 #ifdef USE_QHEAP
 unsigned int nMaxAlloc = 0x4000000;
 #endif
+
+bool gDedicated = false;
+static int gRequestedGameType = kGameTypeCoop;
+static volatile std::sig_atomic_t gDedicatedStop = 0;
 
 bool bCustomName = false;
 char bAddUserMap = false;
@@ -188,15 +200,19 @@ void M32RunScript(const char *s)
 
 void ShutDown(void)
 {
-    if (!in3dmode())
+    if (!in3dmode() && !gDedicated)
         return;
-    CONFIG_WriteSetup(0);
+    if (!gDedicated)
+        CONFIG_WriteSetup(0);
     netDeinitialize();
     sndTerm();
     sfxTerm();
     scrUnInit();
-    CONTROL_Shutdown();
-    KB_Shutdown();
+    if (!gDedicated)
+    {
+        CONTROL_Shutdown();
+        KB_Shutdown();
+    }
     OSD_Cleanup();
     // PORT_TODO: Check argument
     if (syncstate)
@@ -613,7 +629,8 @@ void StartLevel(GAMEOPTIONS *pOpt)
     gMusicPrevLoadedLevel = pOpt->nLevel;
     if (gDemo.at0 && gGameStarted)
         gDemo.Close();
-    netWaitForEveryone(0);
+    if (!netIsLive())
+        netWaitForEveryone(0);
     VanillaModeUpdate();
     if (pOpt->nGameType == kGameTypeSinglePlayer)
     {
@@ -674,14 +691,16 @@ void StartLevel(GAMEOPTIONS *pOpt)
             gHealthTemp[i] = xsprite[gPlayer[i].pSprite->extra].health;
         }
     }
-    drawLoadingScreen(gStatsPicnum);
+    if (!gDedicated)
+        drawLoadingScreen(gStatsPicnum);
     if (dbLoadMap(pOpt->zLevelName,(int*)&startpos.x,(int*)&startpos.y,(int*)&startpos.z,&startang,&startsectnum,(unsigned int*)&pOpt->uMapCRC))
     {
         gQuitGame = true;
         return;
     }
     char levelName[BMAX_PATH];
-    G_LoadMapHack(levelName, pOpt->zLevelName);
+    if (!gDedicated)
+        G_LoadMapHack(levelName, pOpt->zLevelName);
     wsrand(pOpt->uMapCRC);
     gKillMgr.Clear();
     gSecretMgr.Clear();
@@ -719,7 +738,8 @@ void StartLevel(GAMEOPTIONS *pOpt)
         OSD_Printf("> Modern types erased: %d.\n", modernTypesErased);
     #endif
 
-    scrLoadPLUs();
+    if (!gDedicated)
+        scrLoadPLUs();
     startpos.z = getflorzofslope(startsectnum,startpos.x,startpos.y);
     for (int i = 0; i < kMaxPlayers; i++) {
         gStartZone[i].x = startpos.x;
@@ -792,32 +812,44 @@ void StartLevel(GAMEOPTIONS *pOpt)
         }
     }
     pOpt->uGameFlags &= ~(kGameFlagContinuing|kGameFlagEnding);
-    scrSetDac();
-    PreloadCache();
+    if (!gDedicated)
+    {
+        scrSetDac();
+        PreloadCache();
+    }
     InitMirrors();
     gFrameClock = 0;
     trInit();
-    if (!VanillaMode() && !packItemActive(gMe, kPackDivingSuit)) // if diving suit is not active, turn off reverb sound effect
+    if (!gDedicated && !VanillaMode() && !packItemActive(gMe, kPackDivingSuit)) // if diving suit is not active, turn off reverb sound effect
         sfxSetReverb(0);
+    // Ambient channel ownership is map metadata used by snapshot clients too.
     ambInit();
     netResetState();
     gCacheMiss = 0;
     gFrame = 0;
-    if (!gDemo.at1)
-        gGameMenuMgr.Deactivate();
-    levelTryPlayMusicOrNothing(pOpt->nEpisode, pOpt->nLevel);
-    viewSetMessage("");
-    viewSetErrorMessage("");
-    viewResizeView(gViewSize);
+    if (!gDedicated)
+    {
+        if (!gDemo.at1)
+            gGameMenuMgr.Deactivate();
+        levelTryPlayMusicOrNothing(pOpt->nEpisode, pOpt->nLevel);
+        viewSetMessage("");
+        viewSetErrorMessage("");
+        viewResizeView(gViewSize);
+    }
     if ((pOpt->nGameType == kGameTypeTeams) && VanillaMode())
         gGameMessageMgr.SetCoordinates(gViewX0S+1,gViewY0S+15);
     if (!VanillaMode())
         viewClearInterpolations();
-    netWaitForEveryone(0);
+    if (!netIsLive())
+        netWaitForEveryone(0);
     totalclock = 0;
     gPaused = 0;
     gGameStarted = 1;
     ready2send = 1;
+    if (netIsLive())
+        netOnLevelStarted();
+    if (gDedicated)
+        LOG_F(INFO, "Dedicated level ready: map=%s players=%d tick_rate=30", pOpt->zLevelName, numplayers);
 }
 
 void StartNetworkLevel(void)
@@ -1093,8 +1125,12 @@ void ProcessFrame(void)
     if (!(gFrame&7))
     {
         CalcGameChecksum();
-        memcpy(gCheckFifo[gCheckHead[myconnectindex]&255][myconnectindex], gChecksum, sizeof(gChecksum));
-        gCheckHead[myconnectindex]++;
+        // The checksum consumes gameplay RNG, even when no local player exists.
+        if (myconnectindex >= 0)
+        {
+            memcpy(gCheckFifo[gCheckHead[myconnectindex]&255][myconnectindex], gChecksum, sizeof(gChecksum));
+            gCheckHead[myconnectindex]++;
+        }
     }
     for (int i = connecthead; i >= 0; i = connectpoint2[i])
     {
@@ -1159,20 +1195,34 @@ void ProcessFrame(void)
     actProcessSprites();
     actPostProcess();
 #ifdef POLYMER
-    G_RefreshLights();
+    if (!gDedicated)
+        G_RefreshLights();
 #endif
-    viewCorrectPrediction();
-    sndProcess();
-    ambProcess();
-    viewUpdateDelirium();
-    viewUpdateShake();
-    sfxUpdate3DSounds();
+    if (!gDedicated)
+    {
+        viewCorrectPrediction();
+        sndProcess();
+        ambProcess();
+        viewUpdateDelirium();
+        viewUpdateShake();
+        sfxUpdate3DSounds();
+    }
     gLevelTime++;
     gFrame++;
     gFrameClock += kTicsPerFrame;
     if ((gGameOptions.uGameFlags&kGameFlagContinuing) && !gStartNewGame)
     {
         ready2send = 0;
+        if (netIsServer())
+        {
+            // A live server changes maps independently of client loading/screens.
+            int const nextLevel = (gGameOptions.uGameFlags & kGameFlagEnding) ? 0 : gNextLevel;
+            gGameOptions.uGameFlags &= ~kGameFlagEnding;
+            levelSetupOptions(gGameOptions.nEpisode, nextLevel);
+            netPrepareCurrentMapSettings();
+            gStartNewGame = true;
+            return;
+        }
         if (gNetPlayers > 1 && gNetMode == NETWORK_SERVER && gPacketMode == PACKETMODE_1 && myconnectindex == connecthead)
         {
             while (gNetFifoMasterTail < gNetFifoTail)
@@ -1259,6 +1309,8 @@ SWITCH switches[] = {
     { "noconsole", 43, 0 },
     { "s", 44, 1 },
     { "validate", 45, 0 },
+    { "dedicated", 46, 0 },
+    { "gametype", 47, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1288,7 +1340,9 @@ void PrintHelp(void)
         "-record\t\tRecord demo\n"
         "-rff\t\tSpecify an RFF file for Blood game resources\n"
         "-s\t\tStart game on difficulty level; Range:0..4; Default:2;\n\n"
-        "-server [players]\tStart a multiplayer server\n"
+        "-server [players]\tStart a multiplayer server (maximum players)\n"
+        "-dedicated\tRun a server without a window or audio device\n"
+        "-gametype [type]\tServer mode: coop (default), bloodbath, or teams\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif
@@ -1337,6 +1391,19 @@ void ParseOptions(void)
     // Determine validation mode before commands such as -record can touch files.
     gDemoRunValidation = G_CheckCmdSwitch(margc, margv, "-validate")
         || G_CheckCmdSwitch(margc, margv, "/validate");
+    gDedicated = G_CheckCmdSwitch(margc, margv, "-dedicated")
+        || G_CheckCmdSwitch(margc, margv, "/dedicated");
+    bool liveRequested = gDedicated;
+    for (int i = 1; i < margc; ++i)
+    {
+        const char* arg = margv[i];
+        if (*arg != '-' && *arg != '/')
+            continue;
+        ++arg;
+        if ((!Bstrncasecmp(arg, "server", 6) && (!arg[6] || arg[6] == '='))
+            || (!Bstrncasecmp(arg, "client", 6) && (!arg[6] || arg[6] == '=')))
+            liveRequested = true;
+    }
     int option;
     while ((option = GetOptions(switches)) != -1)
     {
@@ -1436,6 +1503,8 @@ void ParseOptions(void)
                 gDemo.SetupPlayback(OptArgv[0]);
             break;
         case 7:
+            if (liveRequested)
+                ThrowError("Legacy -record requires an offline game; use net_record for network packet demos");
             if (gDemoRunValidation)
                 DemoValidationError("-validate cannot be combined with recording");
             if (OptArgc < 1)
@@ -1589,7 +1658,33 @@ void ParseOptions(void)
         case 45:
             gDemoRunValidation = true;
             break;
+        case 46:
+            gDedicated = true;
+            break;
+        case 47:
+            if (OptArgc < 1)
+                ThrowError("Missing game type");
+            if (!Bstrcasecmp(OptArgv[0], "coop"))
+                gRequestedGameType = kGameTypeCoop;
+            else if (!Bstrcasecmp(OptArgv[0], "bloodbath"))
+                gRequestedGameType = kGameTypeBloodBath;
+            else if (!Bstrcasecmp(OptArgv[0], "teams"))
+                gRequestedGameType = kGameTypeTeams;
+            else
+                ThrowError("Unknown game type: %s", OptArgv[0]);
+            break;
         }
+    }
+    if (gDedicated)
+    {
+        if (gNetMode == NETWORK_CLIENT || gDemoRunValidation || gDemo.at1)
+            ThrowError("Dedicated mode cannot be combined with client or demo playback");
+        gNetMode = NETWORK_SERVER;
+        if (gNetPlayers < 1)
+            gNetPlayers = kMaxPlayers;
+        gNoSetup = true;
+        gCommandSetup = false;
+        bQuickStart = bNoDemo = true;
     }
     if (gDemoRunValidation)
     {
@@ -1626,6 +1721,134 @@ static int32_t check_filename_casing(void)
 }
 #endif
 
+static void DedicatedSignal(int)
+{
+    gDedicatedStop = 1;
+}
+
+#ifdef _WIN32
+static BOOL WINAPI DedicatedConsoleSignal(DWORD event)
+{
+    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT || event == CTRL_CLOSE_EVENT
+        || event == CTRL_LOGOFF_EVENT || event == CTRL_SHUTDOWN_EVENT)
+    {
+        gDedicatedStop = 1;
+        return TRUE;
+    }
+    return FALSE;
+}
+#endif
+
+// Read complete console commands without making network service depend on stdin.
+static void DedicatedConsole()
+{
+    static char command[1024];
+    static unsigned length = 0;
+    static bool closed = false;
+    if (closed)
+        return;
+    for (unsigned budget = 0; budget < sizeof(command); ++budget)
+    {
+        char ch;
+#ifdef _WIN32
+        HANDLE const input = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD const type = GetFileType(input);
+        if (type == FILE_TYPE_CHAR)
+        {
+            if (!_kbhit())
+                return;
+            ch = char(_getch());
+        }
+        else
+        {
+            DWORD available = 0, read = 0;
+            if (type != FILE_TYPE_PIPE || !PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr) || !available)
+                return;
+            if (!ReadFile(input, &ch, 1, &read, nullptr) || read != 1)
+            {
+                closed = true;
+                return;
+            }
+        }
+#else
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(STDIN_FILENO, &readable);
+        timeval timeout = {};
+        if (select(STDIN_FILENO + 1, &readable, nullptr, nullptr, &timeout) <= 0)
+            return;
+        if (read(STDIN_FILENO, &ch, 1) != 1)
+        {
+            closed = true;
+            return;
+        }
+#endif
+        if (ch == '\n' || ch == '\r')
+        {
+            command[length] = 0;
+            if (length)
+                OSD_Dispatch(command);
+            length = 0;
+        }
+        else if (ch == '\b' || ch == 127)
+        {
+            if (length)
+                --length;
+        }
+        else if (static_cast<unsigned char>(ch) >= 32 && length + 1 < sizeof(command))
+            command[length++] = ch;
+    }
+}
+
+static int RunDedicatedServer()
+{
+    if (!netIsServer())
+    {
+        LOG_F(ERROR, "Dedicated server could not start networking");
+        ShutDown();
+        return 1;
+    }
+    auto const oldInterrupt = std::signal(SIGINT, DedicatedSignal);
+    auto const oldTerminate = std::signal(SIGTERM, DedicatedSignal);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(DedicatedConsoleSignal, TRUE);
+#endif
+    gMe = gView = nullptr;
+    gViewIndex = -1;
+    gChoke.Init(518, playerHandChoke);
+    OSD_Exec("autoexec.cfg");
+    SoundToggle = MusicToggle = 0;
+    StartLevel(&gGameOptions);
+    LOG_F(INFO, "Dedicated server running: port=%d players=%d (stdin accepts console commands)", gNetPort, numplayers);
+    while (!gQuitGame && !gDedicatedStop)
+    {
+        timerUpdateClock();
+        netUpdate();
+        DedicatedConsole();
+        OSD_DispatchQueued();
+        while (!gQuitGame && netServerBeginTick())
+        {
+            ProcessFrame();
+            netServerEndTick();
+            if (gStartNewGame)
+                break;
+        }
+        if (gStartNewGame && !gQuitGame)
+            StartLevel(&gGameOptions);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    LOG_F(INFO, "Dedicated server stopping: frame=%d players=%d", gFrame, numplayers);
+    if (gDemo.at0)
+        gDemo.Close();
+    ShutDown();
+    std::signal(SIGINT, oldInterrupt);
+    std::signal(SIGTERM, oldTerminate);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(DedicatedConsoleSignal, FALSE);
+#endif
+    return 0;
+}
+
 int app_main(int argc, char const * const * argv)
 {
     char buffer[BMAX_PATH];
@@ -1633,7 +1856,8 @@ int app_main(int argc, char const * const * argv)
     margv = argv;
 #ifdef _WIN32
 #ifndef DEBUGGINGAIDS
-    if (!G_CheckCmdSwitch(argc, argv, "-noinstancechecking") && !windowsCheckAlreadyRunning())
+    if (!G_CheckCmdSwitch(argc, argv, "-dedicated") && !G_CheckCmdSwitch(argc, argv, "/dedicated")
+        && !G_CheckCmdSwitch(argc, argv, "-noinstancechecking") && !windowsCheckAlreadyRunning())
     {
 #ifdef EDUKE32_STANDALONE
         if (!wm_ynbox(APPNAME, "It looks like " APPNAME " is already running.\n\n"
@@ -1726,7 +1950,7 @@ int app_main(int argc, char const * const * argv)
     ScanINIFiles();
 
 #ifdef STARTUP_SETUP_WINDOW
-    if (!gDemoRunValidation && (readSetup < 0 || (!gNoSetup && (configversion != BYTEVERSION || gSetup.forcesetup)) || gCommandSetup))
+    if (!gDedicated && !gDemoRunValidation && (readSetup < 0 || (!gNoSetup && (configversion != BYTEVERSION || gSetup.forcesetup)) || gCommandSetup))
     {
         if (quitevent || !startwin_run())
         {
@@ -1808,21 +2032,29 @@ int app_main(int argc, char const * const * argv)
     }
     loaddefinitions_game(deffile, FALSE);
 
+    // Freeze content identity before dynamic fire/view initialization changes tiles.
+    netContentCRC();
     powerupInit();
     LOG_F(INFO, "Loading cosine table");
     trigInit(gSysRes);
-    LOG_F(INFO, "Initializing view subsystem");
-    viewInit();
-    LOG_F(INFO, "Initializing dynamic fire");
-    FireInit();
+    if (!gDedicated)
+    {
+        LOG_F(INFO, "Initializing view subsystem");
+        viewInit();
+        LOG_F(INFO, "Initializing dynamic fire");
+        FireInit();
+    }
     LOG_F(INFO, "Initializing weapon animations");
     WeaponInit();
     LoadSaveSetup();
-    LoadSavedInfo();
-    gDemo.LoadDemoInfo();
-    LOG_F(INFO, "There are %d demo(s) in the loop", gDemo.nDemosFound);
-    LOG_F(INFO, "Loading control setup");
-    ctrlInit();
+    if (!gDedicated)
+    {
+        LoadSavedInfo();
+        gDemo.LoadDemoInfo();
+        LOG_F(INFO, "There are %d demo(s) in the loop", gDemo.nDemosFound);
+        LOG_F(INFO, "Loading control setup");
+        ctrlInit();
+    }
     timerInit(CLOCKTICKSPERSECOND);
     enginecompatibilitymode = ENGINE_19960925;
 
@@ -1857,8 +2089,29 @@ int app_main(int argc, char const * const * argv)
 
     // PORT-TODO: CD audio init
 
+    if (gNetMode == NETWORK_SERVER)
+    {
+        gGameOptions.nGameType = gRequestedGameType;
+        gPacketStartGame.gameType = gRequestedGameType;
+        gPacketStartGame.difficulty = gSkill;
+        gPacketStartGame.monsterSettings = gGameOptions.nMonsterSettings;
+        gPacketStartGame.weaponSettings = gGameOptions.nWeaponSettings;
+        gPacketStartGame.itemSettings = gGameOptions.nItemSettings;
+        gPacketStartGame.respawnSettings = gGameOptions.nRespawnSettings;
+        gPacketStartGame.episodeId = gGameOptions.nEpisode;
+        gPacketStartGame.levelId = gGameOptions.nLevel;
+        gPacketStartGame.bFriendlyFire = gGameOptions.bFriendlyFire;
+        gPacketStartGame.bPlayerKeys = gGameOptions.bPlayerKeys;
+        gPacketStartGame.weaponsV10x = gWeaponsV10x;
+        gPacketStartGame.userMap = bAddUserMap;
+        Bstrncpyz(gPacketStartGame.userMapName, gUserMapFilename, sizeof(gPacketStartGame.userMapName));
+    }
+    if (gDedicated)
+        SoundToggle = MusicToggle = 0;
     LOG_F(INFO, "Initializing network users");
     netInitialize(true);
+    if (gDedicated)
+        return RunDedicatedServer();
     scrSetGameMode(gSetup.fullscreen, gSetup.xdim, gSetup.ydim, gSetup.bpp);
     scrSetGamma(gGamma);
     gGameMessageMgr.SetState(gMessageState);
@@ -1887,7 +2140,7 @@ int app_main(int argc, char const * const * argv)
 RESTART:
     netResetState();
     gViewIndex = myconnectindex;
-    gMe = gView = &gPlayer[myconnectindex];
+    gMe = gView = myconnectindex >= 0 ? &gPlayer[myconnectindex] : nullptr;
     netBroadcastPlayerInfo(myconnectindex);
     LOG_F(INFO, "Waiting for network players!");
     netWaitForEveryone(0);
@@ -1917,7 +2170,9 @@ RESTART:
         gDemo.Playback();
     if (gDemo.nDemosFound > 0)
         gGameMenuMgr.Deactivate();
-    if (!bAddUserMap && !gGameStarted)
+    if (netIsServer() && !gGameStarted)
+        StartLevel(&gGameOptions);
+    if (!bAddUserMap && !gGameStarted && !netIsLive())
     {
         gGameMenuMgr.Push(&menuMain, -1);
         if (gGameOptions.nGameType != kGameTypeSinglePlayer)
@@ -1928,18 +2183,51 @@ RESTART:
     while (!gQuitGame)
     {
         bool bDraw;
-        if (gGameStarted)
+        if (netIsLive())
+            netClientPump();
+        if (gGameStarted && (!netIsClient() || netClientHasSnapshot()))
         {
             char gameUpdate = false;
             double const gameUpdateStartTime = timerGetFractionalTicks();
-            while (gPredictTail < gNetFifoHead[myconnectindex] && !gPaused)
+            if (!netIsLive())
             {
-                viewUpdatePrediction(&gFifoInput[gPredictTail&255][myconnectindex]);
+                while (gPredictTail < gNetFifoHead[myconnectindex] && !gPaused)
+                    viewUpdatePrediction(&gFifoInput[gPredictTail&255][myconnectindex]);
             }
             if (numplayers == 1)
                 gBufferJitter = 0;
             ctrlGetInput();
-            if (totalclock >= gNetFifoClock && ready2send)
+            if (netIsLive())
+            {
+                // Command sampling and authoritative ticks do not wait for a rendered frame.
+                if (totalclock >= gNetFifoClock && ready2send)
+                {
+                    gNetInput = gInput;
+                    gInput = {};
+                    netGetInput();
+                    if (netIsClient())
+                    {
+                        // Client presentation advances without running world/weapon callbacks.
+                        sndProcess();
+                        ambProcess();
+                        viewUpdateDelirium();
+#ifdef POLYMER
+                        G_RefreshLights();
+#endif
+                        sfxUpdate3DSounds();
+                    }
+                    gNetFifoClock = totalclock + kTicsPerFrame;
+                }
+                while (netIsServer() && netServerBeginTick())
+                {
+                    ProcessFrame();
+                    netServerEndTick();
+                    if (gStartNewGame || gQuitGame)
+                        break;
+                }
+                gameUpdate = true;
+            }
+            else if (totalclock >= gNetFifoClock && ready2send)
             {
                 do
                 {

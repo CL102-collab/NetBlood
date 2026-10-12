@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "messages.h"
 #include "network.h"
+#include "netlag.h"
 #include "osdcmds.h"
 #include "screen.h"
 #include "sound.h"
@@ -50,8 +51,53 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 static inline int osdcmd_quit(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
+    if (gDedicated)
+    {
+        gQuitGame = true;
+        return OSDCMD_OK;
+    }
     OSD_ShowDisplay(0);
     QuitGame();
+    return OSDCMD_OK;
+}
+
+static int osdcmd_net_status(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netPrintStatus();
+    return OSDCMD_OK;
+}
+
+static int osdcmd_net_disconnect(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netDisconnect();
+    if (gDedicated) gQuitGame = true;
+    return OSDCMD_OK;
+}
+
+static int osdcmd_net_record(osdcmdptr_t parm)
+{
+    if (parm->numparms != 1) return OSDCMD_SHOWHELP;
+    if (!netStartPacketRecording(parm->parms[0]))
+        OSD_Printf("net_record: could not start packet recording.\n");
+    return OSDCMD_OK;
+}
+
+static int osdcmd_net_stoprecord(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netStopPacketRecording();
+    return OSDCMD_OK;
+}
+
+static int osdcmd_net_playback(osdcmdptr_t parm)
+{
+    if (parm->numparms != 1) return OSDCMD_SHOWHELP;
+    if (gDedicated || netIsLive())
+        OSD_Printf("net_playback: disconnect from the live session first.\n");
+    else if (!netStartPacketPlayback(parm->parms[0]))
+        OSD_Printf("net_playback: could not play packet demo.\n");
     return OSDCMD_OK;
 }
 
@@ -74,6 +120,12 @@ static int osdcmd_pause(osdcmdptr_t parm)
 
 static int osdcmd_changelevel(osdcmdptr_t parm)
 {
+    if (netIsClient())
+    {
+        OSD_Printf("Only the server can change the map.\n");
+        return OSDCMD_OK;
+    }
+
     int32_t volume,level;
     char *p;
 
@@ -102,25 +154,33 @@ static int osdcmd_changelevel(osdcmdptr_t parm)
     if (gDemo.at1)
         gDemo.StopPlayback();
 
-    if (numplayers > 1)
+    if (netIsServer())
     {
-        gPacketStartGame.episodeId = volume;
-        gPacketStartGame.levelId = level;
-        netBroadcastNewGame();
+        levelSetupOptions(volume, level);
+        netPrepareCurrentMapSettings();
         gStartNewGame = 1;
-        gGameMenuMgr.Deactivate();
+        if (!gDedicated) gGameMenuMgr.Deactivate();
         return OSDCMD_OK;
     }
     levelSetupOptions(volume, level);
     StartLevel(&gGameOptions);
-    viewResizeView(gViewSize);
-    gGameMenuMgr.Deactivate();
+    if (!gDedicated)
+    {
+        viewResizeView(gViewSize);
+        gGameMenuMgr.Deactivate();
+    }
 
     return OSDCMD_OK;
 }
 
 static int osdcmd_map(osdcmdptr_t parm)
 {
+    if (netIsClient())
+    {
+        OSD_Printf("Only the server can change the map.\n");
+        return OSDCMD_OK;
+    }
+
     char filename[BMAX_PATH];
 
     const int32_t wildcardp = parm->numparms==1 &&
@@ -167,6 +227,7 @@ static int osdcmd_map(osdcmdptr_t parm)
         return OSDCMD_SHOWHELP;
     }
 
+    if (Bstrlen(parm->parms[0]) >= sizeof(filename)) return OSDCMD_SHOWHELP;
     strcpy(filename, parm->parms[0]);
     ChangeExtension(filename, "");
 
@@ -197,29 +258,38 @@ static int osdcmd_map(osdcmdptr_t parm)
     if (!bFound)
         levelAddUserMap(filename);
 
-    if (numplayers > 1)
+    if (netIsServer())
     {
-        gPacketStartGame.episodeId = gGameOptions.nEpisode;
-        gPacketStartGame.levelId = gGameOptions.nLevel;
-        netBroadcastNewGame();
+        levelSetupOptions(gGameOptions.nEpisode, gGameOptions.nLevel);
+        netPrepareCurrentMapSettings();
         gStartNewGame = 1;
-        gGameMenuMgr.Deactivate();
+        if (!gDedicated) gGameMenuMgr.Deactivate();
         return OSDCMD_OK;
     }
     levelSetupOptions(gGameOptions.nEpisode, gGameOptions.nLevel);
     StartLevel(&gGameOptions);
-    viewResizeView(gViewSize);
-    gGameMenuMgr.Deactivate();
+    if (!gDedicated)
+    {
+        viewResizeView(gViewSize);
+        gGameMenuMgr.Deactivate();
+    }
 
     return OSDCMD_OK;
 }
 
 static int osdcmd_restartmap(osdcmdptr_t UNUSED(parm))
 {
-    UNREFERENCED_CONST_PARAMETER(parm);
-    if (numplayers > 1)
+    if (netIsClient())
     {
-        OSD_Printf("restartmap: single player only.\n");
+        OSD_Printf("Only the server can change the map.\n");
+        return OSDCMD_OK;
+    }
+
+    UNREFERENCED_CONST_PARAMETER(parm);
+    if (netIsServer())
+    {
+        netPrepareCurrentMapSettings();
+        gStartNewGame = 1;
         return OSDCMD_OK;
     }
 
@@ -235,7 +305,7 @@ static int osdcmd_restartmap(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_demo(osdcmdptr_t parm)
 {
-    if (numplayers > 1)
+    if (netIsLive() || gDedicated || numplayers > 1)
     {
         OSD_Printf("Command not allowed in multiplayer\n");
         return OSDCMD_OK;
@@ -259,6 +329,8 @@ static int osdcmd_demo(osdcmdptr_t parm)
 
 int osdcmd_restartvid(osdcmdptr_t UNUSED(parm))
 {
+    if (gDedicated) return OSDCMD_OK;
+
     UNREFERENCED_CONST_PARAMETER(parm);
     videoResetMode();
     if (videoSetGameMode(gSetup.fullscreen,gSetup.xdim,gSetup.ydim,gSetup.bpp,0))
@@ -271,6 +343,8 @@ int osdcmd_restartvid(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_music(osdcmdptr_t parm)
 {
+    if (gDedicated) return OSDCMD_OK;
+
     char buffer[128];
     if (parm->numparms == 1)
     {
@@ -309,6 +383,8 @@ static int osdcmd_music(osdcmdptr_t parm)
 
 static int osdcmd_vidmode(osdcmdptr_t parm)
 {
+    if (gDedicated) return OSDCMD_OK;
+
     int32_t newbpp = gSetup.bpp, newwidth = gSetup.xdim,
             newheight = gSetup.ydim, newfs = gSetup.fullscreen;
     int32_t tmp;
@@ -359,6 +435,8 @@ static int osdcmd_vidmode(osdcmdptr_t parm)
 
 static int osdcmd_crosshaircolor(osdcmdptr_t parm)
 {
+    if (gDedicated) return OSDCMD_OK;
+
     if (parm->numparms != 3)
     {
         OSD_Printf("crosshaircolor: r:%d g:%d b:%d\n",CrosshairColors.r,CrosshairColors.g,CrosshairColors.b);
@@ -380,6 +458,8 @@ static int osdcmd_crosshaircolor(osdcmdptr_t parm)
 
 static int osdcmd_resetcrosshair(osdcmdptr_t UNUSED(parm))
 {
+    if (gDedicated) return OSDCMD_OK;
+
     UNREFERENCED_CONST_PARAMETER(parm);
     g_isAlterDefaultCrosshair = false;
     viewResetCrosshairToDefault();
@@ -389,7 +469,7 @@ static int osdcmd_resetcrosshair(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_give(osdcmdptr_t parm)
 {
-    if (numplayers != 1 || !gGameStarted || gDemo.at1 || gMe->pXSprite->health == 0)
+    if (netIsLive() || !gMe || numplayers != 1 || !gGameStarted || gDemo.at1 || gMe->pXSprite->health == 0)
     {
         OSD_Printf("give: Cannot give while dead or not in a single-player game.\n");
         return OSDCMD_OK;
@@ -449,7 +529,7 @@ static int osdcmd_give(osdcmdptr_t parm)
 static int osdcmd_god(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
-    if (numplayers == 1 && gGameStarted && !gDemo.at1)
+    if (!netIsLive() && gMe && numplayers == 1 && gGameStarted && !gDemo.at1)
     {
         SetGodMode(!gMe->godMode);
         gCheatMgr.m_bPlayerCheated = true;
@@ -464,7 +544,7 @@ static int osdcmd_noclip(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
 
-    if (numplayers == 1 && gGameStarted && !gDemo.at1)
+    if (!netIsLive() && gMe && numplayers == 1 && gGameStarted && !gDemo.at1)
     {
         SetClipMode(!gNoClip);
         gCheatMgr.m_bPlayerCheated = true;
@@ -479,6 +559,8 @@ static int osdcmd_noclip(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_restartsound(osdcmdptr_t UNUSED(parm))
 {
+    if (gDedicated) return OSDCMD_OK;
+
     UNREFERENCED_CONST_PARAMETER(parm);
     sfxTerm();
     sndTerm();
@@ -778,7 +860,7 @@ static int osdcmd_unbound(osdcmdptr_t parm)
 static int osdcmd_quicksave(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
-    if (!gGameStarted || gDemo.at1 || gGameMenuMgr.m_bActive)
+    if (netIsLive() || gDedicated || !gGameStarted || gDemo.at1 || gGameMenuMgr.m_bActive)
         OSD_Printf("quicksave: not in a game.\n");
     else gDoQuickSave = 1;
     return OSDCMD_OK;
@@ -787,7 +869,7 @@ static int osdcmd_quicksave(osdcmdptr_t UNUSED(parm))
 static int osdcmd_quickload(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
-    if (!gGameStarted || gDemo.at1 || gGameMenuMgr.m_bActive)
+    if (netIsLive() || gDedicated || !gGameStarted || gDemo.at1 || gGameMenuMgr.m_bActive)
         OSD_Printf("quickload: not in a game.\n");
     else gDoQuickSave = 2;
     return OSDCMD_OK;
@@ -795,6 +877,8 @@ static int osdcmd_quickload(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_screenshot(osdcmdptr_t parm)
 {
+    if (gDedicated) return OSDCMD_OK;
+
     static const char *fn = "blud0000.png";
 
     if (parm->numparms == 1 && !Bstrcasecmp(parm->parms[0], "tga"))
@@ -842,7 +926,7 @@ static int osdcmd_cvar_set_game(osdcmdptr_t parm)
 {
     int const r = osdcmd_cvar_set(parm);
 
-    if (r != OSDCMD_OK) return r;
+    if (r != OSDCMD_OK || gDedicated) return r;
 
     if (!Bstrcasecmp(parm->name, "r_upscalefactor"))
     {
@@ -1077,6 +1161,9 @@ int32_t registerosdcommands(void)
         { "mus_volume", "controls music volume", (void *)&MusicVolume, CVAR_INT, 0, 255 },
         { "mus_device", "music device", (void *)&MusicDevice, CVAR_INT, 0, ASS_NumSoundCards },
         { "mus_redbook", "enables/disables redbook audio", (void *)&CDAudioToggle, CVAR_BOOL, 0, 1 },
+        { "net_packetcopies", "total identical UDP datagrams per send (default 3)", (void *)&gNetPacketCopies, CVAR_INT, 1, 8 },
+        { "net_snapshotrate", "server snapshots per second (simulation remains 30 Hz)", (void *)&gNetSnapshotRate, CVAR_INT, 1, 30 },
+        { "net_lagometer", "show snapshot latency, interpolation and packet loss", (void *)&gNetLagometer, CVAR_BOOL, 0, 1 },
         { "net_address","sets network address used for multiplayer", (void *)zNetAddressBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 16 },
         { "net_port","sets network port used for multiplayer", (void *)zNetPortBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 6 },
 //
@@ -1141,11 +1228,11 @@ int32_t registerosdcommands(void)
                 OSD_RegisterCvar(&cv, osdcmd_cvar_set); break;
         }
     }
-//
-//    if (VOLUMEONE)
-//        OSD_RegisterFunction("changelevel","changelevel <level>: warps to the given level", osdcmd_changelevel);
-//    else
-//    {
+    OSD_RegisterFunction("net_status", "net_status: show session and prediction statistics", osdcmd_net_status);
+    OSD_RegisterFunction("net_disconnect", "net_disconnect: leave the current session", osdcmd_net_disconnect);
+    OSD_RegisterFunction("net_record", "net_record <path>: record authoritative packets", osdcmd_net_record);
+    OSD_RegisterFunction("net_stoprecord", "net_stoprecord: finish the packet demo", osdcmd_net_stoprecord);
+    OSD_RegisterFunction("net_playback", "net_playback <path>: play an authoritative packet demo", osdcmd_net_playback);
     OSD_RegisterFunction("changelevel","changelevel <volume> <level>: warps to the given level", osdcmd_changelevel);
     OSD_RegisterFunction("map","map <mapfile>: loads the given user map", osdcmd_map);
     OSD_RegisterFunction("restartmap","restarts current map", osdcmd_restartmap);

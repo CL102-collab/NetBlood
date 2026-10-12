@@ -775,7 +775,7 @@ CGameMenuItemChain itemNetworkHost("HOST A GAME", 1, 0, 80, 320, 1, &menuNetwork
 CGameMenuItemChain itemNetworkJoin("JOIN A GAME", 1, 0, 100, 320, 1, &menuNetworkJoin, -1, SetupNetworkJoinMenu, 0);
 
 CGameMenuItemTitle itemNetworkHostTitle("HOST A GAME", 1, 160, 20, 2038);
-CGameMenuItemSlider itemNetworkHostPlayerNum("PLAYER NUMBER:", 3, 66, 70, 180, 1, 2, kMaxPlayers, 1, NULL, -1, -1, kMenuSliderValue);
+CGameMenuItemSlider itemNetworkHostPlayerNum("MAX PLAYERS:", 3, 66, 70, 180, 1, 2, kMaxPlayers, 1, NULL, -1, -1, kMenuSliderValue);
 CGameMenuItemZEdit itemNetworkHostPort("NETWORK PORT:", 3, 66, 80, 180, zNetPortBuffer, 6, 0, NULL, 0);
 CGameMenuItemChain itemNetworkHostHost("HOST A GAME", 3, 66, 100, 180, 1, NULL, -1, NetworkHostGame, 0);
 
@@ -1678,26 +1678,13 @@ void SetupMenus(void)
 
 void UpdateNetworkMenus(void)
 {
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer)
-    {
-        itemMain1.at24 = &menuNetStart;
-        itemMain1.at28 = 2;
-    }
-    else
-    {
-        itemMain1.at24 = &menuEpisode;
-        itemMain1.at28 = -1;
-    }
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer)
-    {
-        itemMainSave1.at24 = &menuNetStart;
-        itemMainSave1.at28 = 2;
-    }
-    else
-    {
-        itemMainSave1.at24 = &menuEpisode;
-        itemMainSave1.at28 = -1;
-    }
+    bool const server = netIsServer();
+    bool const client = netIsClient();
+    itemMain1.at24 = itemMainSave1.at24 = server ? &menuNetStart : &menuEpisode;
+    itemMain1.at28 = itemMainSave1.at28 = server ? 2 : -1;
+    itemMain1.bEnable = itemMainSave1.bEnable = !client;
+    itemMain4.bEnable = itemMainSave3.bEnable = itemMainSave4.bEnable = !netIsLive();
+    itemNetStart12.bEnable = !client;
 }
 
 void SetMonoStereo(CGameMenuItemZBool *pItem)
@@ -1903,6 +1890,8 @@ void ShowDifficulties()
 
 void SetDifficultyAndStart(CGameMenuItemChain *pItem)
 {
+    if (netIsLive())
+        return;
     gGameOptions.nDifficulty = pItem->at30;
     gGameOptions.nDifficultyQuantity = pItem->at30;
     gGameOptions.nDifficultyHealth = pItem->at30;
@@ -1926,6 +1915,8 @@ void SetDifficultyAndStart(CGameMenuItemChain *pItem)
 void SetDifficultyCustomAndStart(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    if (netIsLive())
+        return;
     gGameOptions.nDifficulty = ClipRange(sliderDifficultyCustomDifficulty.nValue, 0, 4);
     gGameOptions.nDifficultyQuantity = ClipRange(sliderDifficultyCustomQuantity.nValue, 0, 4);
     gGameOptions.nDifficultyHealth = ClipRange(sliderDifficultyCustomHealth.nValue, 0, 4);
@@ -2704,10 +2695,24 @@ void NetworkHostGame(CGameMenuItemChain *pItem)
     gNetPort = strtoul(zNetPortBuffer, NULL, 10);
     if (!gNetPort)
         gNetPort = kNetDefaultPort;
+    if (gDemo.at0 || gDemo.at1)
+        gDemo.Close();
+    netDisconnect();
+    // netDisconnect resets the previous roster; retain the newly selected capacity.
+    gNetPlayers = itemNetworkHostPlayerNum.nValue;
     gNetMode = NETWORK_SERVER;
+    gGameOptions.nGameType = kGameTypeCoop;
+    gGameOptions.uGameFlags = kGameFlagNone;
     netInitialize(false);
+    gGameStarted = false;
+    gStartNewGame = false;
+    gMe = gView = &gPlayer[myconnectindex];
+    gViewIndex = myconnectindex;
+    netBroadcastPlayerInfo(myconnectindex);
+    UpdateNetworkMenus();
     gGameMenuMgr.Deactivate();
-    gQuitGame = gRestartGame = true;
+    if (netIsServer())
+        gGameMenuMgr.Push(&menuNetStart, 1);
 }
 
 void NetworkJoinGame(CGameMenuItemChain *pItem)
@@ -2720,10 +2725,17 @@ void NetworkJoinGame(CGameMenuItemChain *pItem)
     gNetPort = strtoul(zNetPortBuffer, NULL, 10);
     if (!gNetPort)
         gNetPort = kNetDefaultPort;
+    if (gDemo.at0 || gDemo.at1)
+        gDemo.Close();
+    netDisconnect();
     gNetMode = NETWORK_CLIENT;
     netInitialize(false);
+    gGameStarted = false;
+    gStartNewGame = false;
+    gPaused = false;
+    UpdateNetworkMenus();
     gGameMenuMgr.Deactivate();
-    gQuitGame = gRestartGame = true;
+    viewSetMessage("Connecting to server...");
 }
 
 void SaveGameProcess(CGameMenuItemChain *pItem)
@@ -2782,7 +2794,7 @@ void SaveGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
 {
     char strSaveGameName[BMAX_PATH];
     int nSlot = pItem->at28;
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
         return;
     if (event->at0 != 6/* || strSaveGameName[0]*/)
     {
@@ -2813,7 +2825,7 @@ void SaveGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
 void QuickSaveGame(void)
 {
     char strSaveGameName[BMAX_PATH];
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
         return;
     /*if (strSaveGameName[0])
     {
@@ -2844,7 +2856,7 @@ void LoadGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
     UNREFERENCED_PARAMETER(event);
     char strLoadGameName[BMAX_PATH];
     int nSlot = pItem->at28;
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer)
         return;
     if (G_ModDirSnprintf(strLoadGameName, BMAX_PATH, "game00%02d.sav", nSlot))
         return;
@@ -2866,7 +2878,7 @@ void LoadGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
 void QuickLoadGame(void)
 {
     char strLoadGameName[BMAX_PATH];
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer)
         return;
     if (G_ModDirSnprintf(strLoadGameName, BMAX_PATH, "game00%02d.sav", gQuickLoadSlot))
         return;
@@ -2905,6 +2917,8 @@ void SetupNetLevels(CGameMenuItemZCycle *pItem)
 void StartNetGame(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    if (!netIsServer())
+        return;
     gPacketStartGame.gameType = itemNetStart1.m_nFocus+1;
     if (gPacketStartGame.gameType == 0)
         gPacketStartGame.gameType = 2;
@@ -2924,6 +2938,8 @@ void StartNetGame(CGameMenuItemChain *pItem)
     Bstrncpy(gPacketStartGame.userMapName, zUserMapName, sizeof(zUserMapName));
     gPacketStartGame.userMap = gPacketStartGame.userMapName[0] != 0;
 
+    gGameOptions.nGameType = gPacketStartGame.gameType;
+    gGameOptions.uGameFlags = kGameFlagNone;
     netBroadcastNewGame();
     gStartNewGame = 1;
     gGameMenuMgr.Deactivate();
@@ -2932,6 +2948,13 @@ void StartNetGame(CGameMenuItemChain *pItem)
 void Restart(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    if (netIsLive())
+    {
+        netDisconnect();
+        gQuitGame = gRestartGame = true;
+        gGameMenuMgr.Deactivate();
+        return;
+    }
     if (gGameOptions.nGameType == kGameTypeSinglePlayer || numplayers == 1)
     {
         gQuitGame = true;
@@ -2945,6 +2968,13 @@ void Restart(CGameMenuItemChain *pItem)
 void Quit(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    if (netIsLive())
+    {
+        netDisconnect();
+        gQuitGame = true;
+        gGameMenuMgr.Deactivate();
+        return;
+    }
     if (gGameOptions.nGameType == kGameTypeSinglePlayer || numplayers == 1)
         gQuitGame = true;
     else

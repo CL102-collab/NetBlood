@@ -32,6 +32,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "resource.h"
 #include "sfx.h"
 #include "sound.h"
+#include "netevents.h"
+#include "network.h"
+#include "netsnapshot.h"
 #include "trig.h"
 
 #define kEarDist (int)((32<<4) * 0.17) // distance between ears (17cm)
@@ -104,6 +107,7 @@ void Calc3DValues(BONKLE *pBonkle)
 
 void sfxPlay3DSound(int x, int y, int z, int soundId, int nSector)
 {
+    netSoundPosition(x, y, z, soundId, nSector);
     if (!SoundToggle || soundId < 0) return;
     
     DICTNODE *hRes = gSoundRes.Lookup(soundId, "SFX");
@@ -119,6 +123,7 @@ void sfxPlay3DSound(int x, int y, int z, int soundId, int nSector)
         return;
     BONKLE *pBonkle = BonkleCache[nBonkles++];
     pBonkle->pSndSpr = NULL;
+    pBonkle->netSpriteGeneration = 0;
     pBonkle->curPos.x = x;
     pBonkle->curPos.y = y;
     pBonkle->curPos.z = z;
@@ -154,6 +159,7 @@ void sfxPlay3DSound(int x, int y, int z, int soundId, int nSector)
 
 void sfxPlay3DSound(spritetype *pSprite, int soundId, int chanId, int nFlags)
 {
+    if (pSprite) netSoundSprite(NetSoundKind::Sprite, pSprite->index, soundId, chanId, nFlags);
     if (!SoundToggle)
         return;
     if (!pSprite)
@@ -214,6 +220,7 @@ void sfxPlay3DSound(spritetype *pSprite, int soundId, int chanId, int nFlags)
         pBonkle = BonkleCache[nBonkles++];
         pBonkle->pSndSpr = NULL;
     }
+    pBonkle->netSpriteGeneration = netSnapshotSpriteGeneration(pSprite->index);
     pBonkle->curPos.x = pSprite->x;
     pBonkle->curPos.y = pSprite->y;
     pBonkle->curPos.z = pSprite->z;
@@ -268,6 +275,7 @@ void sfxPlay3DSound(spritetype *pSprite, int soundId, int chanId, int nFlags)
 // by NoOne: same as previous, but allows to set custom pitch for sound AND volume.
 void sfxPlay3DSoundCP(spritetype* pSprite, int soundId, int chanId, int nFlags, int pitch, int volume)
 {
+    if (pSprite) netSoundSprite(NetSoundKind::SpriteCustom, pSprite->index, soundId, chanId, nFlags, pitch, volume);
     if (!SoundToggle || !pSprite || soundId < 0) return;
     DICTNODE* hRes = gSoundRes.Lookup(soundId, "SFX");
     if (!hRes) return;
@@ -325,6 +333,7 @@ void sfxPlay3DSoundCP(spritetype* pSprite, int soundId, int chanId, int nFlags, 
         pBonkle = BonkleCache[nBonkles++];
         pBonkle->pSndSpr = NULL;
     }
+    pBonkle->netSpriteGeneration = netSnapshotSpriteGeneration(pSprite->index);
     pBonkle->curPos.x = pSprite->x;
     pBonkle->curPos.y = pSprite->y;
     pBonkle->curPos.z = pSprite->z;
@@ -412,6 +421,7 @@ EXTERN_INLINE void sfxKillSoundInternal(int i)
 
 void sfxKill3DSound(spritetype *pSprite, int chanId, int soundId)
 {
+    if (pSprite) netSoundSprite(NetSoundKind::KillSpriteSound, pSprite->index, soundId, chanId);
     if (!pSprite)
         return;
     for (int i = nBonkles - 1; i >= 0; i--)
@@ -427,6 +437,7 @@ void sfxKill3DSound(spritetype *pSprite, int chanId, int soundId)
 
 void sfxKillAllSounds(void)
 {
+    netSoundStopAll(true);
     for (int i = nBonkles - 1; i >= 0; i--)
     {
         sfxKillSoundInternal(i);
@@ -435,6 +446,7 @@ void sfxKillAllSounds(void)
 
 void sfxKillSpriteSounds(spritetype *pSprite)
 {
+    if (pSprite) netSoundSprite(NetSoundKind::KillSpriteSounds, pSprite->index);
     if (!pSprite)
         return;
     for (int i = nBonkles - 1; i >= 0; i--)
@@ -493,6 +505,12 @@ void sfxUpdate3DSounds(void)
                 continue;
             if (pBonkle->pSndSpr)
             {
+                if (netIsLive() && (pBonkle->pSndSpr->statnum >= kMaxStatus
+                    || pBonkle->netSpriteGeneration != netSnapshotSpriteGeneration(pBonkle->pSndSpr->index)))
+                {
+                    sfxKillSoundInternal(i);
+                    continue;
+                }
                 pBonkle->oldPos = pBonkle->curPos;
                 pBonkle->curPos.x = pBonkle->pSndSpr->x;
                 pBonkle->curPos.y = pBonkle->pSndSpr->y;

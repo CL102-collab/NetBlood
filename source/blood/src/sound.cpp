@@ -30,6 +30,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "levels.h"
 #include "resource.h"
 #include "sound.h"
+#include "netevents.h"
 #include "renderlayer.h"
 
 
@@ -268,6 +269,7 @@ void sndKillSound(SAMPLE2D *pChannel);
 
 void sndStartSample(const char *pzSound, int nVolume, int nChannel)
 {
+    netSoundSample(NetSoundKind::NamedSample, -1, pzSound, nVolume, nChannel);
     if (!SoundToggle)
         return;
     if (!strlen(pzSound))
@@ -290,6 +292,7 @@ void sndStartSample(const char *pzSound, int nVolume, int nChannel)
 
 void sndStartSample(unsigned int nSound, int nVolume, int nChannel, bool bLoop)
 {
+    netSoundSample(NetSoundKind::Sample, int(nSound), nullptr, nVolume, nChannel, bLoop);
     if (!SoundToggle)
         return;
     dassert(nChannel >= -1 && nChannel < kChannelMax);
@@ -336,6 +339,7 @@ void sndStartSample(unsigned int nSound, int nVolume, int nChannel, bool bLoop)
 
 void sndStartWavID(unsigned int nSound, int nVolume, int nChannel)
 {
+    netSoundSample(NetSoundKind::Wave, int(nSound), nullptr, nVolume, nChannel);
     if (!SoundToggle)
         return;
     dassert(nChannel >= -1 && nChannel < kChannelMax);
@@ -396,6 +400,7 @@ void sndStartWavDisk(const char *pzFile, int nVolume, int nChannel)
 
 void sndKillAllSounds(void)
 {
+    netSoundStopAll(false);
     for (int i = 0; i < kChannelMax; i++)
     {
         SAMPLE2D *pChannel = &Channel[i];

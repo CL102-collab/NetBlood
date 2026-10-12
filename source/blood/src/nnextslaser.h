@@ -94,6 +94,9 @@ class LASER
         static void GenerateTiles(char nID);
         static void GenerateTables();
         //-------------------------------------------------------------------
+        // Detached render state for validated network snapshots. Does not run
+        // property updates, resource creation, scans, damage, or triggers.
+        LASER();
         LASER(spritetype* pLaser);
         ~LASER();
         void Init(spritetype* pLaser);

@@ -796,6 +796,13 @@ blood_game_objs := \
 	mirrors.cpp \
 	misc.cpp \
 	network.cpp \
+	netcontent.cpp \
+	netdemo.cpp \
+	netevents.cpp \
+	netlag.cpp \
+	netpredict.cpp \
+	netsnapshot.cpp \
+	netsnapshot_codec.cpp \
 	osdcmd.cpp \
 	player.cpp \
 	qav.cpp \

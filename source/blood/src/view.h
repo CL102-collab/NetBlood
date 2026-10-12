@@ -128,6 +128,10 @@ void viewUpdatePages(void);
 void viewToggle(int viewMode);
 void viewInitializePrediction(void);
 void viewUpdatePrediction(GINPUT *pInput);
+vec3_t viewPredictionPosition();
+vec2_t viewPredictionPendingLook();
+void viewPredictionApplyPendingLook(vec2_t pending);
+void viewPredictionSnap();
 void sub_158B4(PLAYER *pPlayer);
 void fakeProcessInput(PLAYER *pPlayer, GINPUT *pInput);
 void fakePlayerProcess(PLAYER *pPlayer, GINPUT *pInput);
@@ -156,6 +160,21 @@ void viewResizeView(int size);
 void UpdateFrame(void);
 void viewDrawInterface(ClockTicks arg);
 tspritetype *viewAddEffect(int nTSprite, VIEW_EFFECT nViewEffect);
+// A combo switch selects a chain of tile animations. Each step advances at
+// least one tile, so reject impossible counts before following asset metadata.
+inline int viewAnimatedTile(int tile, int count)
+{
+    if (tile < 0 || tile >= kMaxTiles || count > kMaxTiles-1-tile) return -1;
+    while (count > 0)
+    {
+        --count;
+        const int next = tile + picanm[tile].num + 1;
+        if (next >= kMaxTiles) return -1;
+        tile = next;
+    }
+    return tile;
+}
+
 void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t smooth);
 void CalcOtherPosition(spritetype *pSprite, int *pX, int *pY, int *pZ, int *vsectnum, int nAng, fix16_t zm);
 void CalcPosition(spritetype *pSprite, int *pX, int *pY, int *pZ, int *vsectnum, int nAng, int zm);
