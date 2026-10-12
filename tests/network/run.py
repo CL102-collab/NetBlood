@@ -57,7 +57,7 @@ def snapshot_hashes(text, server=False):
 
 class Game:
     def __init__(self, name, args, root, library, port=None, dedicated=False, playback=None, renderer=None, listen=False,
-                 initial_files=None, launch_map=None):
+                 initial_files=None, launch_map=None, launch_arguments=None):
         self.name = name
         self.path = root / name
         self.path.mkdir()
@@ -99,6 +99,11 @@ class Game:
                 environment.pop(variable, None)
             environment.update(SDL_VIDEODRIVER="network-test-invalid-video-driver",
                                SDL_AUDIODRIVER="network-test-invalid-audio-driver", NETWORK_TEST_HEADLESS="1")
+        if launch_arguments is not None:
+            # Supply an exact mode/CLI invocation for startup-policy tests;
+            # ordinary sessions keep their existing defaults below.
+            command += list(launch_arguments)
+        elif dedicated:
             command += ["-dedicated", "-server", "8", "-port", str(port), "-gametype", "coop"]
             if launch_map:
                 command += [f"-map={launch_map}"]
@@ -213,7 +218,7 @@ def inspect_demo(path):
             break
         require(marker in (0x31544b50, 0x31545352) and length >= 28, "unexpected packet demo record")
         magic, protocol, kind, session, generation, sequence, payload_length = struct.unpack_from("<7I", body)
-        require(magic == 0x314e424e and protocol == 1 and payload_length == len(body)-28, "bad recorded envelope")
+        require(magic == 0x314e424e and protocol == 2 and payload_length == len(body)-28, "bad recorded envelope")
         record = {"type": kind, "session": session, "generation": generation,
                   "sequence": sequence, "elapsed_ticks": elapsed, "tick": tick,
                   "sha256": hashlib.sha256(body).hexdigest()}

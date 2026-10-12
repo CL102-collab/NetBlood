@@ -33,6 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "levels.h"
 #include "loadsave.h"
 #include "menu.h"
+#include "network.h"
 #include "qav.h"
 #include "resource.h"
 #include "view.h"
@@ -104,6 +105,9 @@ void CGameMenuMgr::DeInitializeMenu(void)
 
 bool CGameMenuMgr::Push(CGameMenu *pMenu, int nItem)
 {
+    UpdateNetworkMenus();
+    if (!CanOpenGameMenu(pMenu))
+        return false;
     if (nMenuPointer == 0)
     {
         m_mouselastactivity = -M_MOUSETIMEOUT;
@@ -156,6 +160,9 @@ void CGameMenuMgr::Draw(void)
 {
     if (pActiveMenu)
     {
+        // A welcome/snapshot can arrive while the options menu is already open.
+        if (netIsClient())
+            UpdateNetworkMenus();
         pActiveMenu->Draw();
         viewUpdatePages();
     }
@@ -1083,6 +1090,8 @@ bool CGameMenuItemChain7F2F0::Event(CGameMenuEvent &event)
     switch (event.at0)
     {
     case kMenuEventEnter:
+        if (netIsClient())
+            return false;
         if (at34 > -1)
         {
             gGameOptions.nEpisode = at34;

@@ -60,5 +60,6 @@ extern char zUserMapName[BMAX_PATH];
 void drawLoadingScreen(int nTile);
 void SetupMenus(void);
 void UpdateNetworkMenus(void);
+bool CanOpenGameMenu(CGameMenu const *pMenu);
 void QuickSaveGame(void);
 void QuickLoadGame(void);

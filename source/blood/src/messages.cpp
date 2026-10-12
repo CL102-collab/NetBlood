@@ -748,7 +748,7 @@ void CCheatMgr::Process(CCheatMgr::CHEATCODE nCheatCode, char* pzArgs)
         gShowFps = !gShowFps;
         return;
     }
-    if (gGameOptions.nGameType != kGameTypeSinglePlayer)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer)
         return;
     int nEpisode, nLevel;
     switch (nCheatCode)

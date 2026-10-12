@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "messages.h"
 #include "network.h"
+#include "netserver.h"
 #include "netlag.h"
 #include "osdcmds.h"
 #include "screen.h"
@@ -106,7 +107,7 @@ static int osdcmd_pause(osdcmdptr_t parm)
     if (parm->numparms != 0)
         return OSDCMD_SHOWHELP;
 
-    if (!gGameStarted || gGameOptions.nGameType != kGameTypeSinglePlayer || numplayers != 1 || gDemo.at0 || gDemo.at1)
+    if (netIsLive() || !gGameStarted || gGameOptions.nGameType != kGameTypeSinglePlayer || numplayers != 1 || gDemo.at0 || gDemo.at1)
     {
         OSD_Printf("pause: requires a single-player game without demo recording or playback.\n");
         return OSDCMD_OK;
@@ -156,7 +157,18 @@ static int osdcmd_changelevel(osdcmdptr_t parm)
 
     if (netIsServer())
     {
-        levelSetupOptions(volume, level);
+        if (gDedicated)
+        {
+            if (!netServerPrepareEpisodeLevel(volume, level))
+            {
+                OSD_Printf("changelevel: level is not in the server's episode definitions.\n");
+                return OSDCMD_OK;
+            }
+        }
+        else
+            levelSetupOptions(volume, level);
+        gGameOptions.szUserMap[0] = 0;
+        gGameOptions.uGameFlags &= ~kGameFlagContinuing;
         netPrepareCurrentMapSettings();
         gStartNewGame = 1;
         if (!gDedicated) gGameMenuMgr.Deactivate();
@@ -239,6 +251,15 @@ static int osdcmd_map(osdcmdptr_t parm)
 
     if (gDemo.at1)
         gDemo.StopPlayback();
+
+    if (gDedicated && netIsServer())
+    {
+        netServerPrepareUserMap(filename);
+        gGameOptions.uGameFlags &= ~kGameFlagContinuing;
+        netPrepareCurrentMapSettings();
+        gStartNewGame = 1;
+        return OSDCMD_OK;
+    }
 
     int bFound = 0;
     for (int i = 0; i < gEpisodeCount; i++)
@@ -1042,6 +1063,14 @@ static int osdcmd_cvar_set_game(osdcmdptr_t parm)
 
 static int osdcmd_cvar_set_multi(osdcmdptr_t parm)
 {
+    if (netIsClient() && !Bstrcasecmp(parm->name, "cl_autoaim"))
+    {
+        if (parm->numparms)
+            OSD_Printf("cl_autoaim: controlled by server; disconnect before changing it.\n");
+        else
+            OSD_Printf("cl_autoaim %d (controlled by server)\n", gProfile[myconnectindex].nAutoAim);
+        return OSDCMD_OK;
+    }
     int const r = osdcmd_cvar_set_game(parm);
 
     if (r != OSDCMD_OK) return r;

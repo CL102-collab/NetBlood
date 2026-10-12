@@ -1049,16 +1049,19 @@ void playerReset(PLAYER *pPlayer)
     playerResetPosture(pPlayer);
 }
 
-void playerResetScores(int nPlayer)
+void playerResetScores(int nPlayer, bool resetTeamScores)
 {
     PLAYER *pPlayer = &gPlayer[nPlayer];
     pPlayer->fragCount = 0;
     memset(pPlayer->fragInfo, 0, sizeof(pPlayer->fragInfo));
-    memset(gPlayerScores, 0, sizeof(gPlayerScores));
-    memset((void *)gPlayerScoreTicks, 0, sizeof(gPlayerScoreTicks));
+    if (resetTeamScores)
+    {
+        memset(gPlayerScores, 0, sizeof(gPlayerScores));
+        memset((void *)gPlayerScoreTicks, 0, sizeof(gPlayerScoreTicks));
+    }
 }
 
-void playerInit(int nPlayer, unsigned int a2)
+void playerInit(int nPlayer, unsigned int a2, bool resetTeamScores)
 {
     PLAYER *pPlayer = &gPlayer[nPlayer];
     if (!(a2&1))
@@ -1067,7 +1070,7 @@ void playerInit(int nPlayer, unsigned int a2)
     pPlayer->teamId = nPlayer;
     if (gGameOptions.nGameType == kGameTypeTeams)
         pPlayer->teamId = nPlayer&1;
-    playerResetScores(nPlayer);
+    playerResetScores(nPlayer, resetTeamScores);
 
     if (!(a2&1))
         playerReset(pPlayer);

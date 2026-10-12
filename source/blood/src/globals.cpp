@@ -24,6 +24,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "compat.h"
 #include "build.h"
+#include "blood.h"
 #include "common_game.h"
 #include "demo.h"
 #include "globals.h"
@@ -31,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "renderlayer.h"
 
 
+bool gGameFatalError = false;
 ud_setup_t gSetup;
 ClockTicks gFrameClock;
 ClockTicks gFrameTicks;
@@ -54,13 +56,21 @@ void _SetErrorLoc(const char *pzFile, int nLine)
 
 void _ThrowError(const char *pzFormat, ...)
 {
-    char buffer[256];
+    gGameFatalError = true;
+    char buffer[1024];
     va_list args;
     va_start(args, pzFormat);
-    vsprintf(buffer, pzFormat, args);
+    vsnprintf(buffer, sizeof(buffer), pzFormat, args);
+    va_end(args);
     LOG_F(ERROR, "%s(%i): %s", _module, _line, buffer);
     if (gDemoRunValidation)
         DemoValidationError(buffer);
+    if (gDedicated)
+    {
+        // Service startup failures must not open a modal dialog or require input.
+        Bfflush(NULL);
+        QuitGame();
+    }
 
     // NOTE: if NDEBUG is defined, this is a no-op (handled in build/include/compat.h)
     debug_break();

@@ -101,10 +101,10 @@ struct Endpoint {
         }
     }
 };
-Bytes hello(uint32_t fingerprint, bool capable = true) {
+Bytes hello(uint32_t fingerprint, bool capable = true, uint8_t autoAim = 1, uint8_t skill = 2) {
     netwire::Writer writer;
     writer.u32(fingerprint); writer.text("content-probe", 15);
-    writer.u8(1); writer.u8(1); writer.u8(2);
+    writer.u8(autoAim); writer.u8(1); writer.u8(skill);
     if (capable) writer.u32(netassets::ManifestVersion);
     return writer.data;
 }
@@ -121,7 +121,8 @@ uint32_t manifest(const Message &message) {
 }
 void probe(unsigned port, const std::string &mode, uint32_t fingerprint, const char *trigger) {
     Endpoint client(port, false);
-    client.send(netwire::Hello, hello(fingerprint, mode != "legacy"));
+    client.send(netwire::Hello, hello(fingerprint, mode != "legacy", mode == "profile-hold" ? 3 : 1,
+                                    mode == "profile-hold" ? 0 : 2));
     const Message offered = client.receive();
     if (mode == "legacy") {
         check(offered.header.type == netwire::Welcome, "legacy CRC client was not admitted");
@@ -134,6 +135,45 @@ void probe(unsigned port, const std::string &mode, uint32_t fingerprint, const c
         return;
     }
     check(expected == fingerprint, "probe supplied incorrect fingerprint");
+    if (mode == "profile-hold") {
+        netwire::Writer ready;
+        ready.u32(fingerprint);
+        client.send(netwire::ContentReady, ready.data, offered.header.session, offered.header.generation);
+        const Message welcomed = client.receive();
+        check(welcomed.header.type == netwire::Welcome, "spoofed profile was not admitted");
+        netwire::Reader welcome(welcomed.body.data(), welcomed.body.size());
+        const uint32_t slot = welcome.u32(), slotGeneration = welcome.u32(), mapCRC = welcome.u32();
+        check(welcome.ok && slot < 8, "invalid welcome slot");
+        netwire::Writer mapReady;
+        mapReady.u32(slotGeneration); mapReady.u32(mapCRC);
+        client.send(netwire::Ready, mapReady.data, welcomed.header.session, welcomed.header.generation);
+        // Profile updates must not turn the client's preference into a server
+        // rule. The production protocol currently ignores this message type.
+        client.send(netwire::Profile, hello(fingerprint, false, 3, 0), welcomed.header.session, welcomed.header.generation);
+        const auto deadline = Clock::now() + std::chrono::seconds(30);
+        bool installed = false;
+        unsigned snapshots = 0;
+        Message message;
+        while (!std::ifstream(trigger).good()) {
+            check(Clock::now() < deadline, "profile probe release timeout");
+            if (client.poll(message) && message.header.type == netwire::Snapshot) {
+                netwire::Reader snapshot(message.body.data(), message.body.size());
+                snapshot.u32();
+                netwire::Writer ack; ack.u32(snapshot.u32());
+                client.send(netwire::SnapshotAck, ack.data, message.header.session, message.header.generation);
+                ++snapshots;
+                if (!installed) {
+                    std::printf("profile_ready=1 slot=%u requested_autoaim=3 requested_skill=0\n", slot);
+                    std::fflush(stdout);
+                    installed = true;
+                }
+            }
+            check(!client.disconnected, "spoofed-profile client disconnected");
+        }
+        check(installed, "profile peer never received authoritative state");
+        std::printf("profile_snapshots=%u\n", snapshots);
+        return;
+    }
     if (mode == "invalid-ready" || mode == "wrong-ready") {
         netwire::Writer ready;
         if (mode == "invalid-ready") ready.u16(uint16_t(fingerprint));

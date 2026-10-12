@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 1;
+constexpr uint32_t Version    = 2;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -224,6 +224,34 @@ inline bool readMapData(Reader &r, MapDataPayload &chunk)
     candidate.data = r.data + r.pos;
     r.pos += candidate.length;
     chunk = candidate;
+    return true;
+}
+// Session rules accompany each map bootstrap, independently of the legacy
+// GAMEOPTIONS layout used by original input demos and saved games.
+struct ServerRules
+{
+    uint32_t timeLimitMinutes = 0, scoreLimit = 0, maxPlayers = 8, autoAim = 1;
+    uint32_t rotationIndex = 0, rotationCount = 0;
+};
+constexpr size_t ServerRulesBytes = 6 * sizeof(uint32_t);
+inline void writeServerRules(Writer& w, const ServerRules& rules)
+{
+    w.u32(rules.timeLimitMinutes); w.u32(rules.scoreLimit);
+    w.u32(rules.maxPlayers); w.u32(rules.autoAim);
+    w.u32(rules.rotationIndex); w.u32(rules.rotationCount);
+}
+inline bool readServerRules(Reader& r, ServerRules& rules)
+{
+    ServerRules candidate;
+    candidate.timeLimitMinutes = r.u32(); candidate.scoreLimit = r.u32();
+    candidate.maxPlayers = r.u32(); candidate.autoAim = r.u32();
+    candidate.rotationIndex = r.u32(); candidate.rotationCount = r.u32();
+    if (!r.ok || candidate.timeLimitMinutes > 10080 || candidate.scoreLimit > INT32_MAX
+        || !candidate.maxPlayers || candidate.maxPlayers > 8 || candidate.autoAim > 3
+        || candidate.rotationCount > 256
+        || (candidate.rotationCount ? candidate.rotationIndex >= candidate.rotationCount : candidate.rotationIndex != 0))
+        return false;
+    rules = candidate;
     return true;
 }
 struct Command

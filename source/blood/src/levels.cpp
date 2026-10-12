@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "endgame.h"
 #include "inifile.h"
 #include "levels.h"
+#include "netserver.h"
 #include "loadsave.h"
 #include "messages.h"
 #include "network.h"
@@ -383,6 +384,8 @@ void levelGetNextLevels(int nEpisode, int nLevel, int *pnEndingA, int *pnEndingB
 
 void levelEndLevel(int nExitType)
 {
+    if (netServerHandleLevelExit(nExitType))
+        return;
     int nEndingA, nEndingB;
     EPISODEINFO *pEpisodeInfo = &gEpisodeInfo[gGameOptions.nEpisode];
     gGameOptions.uGameFlags |= kGameFlagContinuing;

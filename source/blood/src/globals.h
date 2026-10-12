@@ -37,6 +37,7 @@ typedef struct {
     int32_t noautoload;
 } ud_setup_t;
 
+extern bool gGameFatalError;
 extern ud_setup_t gSetup;
 extern ClockTicks gFrameClock;
 extern ClockTicks gFrameTicks;

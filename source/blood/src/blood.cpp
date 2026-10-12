@@ -58,6 +58,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "music.h"
 #include "network.h"
 #include "netcontent.h"
+#include "netserver.h"
 #include "osdcmds.h"
 #include "replace.h"
 #include "resource.h"
@@ -230,7 +231,7 @@ void ShutDown(void)
 void QuitGame(void)
 {
     ShutDown();
-    exit(gDemoRunValidation && !gDemoValidationPassed ? 1 : 0);
+    exit(gGameFatalError || (gDemoRunValidation && !gDemoValidationPassed) ? 1 : 0);
 }
 
 void PrecacheDude(spritetype *pSprite)
@@ -668,7 +669,12 @@ void StartLevel(GAMEOPTIONS *pOpt)
         pOpt->bFriendlyFire = gPacketStartGame.bFriendlyFire;
         pOpt->bPlayerKeys = gPacketStartGame.bPlayerKeys;
         if (gPacketStartGame.userMap)
-            levelAddUserMap(gPacketStartGame.userMapName);
+        {
+            if (gDedicated)
+                netServerPrepareUserMap(gPacketStartGame.userMapName);
+            else
+                levelAddUserMap(gPacketStartGame.userMapName);
+        }
         else
             levelSetupOptions(pOpt->nEpisode, pOpt->nLevel);
 
@@ -676,6 +682,7 @@ void StartLevel(GAMEOPTIONS *pOpt)
         pOpt->weaponsV10x = gPacketStartGame.weaponsV10x;
         ///////
     }
+    netServerApplySettings();
     if (pOpt->nGameType != kGameTypeSinglePlayer)
     {
         gBlueFlagDropped = false;
@@ -769,11 +776,17 @@ void StartLevel(GAMEOPTIONS *pOpt)
     warpInit();
     actInit(false);
     evInit();
+    if (netIsServer() && !(pOpt->uGameFlags & kGameFlagContinuing))
+    {
+        // A new round resets team scores even when the dedicated server is empty.
+        memset(gPlayerScores, 0, sizeof(gPlayerScores));
+        memset((void*)gPlayerScoreTicks, 0, sizeof(gPlayerScoreTicks));
+    }
     for (int i = connecthead; i >= 0; i = connectpoint2[i])
     {
         if (!(pOpt->uGameFlags&kGameFlagContinuing)) // if new game
         {
-            if (numplayers == 1)
+            if (numplayers == 1 && !netIsLive())
             {
                 gProfile[i].skill = gSkill;
                 gProfile[i].nAutoAim = gAutoAim;
@@ -1210,16 +1223,22 @@ void ProcessFrame(void)
     gLevelTime++;
     gFrame++;
     gFrameClock += kTicsPerFrame;
+    netServerCheckLimits();
     if ((gGameOptions.uGameFlags&kGameFlagContinuing) && !gStartNewGame)
     {
         ready2send = 0;
         if (netIsServer())
         {
             // A live server changes maps independently of client loading/screens.
-            int const nextLevel = (gGameOptions.uGameFlags & kGameFlagEnding) ? 0 : gNextLevel;
-            gGameOptions.uGameFlags &= ~kGameFlagEnding;
-            levelSetupOptions(gGameOptions.nEpisode, nextLevel);
-            netPrepareCurrentMapSettings();
+            if (gDedicated)
+                netServerAdvanceMap();
+            else
+            {
+                int const nextLevel = (gGameOptions.uGameFlags & kGameFlagEnding) ? 0 : gNextLevel;
+                gGameOptions.uGameFlags &= ~kGameFlagEnding;
+                levelSetupOptions(gGameOptions.nEpisode, nextLevel);
+                netPrepareCurrentMapSettings();
+            }
             gStartNewGame = true;
             return;
         }
@@ -1311,6 +1330,15 @@ SWITCH switches[] = {
     { "validate", 45, 0 },
     { "dedicated", 46, 0 },
     { "gametype", 47, 1 },
+    { "maxplayers", 48, 1 },
+    { "timelimit", 49, 1 },
+    { "scorelimit", 50, 1 },
+    { "autoaim", 51, 1 },
+    { "weaponsstay", 52, 1 },
+    { "maplist", 53, 1 },
+    { "episode", 54, 1 },
+    { "difficulty", 55, 1 },
+    { "losekeys", 56, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1343,6 +1371,17 @@ void PrintHelp(void)
         "-server [players]\tStart a multiplayer server (maximum players)\n"
         "-dedicated\tRun a server without a window or audio device\n"
         "-gametype [type]\tServer mode: coop (default), bloodbath, or teams\n"
+        "-port [port]\tUDP listen/connect port; Range:1..65535; Default:23513\n"
+        "Dedicated server rules:\n"
+        "-maxplayers [n]\tPlayer limit; Range:1..8; Default:8\n"
+        "-timelimit [min]\tMinutes per map; 0 means unlimited (default)\n"
+        "-scorelimit [n]\tFrag/team score limit; 0 means unlimited (default)\n"
+        "-autoaim on|off\tForce autoaim for every player; Default:on\n"
+        "-weaponsstay on|off\tKeep picked-up weapons available; Default:on\n"
+        "-maplist [file.txt]\tLoop maps from this text filename (one per line)\n"
+        "-episode [n]\tCoop episode to play and repeat; starts at 1\n"
+        "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
+        "-losekeys on|off\tLose keys on coop death; Default:on\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif
@@ -1472,8 +1511,8 @@ void ParseOptions(void)
             break;
         case 30:
             if (OptArgc < 1)
-                ThrowError("Missing argument");
-            gNetPlayers = ClipRange(atoi(OptArgv[0]), 1, kMaxPlayers);
+                ThrowError("Missing argument for -server");
+            netServerParseOption("server", OptArgv[0]);
             gNetMode = NETWORK_SERVER;
             break;
         case 31:
@@ -1627,8 +1666,8 @@ void ParseOptions(void)
             break;
         case 39:
             if (OptArgc < 1)
-                ThrowError("Missing argument");
-            gNetPort = strtoul(OptArgv[0], NULL, 0);
+                ThrowError("Missing argument for -port");
+            netServerParseOption("port", OptArgv[0]);
             break;
         case 40:
             if (OptArgc < 1)
@@ -1649,8 +1688,14 @@ void ParseOptions(void)
             break;
         case 44:
             if (OptArgc < 1)
-                ThrowError("Missing argument");
-            gSkill = ClipRange(strtoul(OptArgv[0], NULL, 0), 0, 4);
+                ThrowError("Missing argument for -s");
+            if (gDedicated)
+            {
+                netServerParseOption("s", OptArgv[0]);
+                gSkill = netServerSettings().difficulty;
+            }
+            else
+                gSkill = ClipRange(strtoul(OptArgv[0], NULL, 0), 0, 4);
             gGameOptions.nDifficulty = gSkill;
             gGameOptions.nDifficultyQuantity = gSkill;
             gGameOptions.nDifficultyHealth = gSkill;
@@ -1661,6 +1706,16 @@ void ParseOptions(void)
         case 46:
             gDedicated = true;
             break;
+        case 48: case 49: case 50: case 51: case 52:
+        case 53: case 54: case 55: case 56:
+        {
+            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys" };
+            const char* name = names[option - 48];
+            if (OptArgc < 1)
+                ThrowError("Missing argument for -%s", name);
+            netServerParseOption(name, OptArgv[0]);
+            break;
+        }
         case 47:
             if (OptArgc < 1)
                 ThrowError("Missing game type");
@@ -1675,6 +1730,7 @@ void ParseOptions(void)
             break;
         }
     }
+    netServerValidateOptions(gRequestedGameType, bAddUserMap);
     if (gDedicated)
     {
         if (gNetMode == NETWORK_CLIENT || gDemoRunValidation || gDemo.at1)
@@ -2108,6 +2164,7 @@ int app_main(int argc, char const * const * argv)
         gPacketStartGame.userMap = bAddUserMap;
         Bstrncpyz(gPacketStartGame.userMapName, gUserMapFilename, sizeof(gPacketStartGame.userMapName));
     }
+    netServerInitializeSettings();
     if (gDedicated)
         SoundToggle = MusicToggle = 0;
     LOG_F(INFO, "Initializing network users");

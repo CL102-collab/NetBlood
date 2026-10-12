@@ -19,6 +19,7 @@ tests/network/map-storage-test.sh
 SANITIZE=1 tests/network/map-storage-test.sh
 tests/network/assets-test.sh
 SANITIZE=1 tests/network/assets-test.sh
+SANITIZE=1 tests/network/server-settings-test.sh
 ```
 
 The first script needs C/C++ compilers and uses the repository's LZ4 and ENet
@@ -65,6 +66,12 @@ The checks include:
   results, including boundary lengths and streaming reads. Comparison checks
   cover missing and different files, renamed matching archives, and extra local
   assets.
+- Server-rule wire bytes, bounded fields, every truncated prefix and unchanged
+  output on rejection. Dedicated limit checks run the production handler with
+  controlled active-player and team counters, covering unlimited limits,
+  precise minute boundaries, empty servers, inactive slots, transition guards,
+  hot-join team-score retention, and cooperative normal/secret/end-of-episode routing. The limit script needs
+  SDL2 development headers and `pkg-config`, but no game data or display.
 
 ## Dedicated server and graphical clients
 
@@ -113,6 +120,89 @@ establish map-transition coverage. `--timeout` adjusts startup/join deadlines.
 (5) for graphical processes; that renderer must be enabled in the tested build.
 The input harness uses Linux `LD_PRELOAD` and a FIFO; it is not a Windows runtime
 test. Windows compilation and execution must be reported separately.
+
+## Dedicated startup rules
+
+For example, run a two-map Bloodbath rotation with a 15-minute or 30-frag limit:
+
+```sh
+./nblood -dedicated -port 23513 -gametype bloodbath -maxplayers 8 \
+  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay on \
+  -maplist rotation.txt
+```
+
+`rotation.txt` contains one map name per line. Blank lines and `#` or `;`
+comments are allowed, including comments after a map name. Only the text
+filename is passed to `-maplist`; put it on the game's search path. The maps
+must be available to the server. A missing client map uses the existing
+automatic download path. The rotation repeats after its last entry.
+
+```text
+# Stock-map rotation
+E1M1
+E1M2
+```
+
+For cooperative episode play:
+
+```sh
+./nblood -dedicated -port 23513 -gametype coop -maxplayers 4 \
+  -episode 2 -difficulty 3 -losekeys off -autoaim on -weaponsstay on
+```
+
+Episode numbers start at 1 and must name a cooperative episode in the selected
+INI. Normal and secret exits follow that episode's definitions; finishing the
+episode starts it again. `-map`, `-maplist`, and `-episode` are mutually
+exclusive.
+
+| Parameter | Values and defaults |
+| --- | --- |
+| `-port` | UDP port 1–65535; default 23513 |
+| `-gametype` | `coop` (default), `bloodbath`, `teams` |
+| `-maxplayers` | 1–8; default 8; `-server N` remains an alias for the cap |
+| `-timelimit` | Integer minutes 0–10080; 0 (default) means unlimited |
+| `-scorelimit` | 0–2147483647; 0 (default) means unlimited; Bloodbath or teams only |
+| `-autoaim` | `on` (default) or `off`, applied to every player |
+| `-weaponsstay` | `on` (default) or `off` |
+| `-maplist` | A `.txt` filename, up to 256 maps and 128 KiB |
+| `-episode` | Cooperative episode, numbered from 1 |
+| `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
+| `-losekeys` | `on` (default) or `off`; cooperative play only |
+
+When a configured time or score limit is reached, the dedicated server advances
+the map list. With an explicit cooperative episode, a time limit follows the
+normal exit; without a map list or explicit episode, limits restart the current
+map. Bloodbath uses individual frag totals; teams uses team totals. The
+clock also runs while the server is empty. `net_status` prints effective rules
+and each player's effective autoaim/skill. Connected clients cannot change
+maps, restart or start games, host another server, or change server-owned
+autoaim through their console or menus. Disconnecting explicitly returns to
+local play.
+
+The mandatory rule metadata uses wire protocol 2. Rebuild the server and all
+connected clients together; older network builds are incompatible. Legacy DOS
+input-demo recording and playback retain their original formats.
+
+Exercise CLI validation and live enforcement under the same X11/asset setup:
+
+```sh
+python3 tests/network/server-settings.py \
+  --binary ./nblood \
+  --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-server-settings-evidence
+```
+
+This test rejects malformed/missing values, conflicting launch selections,
+invalid rotation files and unavailable maps before the server listens. A
+configured Bloodbath server admits two graphical clients, including a late
+join, and rejects a third. It checks effective rules on both sides, client
+console map/restart/autoaim denial, and a real one-minute map rotation. A
+separate cooperative server checks episode, difficulty and retained keys.
+Real ENet probes request forbidden autoaim and difficulty values in their
+profiles; the authoritative player profiles must keep the configured values.
+The output retains exact command lines, process logs, statuses and a binary
+hash in `result.json`. It tests console authority enforcement; the separate
+menu guards are not exercised by synthetic menu navigation.
 
 ## Automatic map downloads
 

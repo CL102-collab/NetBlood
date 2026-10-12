@@ -42,7 +42,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 1,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 2,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -90,6 +90,51 @@ bool commandDecode(const netwire::Command& command)
     netwire::Reader reader(writer.data.data(), writer.data.size());
     netwire::Command decoded;
     return netwire::readCommand(reader, decoded) && reader.end();
+}
+void serverRules()
+{
+    netwire::ServerRules rules;
+    rules.timeLimitMinutes = 10080; rules.scoreLimit = INT32_MAX;
+    rules.maxPlayers = 8; rules.autoAim = 3;
+    rules.rotationIndex = 255; rules.rotationCount = 256;
+    netwire::Writer writer; netwire::writeServerRules(writer, rules);
+    const std::vector<uint8_t> expected = {
+        0x60,0x27,0,0, 0xff,0xff,0xff,0x7f, 8,0,0,0, 3,0,0,0,
+        0xff,0,0,0, 0,1,0,0};
+    CHECK(writer.data == expected && writer.data.size() == netwire::ServerRulesBytes);
+    netwire::Reader reader(writer.data.data(), writer.data.size());
+    netwire::ServerRules decoded;
+    CHECK(netwire::readServerRules(reader, decoded) && reader.end());
+    netwire::Writer rewritten; netwire::writeServerRules(rewritten, decoded);
+    CHECK(rewritten.data == expected);
+    // Rejected packets must leave the previously authoritative rules intact.
+    for (size_t length = 0; length < expected.size(); ++length) {
+        netwire::Reader truncated(expected.data(), length);
+        decoded = rules;
+        CHECK(!netwire::readServerRules(truncated, decoded));
+        rewritten.data.clear(); netwire::writeServerRules(rewritten, decoded);
+        CHECK(rewritten.data == expected);
+    }
+    const std::pair<unsigned, uint32_t> invalid[] = {
+        {0,10081}, {0,UINT32_MAX}, {4,0x80000000u}, {8,0}, {8,9}, {12,4},
+        {16,256}, {16,UINT32_MAX}, {20,257}, {20,0}};
+    for (const auto& mutation : invalid) {
+        auto bad = expected; field(bad, mutation.first, mutation.second);
+        netwire::Reader malformed(bad.data(), bad.size());
+        decoded = rules;
+        CHECK(!netwire::readServerRules(malformed, decoded));
+        rewritten.data.clear(); netwire::writeServerRules(rewritten, decoded);
+        CHECK(rewritten.data == expected);
+    }
+    for (uint32_t cap = 1; cap <= 8; ++cap)
+        for (uint32_t aim = 0; aim <= 3; ++aim) {
+            rules = netwire::ServerRules(); rules.maxPlayers = cap; rules.autoAim = aim;
+            writer.data.clear(); netwire::writeServerRules(writer, rules);
+            netwire::Reader minimal(writer.data.data(), writer.data.size());
+            CHECK(netwire::readServerRules(minimal, decoded) && minimal.end());
+            CHECK(decoded.maxPlayers == cap && decoded.autoAim == aim && !decoded.timeLimitMinutes && !decoded.scoreLimit);
+        }
+    std::puts("PASS: authoritative server rules, exact wire bytes, bounds, truncation and unchanged rejected output");
 }
 void commands()
 {
@@ -341,6 +386,8 @@ void malformedCorpus()
         netwire::readMapRequest(request, ignoredRequest);
         netwire::Reader chunk(bytes.data(), bytes.size()); netwire::MapDataPayload ignoredChunk;
         netwire::readMapData(chunk, ignoredChunk);
+        netwire::Reader rules(bytes.data(), bytes.size()); netwire::ServerRules ignoredRules;
+        netwire::readServerRules(rules, ignoredRules);
         std::string error;
         const std::vector<uint8_t> sentinel = {1,2,3}; auto output = sentinel;
         bool accepted = netSnapshotUnpack(bytes, nullptr, output, error);
@@ -351,6 +398,6 @@ void malformedCorpus()
 }
 int main()
 {
-    framing(); commands(); mapTransfer(); snapshots(); malformedCorpus();
+    framing(); serverRules(); commands(); mapTransfer(); snapshots(); malformedCorpus();
     std::printf("PASS: network codecs (%u assertions)\n", checks);
 }

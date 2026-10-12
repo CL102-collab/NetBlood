@@ -39,6 +39,22 @@ If you have the GOG version of the game, do the following:
 ### Notes
 NBlood now uses nblood_cvars.cfg instead of settings.cfg. Please rename your settings.cfg if you need to retain settings from a previous version.
 
+### Dedicated multiplayer server
+
+Start a headless server with hot-join and server-owned gameplay rules:
+
+```sh
+./nblood -dedicated -port 23513 -gametype bloodbath -maxplayers 8 \
+  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay on -maplist rotation.txt
+```
+
+Put one map name per line in `rotation.txt` on the game's search path; the list
+repeats. For cooperative episode play, use `-gametype coop -episode 1
+-difficulty 2 -losekeys off` instead of the score limit and map list.
+Connected clients cannot change the server's rules or start another game.
+See [dedicated startup rules](tests/network/README.md#dedicated-startup-rules)
+for all parameters, defaults, examples, and validation checks.
+
 ## PCExhumed
 A port of the PC version of Exhumed based on EDuke32.
 

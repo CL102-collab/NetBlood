@@ -212,6 +212,7 @@
     <ClCompile Include="..\..\source\blood\src\netlag.cpp" />
     <ClCompile Include="..\..\source\blood\src\netmap.cpp" />
     <ClCompile Include="..\..\source\blood\src\netpredict.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netserver.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot_codec.cpp" />
     <ClCompile Include="..\..\source\blood\src\nnextcdud.cpp" />
@@ -344,6 +345,7 @@
     <ClInclude Include="..\..\source\blood\src\netlag.h" />
     <ClInclude Include="..\..\source\blood\src\netmap.h" />
     <ClInclude Include="..\..\source\blood\src\netpredict.h" />
+    <ClInclude Include="..\..\source\blood\src\netserver.h" />
     <ClInclude Include="..\..\source\blood\src\netprotocol.h" />
     <ClInclude Include="..\..\source\blood\src\netsnapshot.h" />
     <ClInclude Include="..\..\source\blood\src\osdcmds.h" />

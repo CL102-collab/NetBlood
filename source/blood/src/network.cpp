@@ -33,6 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "menu.h"
 #include "network.h"
+#include "netserver.h"
 #include "player.h"
 #include "seq.h"
 #include "sound.h"
@@ -149,6 +150,7 @@ std::deque<Bytes>            pendingClientPackets;
 Bytes                        lastWelcome, lastRecordedSnapshot;
 Bytes                        serverMapBytes, clientMapBytes;
 GAMEOPTIONS                  clientMapOptions = {};
+netwire::ServerRules          clientServerRules;
 uint32_t                     clientMapSize = 0, clientMapProgressTime = 0;
 bool                         clientDownloadingMap = false, mapDownloadDisconnected = false;
 std::string                  mapDownloadError;
@@ -313,6 +315,37 @@ void sendReject(ENetPeer *peer, const char *why)
     enet_peer_disconnect_later(peer, 1);
 }
 #endif
+int serverAutoAim()
+{
+    return gDedicated ? netServerSettings().autoAim : ClipRange(gAutoAim, 0, 3);
+}
+int serverPlayerSkill()
+{
+    return gGameOptions.nGameType == kGameTypeCoop ? int(gGameOptions.nDifficulty) : 2;
+}
+void enforceServerProfiles()
+{
+    for (auto& profile : gProfile)
+    {
+        profile.nAutoAim = serverAutoAim();
+        profile.skill = serverPlayerSkill();
+    }
+}
+netwire::ServerRules serverRules()
+{
+    netwire::ServerRules rules;
+    rules.maxPlayers = gInitialNetPlayers;
+    rules.autoAim = serverAutoAim();
+    if (gDedicated)
+    {
+        auto const& settings = netServerSettings();
+        rules.timeLimitMinutes = settings.timeLimitMinutes;
+        rules.scoreLimit = settings.scoreLimit;
+        rules.rotationIndex = uint32_t(settings.rotationIndex);
+        rules.rotationCount = uint32_t(settings.rotationCount);
+    }
+    return rules;
+}
 void configureStart(const GAMEOPTIONS &options)
 {
     gPacketStartGame                 = {};
@@ -433,6 +466,7 @@ void removePlayer(int p)
 #ifndef NETCODE_DISABLE
 void sendWelcome(int p)
 {
+    enforceServerProfiles();
     Bytes       state, packed;
     std::string error;
     bool        delta = false;
@@ -450,6 +484,7 @@ void sendWelcome(int p)
     w.u32(contentCRC);
     w.u32(uint32_t(packed.size()));
     w.bytes(packed.data(), packed.size());
+    netwire::writeServerRules(w, serverRules());
     sendTo(slots[p].peer, netwire::Welcome, w.data);
     slots[p].ready       = false;
     slots[p].pendingReady = false;
@@ -550,6 +585,7 @@ bool recordServerSnapshot(const Bytes &state, uint32_t id)
         w.u32(contentCRC);
         w.u32(packed.size());
         w.bytes(packed.data(), packed.size());
+        netwire::writeServerRules(w, serverRules());
         if (!netDemoRecordPacket(serverTick, envelope(netwire::Welcome, w.data), recordResetClock))
             return false;
         recordResetClock = false;
@@ -646,7 +682,7 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
             LOG_F(ERROR, "NET game content mismatch local=%08x remote=%08x", contentCRC, fingerprint);
             return false;
         }
-        if (slot < 0 || slot >= 8 || length != r.size - r.pos)
+        if (!r.ok || slot < 0 || slot >= 8 || length > r.size - r.pos || r.size - r.pos - length != netwire::ServerRulesBytes)
         {
             malformedMessages++;
             return false;
@@ -654,9 +690,11 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         Bytes       packed(length), canonical;
         std::string error;
         r.bytes(packed.data(), length);
+        netwire::ServerRules rules;
         GAMEOPTIONS options = {};
         uint8_t     mask    = 0;
-        if (!r.end() || !netSnapshotUnpack(packed, nullptr, canonical, error) || !netSnapshotGetOptions(canonical, options, mask, error))
+        if (!netwire::readServerRules(r, rules) || !r.end() || !netSnapshotUnpack(packed, nullptr, canonical, error)
+            || !netSnapshotGetOptions(canonical, options, mask, error))
         {
             LOG_F(ERROR, "NET invalid bootstrap: %s", error.c_str());
             return false;
@@ -680,6 +718,7 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         mapGeneration        = h.generation;
         clientSlotGeneration = slotGeneration;
         clientMapCRC         = crc;
+        clientServerRules    = rules;
         std::fill(std::begin(clientReceived), std::end(clientReceived), 0);
         clientReceived[h.type] = h.sequence;
         myconnectindex         = slot;
@@ -962,15 +1001,16 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         std::string name = r.text(MAXPLAYERNAME - 1);
         int         aim = r.u8(), weapon = r.u8(), skill = r.u8();
         uint32_t capability = r.pos < r.size ? r.u32() : 0;
-        if (!r.end() || aim > 2 || weapon > 3 || skill > 4)
+        if (!r.end() || aim > 3 || weapon > 3 || skill > 4)
         {
             sendReject(peer, "Invalid client profile");
             return;
         }
         Bstrncpyz(gProfile[slot].name, name.c_str(), MAXPLAYERNAME);
-        gProfile[slot].nAutoAim      = aim;
+        // A profile is not an authority to override server gameplay rules.
+        gProfile[slot].nAutoAim      = serverAutoAim();
         gProfile[slot].nWeaponSwitch = weapon;
-        gProfile[slot].skill         = skill;
+        gProfile[slot].skill         = serverPlayerSkill();
         if (capability)
         {
             if (capability != netassets::ManifestVersion)
@@ -1311,6 +1351,7 @@ void netDeinitialize(void)
     clientMapSize = 0;
     mapDownloadError.clear();
     clientContentChecked = false;
+    clientServerRules = {};
     netContentReportClear();
 #ifndef NETCODE_DISABLE
     if (host)
@@ -1392,7 +1433,7 @@ void netUpdate(void)
                 netwire::Writer w;
                 w.u32(contentCRC);
                 w.text(szPlayerName, MAXPLAYERNAME - 1);
-                w.u8(ClipRange(gAutoAim, 0, 2));
+                w.u8(ClipRange(gAutoAim, 0, 3));
                 w.u8(ClipRange(gWeaponSwitch, 0, 3));
                 w.u8(ClipRange(gSkill, 0, 4));
                 w.u32(netassets::ManifestVersion);
@@ -1525,6 +1566,7 @@ void netOnLevelStarted()
     netEventsReset();
     if (netIsServer())
     {
+        enforceServerProfiles();
         Bytes().swap(serverMapBytes);
         commandSequence = 0;
         if (netDemoIsRecording())
@@ -1587,6 +1629,7 @@ bool netServerBeginTick()
     if (now - nextTickTime > 1000)
         nextTickTime = now;
     nextTickTime += 33 + (serverTick % 3 == 2);
+    enforceServerProfiles();
     for (int p = 0; p < 8; p++)
     {
         auto &c = slots[p];
@@ -1603,7 +1646,9 @@ bool netServerBeginTick()
             {
                 c.active = true;
                 rebuildRoster();
-                playerInit(p, 0);
+                // A hot join resets only the joining player's personal scores.
+                // Existing team scores belong to the match and its score limit.
+                playerInit(p, 0, false);
                 playerStart(p, 1);
             }
             c.ready         = true;
@@ -1757,7 +1802,10 @@ void netWaitForEveryone(char unused)
     netUpdate();
 }
 void netPrepareCurrentMapSettings()
-{ configureStart(gGameOptions); }
+{
+    netServerApplySettings();
+    configureStart(gGameOptions);
+}
 void netBroadcastNewGame(void)
 {
     if (!netIsServer())
@@ -1794,9 +1842,11 @@ void netBroadcastPlayerInfo(int p)
     if (p < 0 || p >= 8)
         return;
     Bstrncpyz(gProfile[p].name, szPlayerName, sizeof(gProfile[p].name));
-    gProfile[p].nAutoAim      = gAutoAim;
+    if (!netIsClient())
+        gProfile[p].nAutoAim = netIsServer() ? serverAutoAim() : gAutoAim;
     gProfile[p].nWeaponSwitch = gWeaponSwitch;
-    gProfile[p].skill         = gSkill;
+    if (!netIsClient())
+        gProfile[p].skill = netIsServer() ? serverPlayerSkill() : gSkill;
 }
 void netBroadcastMessage(int p, const char *text)
 {
@@ -1878,9 +1928,17 @@ void netPrintStatus()
         if (gPlayer[p].pSprite && gPlayer[p].pXSprite)
         {
             auto *s = gPlayer[p].pSprite;
-            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u", p, int(s->x), int(s->y), int(s->z), int(gPlayer[p].pXSprite->health),
-                  netAppliedCommandSequence(p));
+            LOG_F(INFO, "NET player slot=%d x=%d y=%d z=%d health=%d ack=%u autoaim=%d skill=%d", p, int(s->x), int(s->y), int(s->z), int(gPlayer[p].pXSprite->health),
+                  netAppliedCommandSequence(p), gProfile[p].nAutoAim, gProfile[p].skill);
         }
+    if (netIsLive())
+    {
+        auto const rules = netIsServer() ? serverRules() : clientServerRules;
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u",
+              int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
+              int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
+              gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount);
+    }
 #ifndef NETCODE_DISABLE
     if (host)
         LOG_F(INFO, "NET UDP sent_datagrams=%u sent_bytes=%u received_datagrams=%u received_bytes=%u", host->totalSentPackets, host->totalSentData,

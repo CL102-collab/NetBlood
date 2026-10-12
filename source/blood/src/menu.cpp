@@ -1684,7 +1684,31 @@ void UpdateNetworkMenus(void)
     itemMain1.at28 = itemMainSave1.at28 = server ? 2 : -1;
     itemMain1.bEnable = itemMainSave1.bEnable = !client;
     itemMain4.bEnable = itemMainSave3.bEnable = itemMainSave4.bEnable = !netIsLive();
-    itemNetStart12.bEnable = !client;
+    itemNetworkHost.bEnable = itemNetworkHostHost.bEnable = !client;
+    CGameMenuItem *const serverSettings[] = { &itemNetStart1, &itemNetStart2, &itemNetStart3, &itemNetStart4,
+        &itemNetStart5, &itemNetStart6, &itemNetStart7, &itemNetStart8, &itemNetStart9, &itemNetStart10,
+        &itemNetStart11, &itemNetStart12 };
+    for (auto *item : serverSettings)
+        item->bEnable = !client;
+    itemOptionsGameCycleAutoAim.bEnable = !client;
+    itemOptionsGameCycleAutoAim.m_nFocus = client ? gProfile[myconnectindex].nAutoAim : gAutoAim;
+    itemOptionsGameBoolWeaponsV10X.bEnable = itemOptionsGameBoolVanillaMode.bEnable = !netIsLive();
+    itemOptionsGameBoolWeaponsV10X.at20 = client ? gGameOptions.weaponsV10x : gWeaponsV10x;
+    itemOptionsGameBoolVanillaMode.at20 = netIsLive() ? false : gVanilla;
+}
+
+bool CanOpenGameMenu(CGameMenu const *pMenu)
+{
+    if (netIsLive() && (pMenu == &menuSaveGame || pMenu == &menuLoadGame))
+        return false;
+    if (netIsClient() && (pMenu == &menuEpisode || pMenu == &menuDifficulty || pMenu == &menuDifficultyCustom
+        || pMenu == &menuUserMap || pMenu == &menuNetStart || pMenu == &menuMultiUserMaps
+        || pMenu == &menuNetworkHost))
+    {
+        viewSetMessage("Game settings are controlled by the server");
+        return false;
+    }
+    return true;
 }
 
 void SetMonoStereo(CGameMenuItemZBool *pItem)
@@ -1715,6 +1739,11 @@ void ResetKeysClassic(CGameMenuItemChain *)
 ////
 void SetWeaponsV10X(CGameMenuItemZBool* pItem)
 {
+    if (netIsLive())
+    {
+        pItem->at20 = gGameOptions.weaponsV10x;
+        return;
+    }
     if (gGameOptions.nGameType == kGameTypeSinglePlayer) {
         gWeaponsV10x = pItem->at20;
         gGameOptions.weaponsV10x = pItem->at20;
@@ -1723,6 +1752,11 @@ void SetWeaponsV10X(CGameMenuItemZBool* pItem)
 
 void SetVanillaMode(CGameMenuItemZBool* pItem)
 {
+    if (netIsLive())
+    {
+        pItem->at20 = false;
+        return;
+    }
     gVanilla = pItem->at20;
     if ((gGameOptions.nGameType == kGameTypeSinglePlayer) && (numplayers == 1))
     {
@@ -1831,6 +1865,12 @@ void SetJoystickRumble(CGameMenuItemZBool *pItem)
 
 void SetAutoAim(CGameMenuItemZCycle *pItem)
 {
+    if (netIsClient())
+    {
+        pItem->m_nFocus = gProfile[myconnectindex].nAutoAim;
+        viewSetMessage("Auto aim is controlled by the server");
+        return;
+    }
     gAutoAim = pItem->m_nFocus;
     if (!gDemo.at0 && !gDemo.at1)
     {
@@ -2688,6 +2728,11 @@ void SetupNetworkJoinMenu(CGameMenuItemChain *pItem)
 void NetworkHostGame(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    if (netIsClient())
+    {
+        viewSetMessage("Disconnect before hosting a game");
+        return;
+    }
     sndStopSong();
     FX_StopAllSounds();
     UpdateDacs(0, true);
