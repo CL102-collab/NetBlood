@@ -133,6 +133,7 @@ void ctrlInit(void)
     CONTROL_DefineFlag(gamefunc_MedKit, false);
     CONTROL_DefineFlag(gamefunc_ProximityBombs, false);
     CONTROL_DefineFlag(gamefunc_RemoteBombs, false);
+    CONTROL_DefineFlag(gamefunc_Show_Scoreboard, false);
 }
 
 void ctrlTerm(void)

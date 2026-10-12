@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 //-------------------------------------------------------------------------
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 
 #include "compat.h"
 #include "a.h"
@@ -36,6 +37,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "blood.h"
 #include "choke.h"
 #include "config.h"
+#include "control.h"
+#include "function.h"
 #include "db.h"
 #include "demo.h"
 #include "endgame.h"
@@ -53,6 +56,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "netpredict.h"
 #include "netlag.h"
 #include "netevents.h"
+#include "netcountry.h"
+#include "polymost.h"
 #include "player.h"
 #include "replace.h"
 #include "screen.h"
@@ -1674,6 +1679,183 @@ void viewDrawPlayerFrags(void)
         viewDrawText(4, gTempStr, x + 76, y + 1, -128, 11 + col, 2, 0);
     }
 }
+
+extern char textfont[2048], smalltextfont[2048];
+
+namespace
+{
+// The built-in fonts and RGB flag atlas do not depend on a mod's HUD tiles.
+// Hardware renderers share the same fixed-function frontend, including Vulkan.
+void scoreboardCanvasBegin()
+{
+#ifdef USE_OPENGL
+    if (videoGetRenderMode() >= REND_POLYMOST)
+    {
+        buildgl_useShaderProgram(0);
+        for (unsigned unit = 0; unit < 5; ++unit)
+        {
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glDisable(GL_TEXTURE_2D);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glViewport(0, 0, xdim, ydim);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_FOG);
+        glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_FALSE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glMatrixMode(GL_TEXTURE);
+        glLoadIdentity();
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, xdim, ydim, 0, -1, 1);
+        glBegin(GL_QUADS);
+        return;
+    }
+#endif
+    videoBeginDrawing();
+}
+
+void scoreboardCanvasEnd()
+{
+#ifdef USE_OPENGL
+    if (videoGetRenderMode() >= REND_POLYMOST)
+    {
+        glEnd();
+        glDepthMask(GL_TRUE);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        polymost2d = 0;
+        polymost_resetState();
+        return;
+    }
+#endif
+    videoEndDrawing();
+}
+
+void scoreboardRect(int x, int y, int width, int height, uint32_t rgb)
+{
+    if (width <= 0 || height <= 0) return;
+    int const red = (rgb >> 16) & 255, green = (rgb >> 8) & 255, blue = rgb & 255;
+#ifdef USE_OPENGL
+    if (videoGetRenderMode() >= REND_POLYMOST)
+    {
+        glColor4ub(red, green, blue, 255);
+        glVertex2i(x, y); glVertex2i(x + width, y);
+        glVertex2i(x + width, y + height); glVertex2i(x, y + height);
+        return;
+    }
+#endif
+    int const color = paletteGetClosestColor(red, green, blue);
+    int const right = std::min(x + width, xdim), bottom = std::min(y + height, ydim);
+    x = std::max(0, x); y = std::max(0, y);
+    if (right <= x) return;
+    for (; y < bottom; ++y)
+        Bmemset(reinterpret_cast<uint8_t *>(frameplace) + y * bytesperline + x, color, right - x);
+}
+
+void scoreboardText(const char *text, int x, int y, int scale, uint32_t rgb, bool small = true, bool right = false)
+{
+    int const width = small ? 4 : 8;
+    char const *font = small ? smalltextfont : textfont;
+    if (right) x -= Bstrlen(text) * width * scale;
+    for (auto p = reinterpret_cast<const unsigned char *>(text); *p; ++p, x += width * scale)
+        for (int row = 0; row < 8; ++row)
+            for (int col = 0; col < width; ++col)
+                if (static_cast<unsigned char>(font[*p * 8 + row]) & (1 << (7 - int(small) - col)))
+                    scoreboardRect(x + col * scale, y + row * scale, scale, scale, rgb);
+}
+
+void scoreboardFlag(const char *country, int x, int y, int scale)
+{
+    auto const flag = netCountryFlag(country);
+    scoreboardRect(x - scale, y - scale, (kNetCountryFlagWidth + 2) * scale,
+                   (kNetCountryFlagHeight + 2) * scale, 0x000000);
+    for (int row = 0; row < kNetCountryFlagHeight; ++row)
+        for (int col = 0; col < kNetCountryFlagWidth;)
+        {
+            auto const pixel = flag + (row * kNetCountryFlagWidth + col) * 3;
+            uint32_t const rgb = uint32_t(pixel[0]) << 16 | uint32_t(pixel[1]) << 8 | pixel[2];
+            int end = col + 1;
+            while (end < kNetCountryFlagWidth && !Bmemcmp(pixel, flag + (row * kNetCountryFlagWidth + end) * 3, 3)) ++end;
+            scoreboardRect(x + col * scale, y + row * scale, (end - col) * scale, scale, rgb);
+            col = end;
+        }
+}
+
+void viewDrawScoreboard()
+{
+    if (gGameOptions.nGameType == kGameTypeSinglePlayer || !BUTTON(gamefunc_Show_Scoreboard)
+        || gInputMode != INPUT_MODE_0 || gGameMenuMgr.m_bActive || OSD_GetRowsCur() > 0) return;
+    auto rows = netGetScoreboard().rows;
+    bool const teams = gGameOptions.nGameType == kGameTypeTeams;
+    std::sort(rows.begin(), rows.end(), [teams](const netscoreboard::Row &left, const netscoreboard::Row &right)
+    {
+        if (teams && left.team != right.team) return left.team < right.team;
+        if (left.score != right.score) return left.score > right.score;
+        return left.slot < right.slot;
+    });
+    size_t const count = std::min(rows.size(), size_t(kMaxPlayers));
+    int const scale = std::max(1, std::min(xdim / 320, ydim / 200));
+    int const width = 304, height = 54 + int(std::max(count, size_t(1))) * 14;
+    int const x = (xdim - width * scale) / 2, y = (ydim - height * scale) / 2;
+    auto rect = [&](int left, int top, int w, int h, uint32_t color)
+    {
+        scoreboardRect(x + left * scale, y + top * scale, w * scale, h * scale, color);
+    };
+    auto text = [&](const char *value, int left, int top, uint32_t color, bool small = true, bool right = false)
+    {
+        scoreboardText(value, x + left * scale, y + top * scale, scale, color, small, right);
+    };
+    scoreboardCanvasBegin();
+    rect(-1, -1, width + 2, height + 2, 0x716454);
+    rect(0, 0, width, height, 0x141416);
+    text("SCOREBOARD", 8, 7, 0xf3e5c8, false);
+    text(teams ? "TEAMS" : gGameOptions.nGameType == kGameTypeCoop ? "CO-OP" : "BLOODBATH",
+         width - 8, 8, 0xc0b6a2, true, true);
+    rect(8, 20, width - 16, 1, 0x645848);
+    text("NAME", 35, 24, 0xb4b4b4);
+    text("SCORE", 212, 24, 0xb4b4b4, true, true);
+    text("PING", 253, 24, 0xb4b4b4, true, true);
+    text("TIME", 292, 24, 0xb4b4b4, true, true);
+    for (size_t index = 0; index < count; ++index)
+    {
+        auto const &row = rows[index];
+        int const top = 36 + int(index) * 14;
+        bool const local = row.slot == myconnectindex;
+        uint32_t const color = teams && row.team < 2 ? (row.team ? 0xff8585 : 0x8ab7ff) : 0xededed;
+        rect(4, top - 2, width - 8, 14, local ? 0x38332b : (index & 1) ? 0x202023 : 0x19191c);
+        if (local) rect(4, top - 2, 1, 14, 0xf3cf82);
+        scoreboardFlag(row.country.c_str(), x + 9 * scale, y + (top - 1) * scale, scale);
+        // Names are untrusted text: keep glyphs printable and within the name column.
+        char name[MAXPLAYERNAME]{};
+        size_t const length = std::min(row.name.size(), sizeof(name) - 1);
+        for (size_t c = 0; c < length; ++c)
+        {
+            unsigned char const glyph = static_cast<unsigned char>(row.name[c]);
+            name[c] = glyph >= 32 && glyph != 127 ? row.name[c] : '?';
+        }
+        text(name, 35, top + 1, color, false);
+        char value[32];
+        Bsnprintf(value, sizeof(value), "%d", row.score);
+        text(value, 212, top + 1, color, true, true);
+        Bsnprintf(value, sizeof(value), "%u", row.pingMs);
+        text(value, 253, top + 1, 0xd8d8d8, true, true);
+        if (row.elapsedMinutes > 99999) Bstrcpy(value, "99999+");
+        else Bsnprintf(value, sizeof(value), "%u", row.elapsedMinutes);
+        text(value, 292, top + 1, 0xd8d8d8, true, true);
+    }
+    if (!count) text("Waiting for server player information...", 12, 38, 0xb4b4b4);
+    text("Ping: server RTT (ms)   Time: minutes connected", 8, height - 11, 0xaaa59b);
+    scoreboardCanvasEnd();
+}
+} // namespace
 
 void viewDrawPlayerFlags(void)
 {
@@ -4189,6 +4371,7 @@ RORHACK:
     {
         viewDrawText(0, errMsg, 160, 20, 0, 0, 1, 0);
     }
+    viewDrawScoreboard();
     if (netPredictActive())
         netPredictEndRender();
     else if (gViewInterpolate)

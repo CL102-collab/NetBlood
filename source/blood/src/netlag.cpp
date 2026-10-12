@@ -83,7 +83,7 @@ void netLagDraw()
         int const width = 64 * scale;
         int const height = 48 * scale;
         int const x = std::max(windowxy1.x + 2, windowxy2.x - width - 8 * scale);
-        int const y = std::max(windowxy1.y + 10, windowxy2.y - height - 12 * scale);
+        int const y = std::max(windowxy1.y + 10, windowxy2.y - 2 * height - 12 * scale);
         int const mid = y + height / 4;
         int const frameRange = height / 4;
         int const pingRange = height / 2;

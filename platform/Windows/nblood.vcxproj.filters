@@ -36,6 +36,9 @@
     <ClCompile Include="..\..\source\blood\src\netcontentreport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\source\blood\src\netcountry.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\source\blood\src\netdemo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -311,6 +314,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\source\blood\src\netcontentreport.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\blood\src\netcountry.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\blood\src\netscoreboard.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\source\blood\src\netdemo.h">

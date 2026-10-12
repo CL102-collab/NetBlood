@@ -813,6 +813,7 @@ blood_game_objs := \
 	network.cpp \
 	netcontent.cpp \
 	netcontentreport.cpp \
+	netcountry.cpp \
 	netdemo.cpp \
 	netevents.cpp \
 	netlag.cpp \

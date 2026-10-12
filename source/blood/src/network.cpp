@@ -89,6 +89,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netpredict.h"
 #include "netprotocol.h"
 #include "netcinematic.h"
+#include "netcountry.h"
 #include "netteams.h"
 #include "netvote.h"
 #include "netsnapshot.h"
@@ -107,6 +108,7 @@ int gNetPacketCopies = 3;
 int gNetSnapshotRate = 20;
 static_assert(kWeaponMax == netwire::WeaponCount, "Update the wire weapon range when adding weapons");
 static_assert(netmap::MaxBytes == netwire::MaxMapBytes, "Map storage and wire limits must agree");
+static_assert(MAXPLAYERNAME - 1 == netscoreboard::MaxName, "Scoreboard names must fit the player profile");
 namespace
 {
 using Bytes = std::vector<uint8_t>;
@@ -137,6 +139,8 @@ struct ClientSlot
     GINPUT                lastInput     = {};
     uint32_t              lastInputTime = 0;
     uint64_t              joinOrder = 0;
+    uint64_t              joinedAtMillis = 0;
+    uint16_t              country = 0;
     int                   team = -1;
     netvote::Cooldown     voteCooldown;
     std::string           voteIdentity;
@@ -144,6 +148,9 @@ struct ClientSlot
 };
 ClientSlot                   slots[8];
 uint64_t                     nextJoinOrder = 0;
+netscoreboard::State          scoreboard;
+uint32_t                     scoreboardHeartbeat = 0;
+bool                         scoreboardDirty = true;
 netcinematic::Barrier         cinematicBarrier;
 netcinematic::State           serverCinematic, clientCinematic;
 std::deque<netcinematic::Descriptor> cinematicQueue, pendingOutros;
@@ -346,6 +353,77 @@ void sendReject(ENetPeer *peer, const char *why)
     enet_peer_disconnect_later(peer, 1);
 }
 #endif
+netscoreboard::State collectScoreboard()
+{
+    netscoreboard::State state;
+    uint64_t const now = static_cast<uint64_t>(timerGetFractionalTicks());
+    for (int p = 0; p < 8; ++p)
+    {
+        auto const& client = slots[p];
+        if ((!client.active && !client.admitted) || client.pendingDrop) continue;
+        netscoreboard::Row row;
+        row.slot = p;
+        row.generation = client.generation;
+        row.name = gProfile[p].name;
+        row.name.resize(std::min(row.name.size(), netscoreboard::MaxName));
+        for (char& c : row.name) if (static_cast<unsigned char>(c) < 32 || c == 127) c = ' ';
+        row.score = client.active ? gPlayer[p].fragCount : 0;
+        row.team = client.active && gGameOptions.nGameType == kGameTypeTeams ? gPlayer[p].teamId & 1 : netscoreboard::NoTeam;
+        row.elapsedMinutes = netscoreboard::joinedMinutes(now, client.joinedAtMillis);
+        if (client.country)
+        {
+            row.country += static_cast<char>(client.country >> 8);
+            row.country += static_cast<char>(client.country & 255);
+        }
+#ifndef NETCODE_DISABLE
+        if (client.peer) row.pingMs = std::min(client.peer->roundTripTime, netscoreboard::MaxPingMs);
+#endif
+        state.rows.push_back(row);
+    }
+    return state;
+}
+void sendScoreboard(int p)
+{
+    scoreboard = collectScoreboard();
+#ifndef NETCODE_DISABLE
+    if (p >= 0 && p < 8 && slots[p].peer)
+    {
+        netwire::Writer writer;
+        if (netscoreboard::writeState(writer, scoreboard)) sendTo(slots[p].peer, netwire::Scoreboard, writer.data);
+    }
+#else
+    UNREFERENCED_PARAMETER(p);
+#endif
+}
+void updateScoreboard()
+{
+    if (!netIsServer() || !gGameStarted || !ready2send || gStartNewGame || !mapGeneration) return;
+    uint32_t const now = timerGetTicks();
+    if (!scoreboardDirty && uint32_t(now - scoreboardHeartbeat) < 1000) return;
+    scoreboard = collectScoreboard();
+    netwire::Writer writer;
+    if (!netscoreboard::writeState(writer, scoreboard)) return;
+#ifndef NETCODE_DISABLE
+    for (auto const& client : slots)
+        if (client.admitted && !client.pendingDrop) sendTo(client.peer, netwire::Scoreboard, writer.data);
+#endif
+    if (netDemoIsRecording() && !recordNeedsWelcome && recordSlot >= 0 && slots[recordSlot].active)
+        netDemoRecordPacket(serverTick, envelope(netwire::Scoreboard, writer.data));
+    scoreboardHeartbeat = now;
+    scoreboardDirty = false;
+}
+bool recordScoreboardBaseline()
+{
+    if (netIsServer()) scoreboard = collectScoreboard();
+    netwire::Writer writer;
+    if (!netscoreboard::writeState(writer, scoreboard)) return false;
+    netwire::Header header;
+    header.type = netwire::Scoreboard;
+    header.session = session;
+    header.generation = mapGeneration;
+    // Sequence zero provides the current board when recording starts mid-map.
+    return netDemoRecordPacket(serverTick, netwire::encode(header, writer.data));
+}
 const char* cinematicKind(netcinematic::Kind kind)
 {
     return kind == netcinematic::Kind::Outro ? "outro" : kind == netcinematic::Kind::Map ? "map" : "intro";
@@ -917,6 +995,7 @@ void removePlayer(int p)
     cinematicBarrier.updateParticipants(cinematicBarrier.participants() & ~(1u << p));
     slots[p]            = ClientSlot();
     slots[p].generation = generation;
+    scoreboardDirty = true;
     rebuildRoster();
     LOG_F(INFO, "NET disconnected slot=%d players=%d server_tick=%u", p, numplayers, serverTick);
 }
@@ -954,6 +1033,7 @@ void sendWelcome(int p)
     sendVoteOptions(p);
     sendVoteStatus(p);
     sendCinematicState(p);
+    sendScoreboard(p);
     slots[p].snapshotAck = 0;
     slots[p].mapDownloadNext = 0;
     slots[p].mapDownloadStarted = false;
@@ -1062,7 +1142,7 @@ bool recordServerSnapshot(const Bytes &state, uint32_t id)
     if (recordNeedsWelcome)
     {
         recordNeedsWelcome = false;
-        return recordLoopBaseline() && recordVoteBaseline();
+        return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline();
     }
     return true;
 }
@@ -1189,6 +1269,7 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         clientServerRules    = rules;
         clientVote = {};
         clientVoteOptions = {};
+        scoreboard = {};
         clientVoteReceived = timerGetTicks();
         std::fill(std::begin(clientReceived), std::end(clientReceived), 0);
         clientReceived[h.type] = h.sequence;
@@ -1398,10 +1479,18 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
                   netSnapshotHash(canonical));
         return true;
     }
-    bool syntheticBaseline = replay && (h.type == netwire::Event || h.type == netwire::VoteStatus || h.type == netwire::VoteOptions) && h.sequence == 0;
+    bool syntheticBaseline = replay && (h.type == netwire::Event || h.type == netwire::VoteStatus || h.type == netwire::VoteOptions
+        || h.type == netwire::Scoreboard) && h.sequence == 0;
     if (!syntheticBaseline && clientReceived[h.type] && !netwire::newer(h.sequence, clientReceived[h.type]))
     {
         duplicateMessages++;
+        return true;
+    }
+    if (h.type == netwire::Scoreboard)
+    {
+        if (!netscoreboard::readState(r, scoreboard)) { malformedMessages++; return false; }
+        if (!syntheticBaseline) clientReceived[h.type] = h.sequence;
+        if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
         return true;
     }
     if (!syntheticBaseline)
@@ -1548,6 +1637,8 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         c.admitted                   = true;
+        c.joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
+        scoreboardDirty = true;
         sendWelcome(slot);
         return;
     }
@@ -1564,6 +1655,8 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         c.admitted = true;
+        c.joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
+        scoreboardDirty = true;
         sendWelcome(slot);
         return;
     }
@@ -1764,6 +1857,8 @@ bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
 bool netClientHasSnapshot()
 { return clientSnapshotReady; }
+const netscoreboard::State& netGetScoreboard()
+{ return scoreboard; }
 
 void netResetToSinglePlayer(void)
 {
@@ -1833,6 +1928,7 @@ void netInitialize(bool bConsole)
             slots[0].active = slots[0].ready = true;
             slots[0].generation = 1;
             slots[0].joinOrder = ++nextJoinOrder;
+            slots[0].joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
         }
         rebuildRoster();
         LOG_F(INFO, "NET server listening UDP port=%d dedicated=%d maxplayers=%d copies=%d", gNetPort, int(gDedicated), gInitialNetPlayers, gNetPacketCopies);
@@ -1883,6 +1979,9 @@ void netDeinitialize(void)
     demoPlayback = false;
     serverInTick = false;
     nextJoinOrder = 0;
+    scoreboard = {};
+    scoreboardHeartbeat = 0;
+    scoreboardDirty = true;
     restoreClientLevels();
     netMapClear();
     Bytes().swap(serverMapBytes);
@@ -1974,6 +2073,7 @@ void netUpdate(void)
                 slots[slot]            = ClientSlot();
                 slots[slot].generation = generation;
                 slots[slot].peer       = event.peer;
+                slots[slot].country = netCountryLookupIPv6(event.peer->address.host.s6_addr);
                 LOG_F(INFO, "NET connected slot=%d generation=%u", slot, generation);
             }
             else
@@ -2009,6 +2109,7 @@ void netUpdate(void)
                     {
                         c.peer        = nullptr;
                         c.pendingDrop = true;
+                        scoreboardDirty = true;
                     }
             }
             else
@@ -2016,6 +2117,7 @@ void netUpdate(void)
                 serverPeer          = nullptr;
                 stopLocalCinematic();
                 clientCinematic = {};
+                scoreboard = {};
                 clientSnapshotReady = false;
                 mapDownloadDisconnected = clientDownloadingMap;
                 netLagometerDisconnect(true);
@@ -2026,6 +2128,7 @@ void netUpdate(void)
     pumpMapDownloads();
     updateVote();
     updateServerCinematic();
+    updateScoreboard();
     enet_host_flush(host);
     servicing = false;
 #endif
@@ -2203,6 +2306,7 @@ void netOnLevelStarted()
             recordResetClock   = true;
         }
         mapGeneration++;
+        scoreboardDirty = true;
         if (!mapGeneration)
             mapGeneration = 1;
         serverTick = snapshotId = lastSnapshotTick = 0;
@@ -2295,6 +2399,7 @@ bool netServerBeginTick()
             c.ready         = true;
             c.lastInput     = {};
             c.lastInputTime = now;
+            scoreboardDirty = true;
             LOG_F(INFO, "NET joined slot=%d generation=%u players=%d tick=%u", p, c.generation, numplayers, serverTick);
             sendVoteOptions(p);
             sendVoteStatus(p);
@@ -2710,6 +2815,11 @@ void netPrintStatus()
                   gPlayer[p].teamId, (unsigned long long)(netIsServer() ? slots[p].joinOrder : 0), int(s->pal), gPlayer[p].fragCount,
                   int(gPlayer[p].curWeapon), (long long)ammo, (long long)armor);
         }
+    if (netIsServer()) scoreboard = collectScoreboard();
+    for (auto const& row : scoreboard.rows)
+        LOG_F(INFO, "NET scoreboard slot=%u generation=%u score=%d ping_ms=%u minutes=%u country=%s team=%u name=\"%s\"",
+              unsigned(row.slot), row.generation, row.score, row.pingMs, row.elapsedMinutes,
+              row.country.empty() ? "--" : row.country.c_str(), unsigned(row.team), row.name.c_str());
     if (netIsLive() && gGameOptions.nGameType == kGameTypeTeams)
         LOG_F(INFO, "NET team scores blue=%d red=%d", gPlayerScores[0], gPlayerScores[1]);
     if (netIsLive())
@@ -2768,7 +2878,7 @@ bool netStartPacketRecording(const char *path)
     }
     if (!netDemoRecordPacket(serverTick, lastWelcome) || !netDemoRecordPacket(serverTick, lastRecordedSnapshot))
         return false;
-    return recordLoopBaseline() && recordVoteBaseline();
+    return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline();
 }
 
 void netStopPacketRecording()
@@ -2817,7 +2927,7 @@ bool netDemoReplayPacket(const uint8_t *data, size_t size)
     netwire::Reader body(nullptr, 0);
     if (!netwire::decode(data, size, h, body)
         || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::Taunt
-            && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions))
+            && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions && h.type != netwire::Scoreboard))
         return false;
     return acceptClientPacket(data, size, true);
 }

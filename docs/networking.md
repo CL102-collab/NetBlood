@@ -100,7 +100,7 @@ game uses its usual in-game console. Settings can also be placed in
 
 | Command or setting | Meaning |
 | --- | --- |
-| `net_status` | Session, player, snapshot, prediction and UDP statistics. |
+| `net_status` | Session, player, scoreboard, snapshot, prediction and UDP statistics. |
 | `net_packetcopies 3` | Total identical UDP copies per transmission; range 1–8, default 3. |
 | `net_snapshotrate 20` | Server snapshots per second; range 1–30, default 20. Simulation stays at 30 Hz. |
 | `net_lagometer 1` | Enable the network graph; `0` hides it. |
@@ -136,6 +136,31 @@ It uses the shared HUD drawing path for software, Polymost, Polymer and Vulkan.
 Reference: id Software's
 [`CG_DrawLagometer`](https://github.com/id-Software/Quake-III-Arena/blob/master/code/cgame/cg_draw.c).
 
+## Scoreboard
+
+Hold **F11** to show the multiplayer scoreboard. F1 already opens Help, and the
+other function keys have existing actions. `Show Scoreboard` is available in
+the keyboard controls menu for remapping. An existing custom F11 binding is
+preserved. When upgrading an older configuration, an unbound F7 can be used
+instead; F7 normally selects chase view. If both keys are occupied, choose a
+binding in the controls menu.
+
+Each row shows the player's country flag, name, score, round-trip ping to the
+server in milliseconds, and whole minutes connected to the server. The server
+supplies this information and refreshes it once per second. Connection time
+continues across map changes and resets when a player reconnects. The local
+player on a listen server has zero network latency.
+
+Country flags use an offline IPv4/IPv6 country database bundled with the game; no
+external lookup service or server configuration is needed. The data describes
+the IP network's registration country, which can differ from the player's
+physical location, particularly with VPNs, proxies and international ISPs.
+Private, loopback and unknown addresses receive a neutral flag. Only the
+country code is sent to clients or included in packet demos, not the IP address.
+The country data is CC0 and the flag artwork is MIT licensed; source details
+and regeneration instructions are in
+[`source/blood/data/netcountry/`](../source/blood/data/netcountry/README.md).
+
 ## Demos
 
 Record the accepted server stream from a connected client or a host with:
@@ -164,6 +189,9 @@ recorded multiple times. Playback uses the authoritative snapshot path and does
 not simulate the world again. Hot joins, disconnects and map transitions are
 represented by the recorded authoritative state.
 
+Scoreboard updates are also recorded, so playback shows the original names,
+scores, pings, connection times and country flags.
+
 Downloaded maps remain in the cache for offline packet-demo playback. Map bytes
 are not embedded in the demo: moving a recording to another machine also
 requires its maps, or that machine must first join a server to download them.
@@ -187,9 +215,13 @@ full-state recovery. Map generations separate sessions across level changes,
 and sprite generations prevent interpolation or sounds attaching to a reused
 sprite slot. Server AI pointers and event queues remain server-private.
 
+The current wire protocol is version 5; clients and servers must use the same
+version. Scoreboard metadata is independent of the deterministic game state.
+
 Relevant code is in `source/blood/src/network.cpp`, `netprotocol.h`,
 `netsnapshot*.cpp`, `netpredict.cpp`, `netevents.cpp`, `netdemo.cpp` and
-`netlag.cpp`. Asset checks and reports use `netcontent*.cpp` and `netassets.h`.
+`netlag.cpp`. Scoreboard metadata and country lookup use `netscoreboard.h` and
+`netcountry.cpp`. Asset checks and reports use `netcontent*.cpp` and `netassets.h`.
 The GNU build and Windows project include these files.
 
 Protocol and real-socket tests are under `tests/network/`. The integration

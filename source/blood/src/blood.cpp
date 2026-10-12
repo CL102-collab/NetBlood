@@ -2199,6 +2199,8 @@ int app_main(int argc, char const * const * argv)
     if (!gDemoRunValidation)
         OSD_Exec("autoexec.cfg");
 
+    CONFIG_SetScoreboardDefaultKey();
+
     if (!bQuickStart)
         credLogosDos();
     scrSetDac();

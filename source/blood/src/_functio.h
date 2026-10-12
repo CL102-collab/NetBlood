@@ -98,6 +98,7 @@ char gamefunctions[NUMGAMEFUNCTIONS][MAXGAMEFUNCLEN] =
    "Show_Console",
    "Quick_Save",
    "Quick_Load",
+   "Show_Scoreboard",
    };
 
 #ifdef __SETUP__
@@ -163,6 +164,7 @@ const char keydefaults[NUMGAMEFUNCTIONS*2][MAXGAMEFUNCLEN] =
    "`", "",
    "F6", "",
    "F9", "",
+   "F11", "",
    };
 
 const char oldkeydefaults[NUMGAMEFUNCTIONS*2][MAXGAMEFUNCLEN] =
@@ -226,6 +228,7 @@ const char oldkeydefaults[NUMGAMEFUNCTIONS*2][MAXGAMEFUNCLEN] =
    "`", "",
    "F6", "",
    "F9", "",
+   "F11", "",
    };
 
 static const char * mousedefaults[MAXMOUSEBUTTONS] =

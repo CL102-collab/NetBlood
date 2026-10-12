@@ -18,6 +18,10 @@ fi
 "$build_dir/protocol-test"
 "${CXX:-c++}" -std=c++11 -O1 -g -Wall -Wextra -Werror $sanitize \
     ${CPPFLAGS:-} ${CXXFLAGS:-} -I"$repo/source/blood/src" \
+    "$repo/tests/network/scoreboard.cpp" ${LDFLAGS:-} -o "$build_dir/scoreboard-test"
+"$build_dir/scoreboard-test"
+"${CXX:-c++}" -std=c++11 -O1 -g -Wall -Wextra -Werror $sanitize \
+    ${CPPFLAGS:-} ${CXXFLAGS:-} -I"$repo/source/blood/src" \
     "$repo/tests/network/packet-demo.cpp" "$repo/source/blood/src/netdemo.cpp" \
     ${LDFLAGS:-} -o "$build_dir/packet-demo-test"
 "$build_dir/packet-demo-test" "$build_dir"

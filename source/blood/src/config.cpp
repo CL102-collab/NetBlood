@@ -115,6 +115,7 @@ int32_t gFov;
 int32_t gCenterHoriz;
 int32_t gDeliriumBlur;
 int32_t gFMPianoFix;
+static int32_t scoreboardBindingInitialized;
 
 //////////
 int gWeaponsV10x;
@@ -248,6 +249,7 @@ void CONFIG_SetDefaultKeys(const char (*keyptr)[MAXGAMEFUNCLEN], bool lazy/*=fal
 void CONFIG_SetDefaults(void)
 {
     scripthandle = -1;
+    scoreboardBindingInitialized = 0;
 
 #ifdef __ANDROID__
     droidinput.forward_sens = 5.f;
@@ -747,6 +749,7 @@ int CONFIG_ReadSetup(void)
     //SCRIPT_GetString(scripthandle, "Comm Setup","RTSName",&ud.rtsname[0]);
 
     SCRIPT_GetNumber(scripthandle, "Setup", "ConfigVersion", &configversion);
+    SCRIPT_GetNumber(scripthandle, "Setup", "ScoreboardBindingInitialized", &scoreboardBindingInitialized);
     SCRIPT_GetNumber(scripthandle, "Setup", "ForceSetup", &gSetup.forcesetup);
     SCRIPT_GetNumber(scripthandle, "Setup", "NoAutoLoad", &gSetup.noautoload);
     SCRIPT_GetNumber(scripthandle, "Setup", "InputJoystick", &gSetup.usejoystick);
@@ -847,6 +850,39 @@ int CONFIG_ReadSetup(void)
 }
 
 
+void CONFIG_SetScoreboardDefaultKey(void)
+{
+    // F1-F6, F8-F10 and F12 have hardcoded help, menus or screenshots. F7 is
+    // Chase View by default; F11 is free. User configurations can free F7 too.
+    // Run after user scripts so existing custom bindings are never replaced.
+    // Remember the migration so deliberately unbinding the action persists.
+    if (scoreboardBindingInitialized) return;
+    scoreboardBindingInitialized = 1;
+    auto &keys = KeyboardKeys[gamefunc_Show_Scoreboard];
+    for (int key : keys)
+        if (key && key != 0xff && CONTROL_KeyIsBound(key))
+        {
+            char *command = Bstrtolower(Xstrdup(CONTROL_KeyBinds[key].cmdstr));
+            bool const bound = Bstrstr(command, "gamefunc_show_scoreboard") != nullptr;
+            Xfree(command);
+            if (bound) return;
+        }
+    keys[0] = keys[1] = 0xff;
+    for (int key : {sc_F7, sc_F11})
+        if (!CONTROL_KeyIsBound(key) && key != OSD_OSDKey())
+        {
+            // Console unbind can leave old menu mappings behind. This key is
+            // free in the live bind table, so do not revive its former actions
+            // when CONFIG_MapKey rebuilds the command from KeyboardKeys.
+            for (auto &mapping : KeyboardKeys)
+                for (auto &assigned : mapping)
+                    if (assigned == key) assigned = 0xff;
+            keys[0] = key;
+            CONFIG_MapKey(gamefunc_Show_Scoreboard, keys[0], 0, keys[1], 0);
+            return;
+        }
+}
+
 void CONFIG_WriteSettings(void) // save binds and aliases to <cfgname>_settings.cfg
 {
     char filename[BMAX_PATH];
@@ -941,6 +977,8 @@ void CONFIG_WriteSetup(uint32_t flags)
         SCRIPT_Free(scripthandle);
         return;
     }
+
+    SCRIPT_PutNumber(scripthandle, "Setup", "ScoreboardBindingInitialized", scoreboardBindingInitialized, FALSE, FALSE);
 
     SCRIPT_PutNumber(scripthandle, "Screen Setup", "MaxRefreshFreq", maxrefreshfreq, FALSE, FALSE);
 

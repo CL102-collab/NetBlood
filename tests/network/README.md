@@ -55,6 +55,9 @@ The checks include:
   truncation and corruption, trailing data, and invalid metadata/packet limits.
 - Lagometer timing/RTT/loss history, interpolation/extrapolation signs, delayed
   snapshot flags, ring wrap, bounded hostile gaps, disconnect state, and reset.
+- Scoreboard row limits, unique ordered player slots, names and country codes,
+  signed scores, latency bounds, truncated packets, atomic rejection and
+  connection-minute boundaries using a clock independent of map resets.
 - Presentation event bounds and dispatch, private recipient filtering, predicted
   sound suppression, reused sprite generations, deferred loop creation after its
   corresponding snapshot, loop stop/reset, and hot-join audio baselines. Mixer
@@ -499,3 +502,29 @@ before injecting real SDL key events. `--renderer 3` or `--renderer 5` also
 exercises the Polymost or Vulkan cinematic presentation path when enabled in
 the tested binary. `result.json` contains the tested binary digest, commands,
 phase results, movie timing, screenshots, logs and demo playback comparison.
+
+## Multiplayer scoreboard
+
+`protocol-test.sh` includes scoreboard metadata roundtrips, malformed/truncated
+packet rejection, signed scores and connection-age clock boundaries. The live
+harness uses a dedicated server and real clients to check names, negative
+scores after a fatal fall, server-measured latency through a delayed UDP relay,
+late joins, departures, slot reuse, map changes and exact packet-demo replay.
+It waits for the real first connection-minute boundary; `--quick` omits that
+wait when checking another renderer with the same executable.
+
+```sh
+python3 tests/network/scoreboard.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-scoreboard-evidence
+```
+
+Run under X11/Xvfb. Screenshots use the same Pillow/ImageMagick/Xlib dependencies
+as the cinematic harness; `--skip-screenshots` omits captures. The default F11
+binding is exercised by holding the key, and a second client verifies that an
+existing custom F11 command remains intact. Local clients must show unknown
+country placeholders. A separately labeled synthetic packet-demo copy replaces
+only country metadata with known ISO codes to check colored flag rendering;
+those countries are never claimed to describe the actual loopback connections.
+`--renderer 5 --quick` checks Vulkan presentation. Logs, binary digest, phase
+results and screenshots are saved beside `result.json`.

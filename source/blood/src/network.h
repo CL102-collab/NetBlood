@@ -24,6 +24,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "compat.h"
 #include "build.h"
 #include "controls.h"
+#include "netscoreboard.h"
 
 enum PACKETMODE {
     PACKETMODE_0 = 0,
@@ -141,3 +142,4 @@ void netCastMapVote(bool yes);
 void netListVoteMaps();
 void netPrintVoteStatus();
 void netDrawMapVote();
+const netscoreboard::State& netGetScoreboard();

@@ -246,6 +246,7 @@
     <ClCompile Include="..\..\source\blood\src\network.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontent.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontentreport.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netcountry.cpp" />
     <ClCompile Include="..\..\source\blood\src\netdemo.cpp" />
     <ClCompile Include="..\..\source\blood\src\netevents.cpp" />
     <ClCompile Include="..\..\source\blood\src\netlag.cpp" />
@@ -381,6 +382,8 @@
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />
     <ClInclude Include="..\..\source\blood\src\netassets.h" />
     <ClInclude Include="..\..\source\blood\src\netcontentreport.h" />
+    <ClInclude Include="..\..\source\blood\src\netcountry.h" />
+    <ClInclude Include="..\..\source\blood\src\netscoreboard.h" />
     <ClInclude Include="..\..\source\blood\src\netdemo.h" />
     <ClInclude Include="..\..\source\blood\src\netevents.h" />
     <ClInclude Include="..\..\source\blood\src\netlag.h" />
