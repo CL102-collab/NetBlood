@@ -583,6 +583,36 @@ int serverPlayerSkill()
 {
     return gGameOptions.nGameType == kGameTypeCoop ? int(gGameOptions.nDifficulty) : 2;
 }
+void ensureServerPlayerName(int player)
+{
+    if (gProfile[player].name[0]) return;
+    static_assert(kMaxPlayers <= 100, "Automatic player names must cover every slot");
+    for (int number = 0; number < 100; ++number)
+    {
+        char candidate[8];
+        Bsnprintf(candidate, sizeof(candidate), "Caleb%02d", number);
+        bool available = true;
+        for (int other = 0; other < kMaxPlayers; ++other)
+        {
+            auto const& client = slots[other];
+            // Reserve names during content checks and map loading as well as
+            // gameplay. Unused slots can still contain an old profile.
+            if (other == player || client.pendingDrop
+                || !(client.active || client.admitted || client.contentOffered)) continue;
+            if (!Bstrcasecmp(candidate, gProfile[other].name))
+            {
+                available = false;
+                break;
+            }
+        }
+        if (!available) continue;
+        Bstrncpyz(gProfile[player].name, candidate, sizeof(gProfile[player].name));
+        scoreboardDirty = true;
+        LOG_F(INFO, "NET assigned player name slot=%d name=%s", player, candidate);
+        return;
+    }
+}
+
 void enforceServerProfiles()
 {
     for (auto& profile : gProfile)
@@ -1638,6 +1668,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         Bstrncpyz(gProfile[slot].name, name.c_str(), MAXPLAYERNAME);
+        ensureServerPlayerName(slot);
         // A profile is not an authority to override server gameplay rules.
         gProfile[slot].nAutoAim      = serverAutoAim();
         gProfile[slot].nWeaponSwitch = weapon;
@@ -2085,6 +2116,7 @@ void netInitialize(bool bConsole)
             slots[0].generation = 1;
             slots[0].joinOrder = ++nextJoinOrder;
             slots[0].joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
+            netBroadcastPlayerInfo(0);
         }
         rebuildRoster();
         LOG_F(INFO, "NET server listening UDP port=%d dedicated=%d maxplayers=%d copies=%d", gNetPort, int(gDedicated), gInitialNetPlayers, gNetPacketCopies);
@@ -2792,7 +2824,17 @@ void netBroadcastPlayerInfo(int p)
 {
     if (p < 0 || p >= 8)
         return;
-    Bstrncpyz(gProfile[p].name, szPlayerName, sizeof(gProfile[p].name));
+    // A connected client's assigned name comes from the server. Clearing the
+    // local name field must not blank it between authoritative snapshots.
+    if (!(netIsClient() && clientSnapshotReady && !szPlayerName[0]))
+        Bstrncpyz(gProfile[p].name, szPlayerName, sizeof(gProfile[p].name));
+    if (netIsServer())
+    {
+        ensureServerPlayerName(p);
+        if (p == myconnectindex)
+            Bstrncpyz(szPlayerName, gProfile[p].name, sizeof(szPlayerName));
+        scoreboardDirty = true;
+    }
     if (!netIsClient())
         gProfile[p].nAutoAim = netIsServer() ? serverAutoAim() : gAutoAim;
     gProfile[p].nWeaponSwitch = gWeaponSwitch;

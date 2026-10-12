@@ -581,3 +581,22 @@ only country metadata with known ISO codes to check colored flag rendering;
 those countries are never claimed to describe the actual loopback connections.
 `--renderer 5 --quick` checks Vulkan presentation. Logs, binary digest, phase
 results and screenshots are saved beside `result.json`.
+
+## Empty multiplayer names
+
+```sh
+python3 tests/network/player-names.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-player-names-evidence
+```
+
+Run under X11/Xvfb. The harness starts a dedicated server and real clients on
+stock maps. Explicit mixed-case `cAlEb00` and `CALEB01` names remain intact;
+empty names receive the first free `Caleb00` through `Caleb99` suffix without
+case-insensitive collisions. Two UDP relays hold clients at content admission,
+then release the second first, verifying pending joins reserve distinct names.
+It also checks server/client roster agreement, reuse of the lowest freed suffix,
+names surviving a map change, and an empty listen-host name reserving `Caleb00`
+before its first guest joins. Empty CLI names use the inline `-pname=` form.
+The evidence directory contains commands, logs, binary digest, relay counters
+and phase results in `result.json`.

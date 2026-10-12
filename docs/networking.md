@@ -206,6 +206,11 @@ supplies this information and refreshes it once per second. Connection time
 continues across map changes and resets when a player reconnects. The local
 player on a listen server has zero network latency.
 
+Empty multiplayer names receive the first available name from `Caleb00` through
+`Caleb99`. The server checks names case-insensitively, including players still
+joining, and reuses the lowest available number after a player leaves. This also
+applies to the local player on a listen server. Nonempty names are unchanged.
+
 In team games, players appear below separate blue and red team headers.
 Each header shows the team's player count and labels the per-player score,
 ping, and time columns. Players are ordered by score within their team, and
