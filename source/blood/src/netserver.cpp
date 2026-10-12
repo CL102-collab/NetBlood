@@ -307,6 +307,8 @@ void netServerParseOption(const char* name, const char* value)
     else if (!std::strcmp(name, "autoaim")) settings.autoAim = toggle(name, value);
     else if (!std::strcmp(name, "weaponsstay")) settings.weaponsStay = toggle(name, value);
     else if (!std::strcmp(name, "friendlyfire")) settings.friendlyFire = toggle(name, value);
+    else if (!std::strcmp(name, "holsterweapon")) settings.holsterWeapon = toggle(name, value);
+    else if (!std::strcmp(name, "chaseview")) settings.chaseView = toggle(name, value);
     else if (!std::strcmp(name, "mapvote")) settings.mapVoteEnabled = toggle(name, value);
     else if (!std::strcmp(name, "losekeys")) { settings.loseKeys = toggle(name, value); hasLoseKeys = true; }
     else if (!std::strcmp(name, "difficulty")) { settings.difficulty = number(name, value, 0, 4); hasDifficulty = true; }

@@ -938,10 +938,14 @@ void LocalKeys(void)
     char alt = keystatus[sc_LeftAlt] | keystatus[sc_RightAlt];
     char ctrl = keystatus[sc_LeftControl] | keystatus[sc_RightControl];
     char shift = keystatus[sc_LeftShift] | keystatus[sc_RightShift];
+    if (!netAllowChaseView())
+        gViewPos = VIEWPOS_0;
     if (BUTTON(gamefunc_See_Chase_View) && !alt && !shift)
     {
         CONTROL_ClearButton(gamefunc_See_Chase_View);
-        if (gViewPos > VIEWPOS_0)
+        if (!netAllowChaseView())
+            viewSetMessage("Chase view is disabled by the server");
+        else if (gViewPos > VIEWPOS_0)
             gViewPos = VIEWPOS_0;
         else
             gViewPos = VIEWPOS_1;
@@ -1345,6 +1349,8 @@ SWITCH switches[] = {
     { "losekeys", 56, 1 },
     { "mapvote", 57, 1 },
     { "friendlyfire", 58, 1 },
+    { "holsterweapon", 59, 1 },
+    { "chaseview", 60, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1385,6 +1391,8 @@ void PrintHelp(void)
         "-autoaim on|off\tForce autoaim for every player; Default:on\n"
         "-weaponsstay on|off\tKeep picked-up weapons available; Default:on\n"
         "-friendlyfire on|off\tAllow damage to teammates; Default:off\n"
+        "-holsterweapon on|off\tAllow holstering in Bloodbath; Default:off\n"
+        "-chaseview on|off\tAllow chase view in Bloodbath; Default:off\n"
         "-maplist [file.txt]\tLoop maps from this text filename (one per line)\n"
         "-episode [n]\tCoop episode to play and repeat; starts at 1\n"
         "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
@@ -1716,8 +1724,9 @@ void ParseOptions(void)
             break;
         case 48: case 49: case 50: case 51: case 52:
         case 53: case 54: case 55: case 56: case 57: case 58:
+        case 59: case 60:
         {
-            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire" };
+            static const char* names[] = { "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview" };
             const char* name = names[option - 48];
             if (OptArgc < 1)
                 ThrowError("Missing argument for -%s", name);

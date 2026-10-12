@@ -1575,6 +1575,10 @@ void ProcessInput(PLAYER *pPlayer)
     POSTURE *pPosture = &pPlayer->pPosture[pPlayer->lifeMode][pPlayer->posture];
     GINPUT *pInput = &pPlayer->input;
 
+    // Enforce the server policy even if a client sends a forbidden action.
+    if (!netAllowHolsterWeapon())
+        pInput->keyFlags.holsterWeapon = 0;
+
     if (pPlayer == gMe && numplayers == 1)
     {
         gViewAngleAdjust = 0.f;

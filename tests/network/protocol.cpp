@@ -42,7 +42,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 5,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 6,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -59,7 +59,7 @@ void framing()
         bad = encoded; field(bad, offset, 0xffffffffu); CHECK(!decode(bad));
     }
     bad = encoded; field(bad, 8, 0); CHECK(!decode(bad));
-    bad = encoded; field(bad, 4, 4); CHECK(!decode(bad)); // The previous protocol has no authoritative scoreboard metadata.
+    bad = encoded; field(bad, 4, 5); CHECK(!decode(bad)); // The previous protocol has no authoritative Bloodbath controls.
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
     static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
                   "Existing packet and demo message IDs must not change");
@@ -107,7 +107,7 @@ void serverRules()
     netwire::Writer writer; netwire::writeServerRules(writer, rules);
     const std::vector<uint8_t> expected = {
         0x60,0x27,0,0, 0xff,0xff,0xff,0x7f, 8,0,0,0, 3,0,0,0,
-        0xff,0,0,0, 0,1,0,0, 1,0,0,0};
+        0xff,0,0,0, 0,1,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0};
     CHECK(writer.data == expected && writer.data.size() == netwire::ServerRulesBytes);
     netwire::Reader reader(writer.data.data(), writer.data.size());
     netwire::ServerRules decoded;
@@ -124,7 +124,8 @@ void serverRules()
     }
     const std::pair<unsigned, uint32_t> invalid[] = {
         {0,10081}, {0,UINT32_MAX}, {4,0x80000000u}, {8,0}, {8,9}, {12,4},
-        {16,256}, {16,UINT32_MAX}, {20,257}, {20,0}, {24,2}, {24,UINT32_MAX}};
+        {16,256}, {16,UINT32_MAX}, {20,257}, {20,0}, {24,2}, {24,UINT32_MAX},
+        {28,2}, {28,UINT32_MAX}, {32,2}, {32,UINT32_MAX}};
     for (const auto& mutation : invalid) {
         auto bad = expected; field(bad, mutation.first, mutation.second);
         netwire::Reader malformed(bad.data(), bad.size());
@@ -135,12 +136,16 @@ void serverRules()
     }
     for (uint32_t cap = 1; cap <= 8; ++cap)
         for (uint32_t aim = 0; aim <= 3; ++aim)
-        for (uint32_t enabled = 0; enabled <= 1; ++enabled) {
+        for (uint32_t enabled = 0; enabled <= 1; ++enabled)
+        for (uint32_t holster = 0; holster <= 1; ++holster)
+        for (uint32_t chase = 0; chase <= 1; ++chase) {
             rules = netwire::ServerRules(); rules.maxPlayers = cap; rules.autoAim = aim; rules.mapVoteEnabled = enabled;
+            rules.allowHolsterWeapon = holster; rules.allowChaseView = chase;
             writer.data.clear(); netwire::writeServerRules(writer, rules);
             netwire::Reader minimal(writer.data.data(), writer.data.size());
             CHECK(netwire::readServerRules(minimal, decoded) && minimal.end());
             CHECK(decoded.maxPlayers == cap && decoded.autoAim == aim && decoded.mapVoteEnabled == enabled &&
+                  decoded.allowHolsterWeapon == holster && decoded.allowChaseView == chase &&
                   !decoded.timeLimitMinutes && !decoded.scoreLimit);
         }
     std::puts("PASS: authoritative server rules, exact wire bytes, bounds, truncation and unchanged rejected output");

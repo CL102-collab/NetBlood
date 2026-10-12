@@ -171,6 +171,9 @@ exclusive.
 | `-scorelimit` | 0–2147483647; 0 (default) means unlimited; Bloodbath or teams only |
 | `-autoaim` | `on` (default) or `off`, applied to every player |
 | `-weaponsstay` | `on` (default) or `off` |
+| `-friendlyfire` | `on` or `off` (default); teammate damage in co-op and teams |
+| `-holsterweapon` | `on` or `off` (default); permission to holster in Bloodbath |
+| `-chaseview` | `on` or `off` (default); permission to use chase view in Bloodbath |
 | `-mapvote` | `on` (default) or `off`; enables player map votes |
 | `-maplist` | A `.txt` filename, up to 256 maps and 128 KiB |
 | `-episode` | Cooperative episode, numbered from 1 |
@@ -187,7 +190,7 @@ maps or restart games directly, start games, host another server, or change serv
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata, map-vote and cinematic messages use wire protocol 4. Rebuild the server and all
+The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 6. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 
@@ -210,6 +213,12 @@ Friendly fire is checked with its default disabled value during rotation,
 explicitly enabled in co-op and explicitly disabled in teams. Connected clients
 must receive each setting and retain it through a server restart or map change;
 invalid values and use without `-dedicated` must fail during startup.
+Bloodbath disables weapon holstering and chase view by default. The test presses
+actual bound keys and checks the equipped weapon on the server and client, plus
+the client's camera state. Separate sessions enable each permission independently
+and retain it across restarts; co-op and teams retain both controls even when the
+Bloodbath-only switches are explicitly off. Invalid/missing switch values and
+use without `-dedicated` are also rejected.
 Real ENet probes request forbidden autoaim and difficulty values in their
 profiles; the authoritative player profiles must keep the configured values.
 The output retains exact command lines, process logs, statuses and a binary

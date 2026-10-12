@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 5;
+constexpr uint32_t Version    = 6;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -239,14 +239,17 @@ struct ServerRules
     uint32_t timeLimitMinutes = 0, scoreLimit = 0, maxPlayers = 8, autoAim = 1;
     uint32_t rotationIndex = 0, rotationCount = 0;
     uint32_t mapVoteEnabled = 1;
+    // Effective permissions: only dedicated Bloodbath overrides these defaults.
+    uint32_t allowHolsterWeapon = 1, allowChaseView = 1;
 };
-constexpr size_t ServerRulesBytes = 7 * sizeof(uint32_t);
+constexpr size_t ServerRulesBytes = 9 * sizeof(uint32_t);
 inline void writeServerRules(Writer& w, const ServerRules& rules)
 {
     w.u32(rules.timeLimitMinutes); w.u32(rules.scoreLimit);
     w.u32(rules.maxPlayers); w.u32(rules.autoAim);
     w.u32(rules.rotationIndex); w.u32(rules.rotationCount);
     w.u32(rules.mapVoteEnabled);
+    w.u32(rules.allowHolsterWeapon); w.u32(rules.allowChaseView);
 }
 inline bool readServerRules(Reader& r, ServerRules& rules)
 {
@@ -255,9 +258,11 @@ inline bool readServerRules(Reader& r, ServerRules& rules)
     candidate.maxPlayers = r.u32(); candidate.autoAim = r.u32();
     candidate.rotationIndex = r.u32(); candidate.rotationCount = r.u32();
     candidate.mapVoteEnabled = r.u32();
+    candidate.allowHolsterWeapon = r.u32(); candidate.allowChaseView = r.u32();
     if (!r.ok || candidate.timeLimitMinutes > 10080 || candidate.scoreLimit > INT32_MAX
         || !candidate.maxPlayers || candidate.maxPlayers > 8 || candidate.autoAim > 3
         || candidate.rotationCount > 256 || candidate.mapVoteEnabled > 1
+        || candidate.allowHolsterWeapon > 1 || candidate.allowChaseView > 1
         || (candidate.rotationCount ? candidate.rotationIndex >= candidate.rotationCount : candidate.rotationIndex != 0))
         return false;
     rules = candidate;

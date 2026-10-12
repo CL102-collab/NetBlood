@@ -34,6 +34,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "levels.h"
 #include "map2d.h"
+#include "network.h"
 #include "view.h"
 
 
@@ -439,7 +440,10 @@ void ctrlGetInput(void)
     if (BUTTON(gamefunc_Holster_Weapon))
     {
         CONTROL_ClearButton(gamefunc_Holster_Weapon);
-        gInput.keyFlags.holsterWeapon = 1;
+        if (netAllowHolsterWeapon())
+            gInput.keyFlags.holsterWeapon = 1;
+        else
+            viewSetMessage("Holstering weapons is disabled by the server");
     }
 
     int const run = gRunKeyMode ? (BUTTON(gamefunc_Run) | gAutoRun) : (BUTTON(gamefunc_Run) ^ gAutoRun);

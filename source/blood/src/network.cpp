@@ -626,6 +626,11 @@ netwire::ServerRules serverRules()
         rules.scoreLimit = settings.scoreLimit;
         rules.rotationIndex = uint32_t(settings.rotationIndex);
         rules.rotationCount = uint32_t(settings.rotationCount);
+        if (gGameOptions.nGameType == kGameTypeBloodBath)
+        {
+            rules.allowHolsterWeapon = settings.holsterWeapon;
+            rules.allowChaseView = settings.chaseView;
+        }
     }
     return rules;
 }
@@ -1855,6 +1860,16 @@ bool netIsServer()
 { return gNetMode == NETWORK_SERVER; }
 bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
+bool netAllowHolsterWeapon()
+{
+    if (!netIsLive() || gGameOptions.nGameType != kGameTypeBloodBath) return true;
+    return (netIsServer() ? serverRules() : clientServerRules).allowHolsterWeapon != 0;
+}
+bool netAllowChaseView()
+{
+    if (!netIsLive() || gGameOptions.nGameType != kGameTypeBloodBath) return true;
+    return (netIsServer() ? serverRules() : clientServerRules).allowChaseView != 0;
+}
 bool netClientHasSnapshot()
 { return clientSnapshotReady; }
 const netscoreboard::State& netGetScoreboard()
@@ -2803,6 +2818,8 @@ void netPrintStatus()
           netwire::Version, session, mapGeneration, serverTick, numplayers, gNetPacketCopies, netIsServer() ? snapshotId : clientSnapshot,
           findSnapshot(netIsServer() ? snapshotId : clientSnapshot) ? netSnapshotHash(*findSnapshot(netIsServer() ? snapshotId : clientSnapshot)) : 0,
           (unsigned long long)sentMessages, (unsigned long long)receivedMessages, (unsigned long long)malformedMessages, (unsigned long long)duplicateMessages);
+    if (!gDedicated)
+        LOG_F(INFO, "NET view chase=%d", int(gViewPos != VIEWPOS_0));
     for (int p = connecthead; p >= 0; p = connectpoint2[p])
         if (gPlayer[p].pSprite && gPlayer[p].pXSprite)
         {
@@ -2825,11 +2842,11 @@ void netPrintStatus()
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;
-        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d",
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d holster_weapon=%d chase_view=%d",
               int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
               int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
               gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled,
-              int(gGameOptions.bFriendlyFire));
+              int(gGameOptions.bFriendlyFire), int(netAllowHolsterWeapon()), int(netAllowChaseView()));
     }
 #ifndef NETCODE_DISABLE
     if (host)

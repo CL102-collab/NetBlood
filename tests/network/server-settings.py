@@ -62,7 +62,64 @@ def status(game, expected=None):
     rules = rule_rows[-1]
     for name, value in (expected or {}).items():
         require(rules.get(name) == str(value), f"{game.name}: {name} expected {value}, got {rules.get(name)}")
-    return {"rules": rules, "session": status_rows[-1], "players": records(text, "NET player ")}
+    views = records(text, "NET view ")
+    return {"rules": rules, "session": status_rows[-1], "players": records(text, "NET player "),
+            "view": views[-1] if views else None}
+
+
+def gameplay_permissions(server, client, expected, timeout=10):
+    """Use ordinary bound keys and inspect authoritative weapons/local camera."""
+    client.command_text('bind H "gamefunc_Holster_Weapon"\n'
+                        'bind V "gamefunc_See_Chase_View"')
+    slot = records(client.text(), "NET client slot=")[-1]["slot"]
+
+    def player(snapshot):
+        rows = [row for row in snapshot["players"] if row["slot"] == slot]
+        require(len(rows) == 1 and int(rows[0]["health"]) > 0,
+                f"{client.name}: control test requires a living admitted player")
+        return rows[0]
+
+    def press(scan):
+        client.key(scan, True)
+        time.sleep(0.2)
+        client.key(scan, False)
+        time.sleep(0.2)
+
+    deadline = time.monotonic() + timeout
+    while True:
+        before = status(server, expected)
+        if int(player(before)["weapon"]) > 0:
+            break
+        require(time.monotonic() < deadline, f"{client.name}: initial weapon never became ready")
+        time.sleep(0.1)
+    require(status(client, expected)["view"] == {"chase": "0"},
+            f"{client.name}: player did not start in first-person view")
+
+    press(11)  # SDL_SCANCODE_H, bound above to Holster_Weapon.
+    time.sleep(0.6)  # Let the input reach the server and the lowering animation finish.
+    deadline = time.monotonic() + timeout
+    while True:
+        authoritative, installed = status(server, expected), status(client, expected)
+        server_weapon, client_weapon = int(player(authoritative)["weapon"]), int(player(installed)["weapon"])
+        if not expected["holster_weapon"]:
+            require(server_weapon == client_weapon == int(player(before)["weapon"]),
+                    f"{client.name}: denied holster changed the equipped weapon")
+            break
+        if server_weapon == client_weapon == 0:
+            break
+        require(time.monotonic() < deadline, f"{client.name}: allowed holster did not lower the weapon")
+        time.sleep(0.1)
+
+    press(25)  # SDL_SCANCODE_V, bound above to See_Chase_View.
+    camera = status(client, expected)
+    require(camera["view"] == {"chase": str(expected["chase_view"])},
+            f"{client.name}: chase key did not obey the server permission: {camera['view']}")
+    if expected["chase_view"]:
+        press(25)
+        require(status(client, expected)["view"] == {"chase": "0"},
+                f"{client.name}: chase key did not return to first-person view")
+    return {"before": before, "after_holster": {"server": authoritative, "client": installed},
+            "after_chase": camera}
 
 
 def main():
@@ -167,10 +224,11 @@ def main():
                              ("episode", ("0", "8", "1x")),
                              ("autoaim", ("maybe",)), ("weaponsstay", ("2",)), ("losekeys", ("yes",)),
                              ("mapvote", ("maybe",)), ("friendlyfire", ("maybe", "2")),
+                             ("holsterweapon", ("maybe", "2")), ("chaseview", ("maybe", "2")),
                              ("gametype", ("invalid",))):
             for index, value in enumerate(values):
                 invalid(f"{flag}-{index}", ["-dedicated", "-" + flag, value], "game type" if flag == "gametype" else flag)
-        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire"):
+        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview"):
             invalid("missing-" + flag, ["-dedicated", "-" + flag], "game type" if flag == "gametype" else flag)
         for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off")):
             invalid("coop-only-" + flag, ["-dedicated", "-gametype", "bloodbath", "-" + flag, value], flag)
@@ -191,10 +249,13 @@ def main():
         invalid("non-dedicated-rule", ["-maxplayers", "2"], "dedicated")
         invalid("non-dedicated-mapvote", ["-mapvote", "off"], "dedicated")
         invalid("non-dedicated-friendlyfire", ["-friendlyfire", "on"], "dedicated")
+        invalid("non-dedicated-holsterweapon", ["-holsterweapon", "on"], "dedicated")
+        invalid("non-dedicated-chaseview", ["-chaseview", "on"], "dedicated")
 
         port = free_port()
         expected = {"gametype": 2, "timelimit": 1, "scorelimit": 25, "maxplayers": 2,
-                    "autoaim": 0, "weaponsstay": 1, "rotation_count": 2, "friendly_fire": 0}
+                    "autoaim": 0, "weaponsstay": 1, "rotation_count": 2, "friendly_fire": 0,
+                    "holster_weapon": 0, "chase_view": 0}
         server_started = time.monotonic()
         server = start("rotation-server", port, True,
                        ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "2",
@@ -210,6 +271,7 @@ def main():
         first = start("client-1", port)
         joined(first, timeout=args.timeout)
         result["phases"]["first-client"] = status(first, expected)
+        result["phases"]["bloodbath-default-controls"] = gameplay_permissions(server, first, expected)
         time.sleep(1)
         second = start("late-client", port)
         joined(second, timeout=args.timeout)
@@ -262,14 +324,36 @@ def main():
         second.stop()
         server.stop()
 
+        # Exercise independent overrides, so swapped/coupled permissions cannot
+        # accidentally pass a test that only enables both switches together.
+        for option, allowed in (("holsterweapon", {"holster_weapon": 1, "chase_view": 0}),
+                                ("chaseview", {"holster_weapon": 0, "chase_view": 1})):
+            port = free_port()
+            permitted = {"gametype": 2, **allowed}
+            override = start(option + "-server", port, True,
+                             ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "1",
+                              "-" + option, "on"])
+            override.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
+                          "configured Bloodbath override", args.timeout)
+            override_client = start(option + "-client", port)
+            joined(override_client, timeout=args.timeout)
+            result["phases"][option + "-controls"] = gameplay_permissions(override, override_client, permitted)
+            override.command_text("restartmap")
+            joined(override_client, count=2, timeout=args.timeout)
+            result["phases"][option + "-restart"] = {"server": status(override, permitted),
+                                                        "client": status(override_client, permitted)}
+            override_client.stop()
+            override.stop()
+
         port = free_port()
         coop_expected = {"gametype": 1, "timelimit": 0, "scorelimit": 0, "maxplayers": 1, "autoaim": 1,
                          "weaponsstay": 0, "difficulty": 4, "losekeys": 0, "episode": 2, "level": 1,
-                         "friendly_fire": 1}
+                         "friendly_fire": 1, "holster_weapon": 1, "chase_view": 1}
         coop = start("coop-server", port, True,
                      ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1",
                       "-episode", "2", "-difficulty", "4", "-losekeys", "off", "-autoaim", "on",
-                      "-weaponsstay", "off", "-timelimit", "0", "-scorelimit", "0", "-friendlyfire", "on"])
+                      "-weaponsstay", "off", "-timelimit", "0", "-scorelimit", "0", "-friendlyfire", "on",
+                      "-holsterweapon", "off", "-chaseview", "off"])
         coop.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                   "configured co-op episode", args.timeout)
         result["phases"]["coop-server"] = status(coop, coop_expected)
@@ -277,6 +361,7 @@ def main():
         coop_client = start("coop-client", port)
         joined(coop_client, timeout=args.timeout)
         result["phases"]["coop-client"] = status(coop_client, coop_expected)
+        result["phases"]["coop-controls"] = gameplay_permissions(coop, coop_client, coop_expected)
         coop_client.command_text("cl_autoaim 0\ncl_autoaim")
         require("cl_autoaim: controlled by server" in coop_client.text(), "client disabled forced autoaim")
         result["phases"]["coop-client-after-override"] = status(coop_client, coop_expected)
@@ -288,16 +373,18 @@ def main():
         coop.stop()
         port = free_port()
         teams_expected = {"gametype": 3, "maxplayers": 1, "scorelimit": 20,
-                          "timelimit": 0, "autoaim": 1, "weaponsstay": 1, "friendly_fire": 0}
+                          "timelimit": 0, "autoaim": 1, "weaponsstay": 1, "friendly_fire": 0,
+                          "holster_weapon": 1, "chase_view": 1}
         teams = start("teams-server", port, True,
                       ["-dedicated", "-server", "1", "-port", str(port), "-gametype", "teams", "-scorelimit", "20",
-                       "-friendlyfire", "off"])
+                       "-friendlyfire", "off", "-holsterweapon", "off", "-chaseview", "off"])
         teams.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                    "configured teams server", args.timeout)
         result["phases"]["teams-server"] = status(teams, teams_expected)
         teams_client = start("teams-client", port)
         joined(teams_client, timeout=args.timeout)
         result["phases"]["teams-client"] = status(teams_client, teams_expected)
+        result["phases"]["teams-controls"] = gameplay_permissions(teams, teams_client, teams_expected)
         teams.command_text("restartmap")
         joined(teams_client, count=2, timeout=args.timeout)
         result["phases"]["teams-server-restart"] = {"server": status(teams, teams_expected),

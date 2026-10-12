@@ -115,6 +115,9 @@ extern int gNetSnapshotRate;
 bool netIsLive();
 bool netIsServer();
 bool netIsClient();
+// Authoritative Bloodbath permissions; offline and other game modes allow both.
+bool netAllowHolsterWeapon();
+bool netAllowChaseView();
 bool netClientHasSnapshot();
 bool netServerBeginTick();
 void netServerEndTick();

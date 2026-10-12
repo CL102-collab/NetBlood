@@ -13,6 +13,8 @@ struct NetServerSettings
     int autoAim = 1;
     bool weaponsStay = true;
     bool friendlyFire = false;
+    bool holsterWeapon = false; // Bloodbath only.
+    bool chaseView = false; // Bloodbath only.
     bool mapVoteEnabled = true;
     int timeLimitMinutes = 0;
     int scoreLimit = 0;

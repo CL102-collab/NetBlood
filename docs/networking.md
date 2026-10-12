@@ -23,6 +23,9 @@ Use the Multiplayer menu to host or join, or launch from a terminal:
 # Dedicated team server with teammate damage enabled.
 ./nblood -dedicated -gametype teams -friendlyfire on -port 23513
 
+# Dedicated Bloodbath server allowing holstering and chase view.
+./nblood -dedicated -gametype bloodbath -holsterweapon on -chaseview on
+
 # Join it, including after the level has already started.
 ./nblood -client 192.168.1.10 -port 23513
 
@@ -42,6 +45,15 @@ Dedicated servers accept `-friendlyfire on|off`, defaulting to `off`. It control
 damage between teammates in team games and between players in co-op; self-damage
 is unaffected. The setting persists across map changes and cannot be changed by
 connected clients. `net_status` reports the effective value as `friendly_fire`.
+
+In dedicated Bloodbath games, holstering weapons and chase view are disabled by
+default. Enable either with `-holsterweapon on` or `-chaseview on`; both options
+accept `on|off`. These restrictions do not affect co-op, team games, graphical
+hosts, single player, or legacy demo playback. The settings are sent to joining
+clients and retained across map changes, and clients cannot override them.
+`net_status` reports the effective permissions as `holster_weapon` and
+`chase_view`. These options restrict the player controls; normal weapon switching
+and weapon lowering caused by gameplay still work.
 
 The port uses UDP. Clients connect directly to the server address. The server
 checks protocol, content and map identity.
@@ -229,7 +241,7 @@ full-state recovery. Map generations separate sessions across level changes,
 and sprite generations prevent interpolation or sounds attaching to a reused
 sprite slot. Server AI pointers and event queues remain server-private.
 
-The current wire protocol is version 5; clients and servers must use the same
+The current wire protocol is version 6; clients and servers must use the same
 version. Scoreboard metadata is independent of the deterministic game state.
 
 Relevant code is in `source/blood/src/network.cpp`, `netprotocol.h`,
