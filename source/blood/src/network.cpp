@@ -29,6 +29,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "compat.h"
 #include "config.h"
 #include "controls.h"
+#include "credits.h"
+#include "asound.h"
+#include "levels.h"
 #include "demo.h"
 #include "globals.h"
 #include "menu.h"
@@ -37,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "player.h"
 #include "osd.h"
 #include "seq.h"
+#include "sfx.h"
 #include "sound.h"
 #include "view.h"
 
@@ -84,6 +88,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netmap.h"
 #include "netpredict.h"
 #include "netprotocol.h"
+#include "netcinematic.h"
 #include "netteams.h"
 #include "netvote.h"
 #include "netsnapshot.h"
@@ -139,6 +144,12 @@ struct ClientSlot
 };
 ClientSlot                   slots[8];
 uint64_t                     nextJoinOrder = 0;
+netcinematic::Barrier         cinematicBarrier;
+netcinematic::State           serverCinematic, clientCinematic;
+std::deque<netcinematic::Descriptor> cinematicQueue, pendingOutros;
+uint32_t                     nextCinematicId = 0, localCinematicId = 0, localCinematicStart = 0;
+bool                         localCinematicFinished = false, localCinematicOpened = false;
+netcinematic::HoldToSkip      cinematicSkip;
 uint32_t                     session = 0, mapGeneration = 0, sendSequence = 0, serverTick = 0, snapshotId = 0, commandSequence = 0;
 uint32_t                     clientSlotGeneration = 0, clientReceived[netwire::TypeCount] = {}, clientSnapshot = 0, clientMapCRC = 0, lastSnapshotTime = 0;
 uint32_t                     nextTickTime = 0, lastSnapshotTick = 0, playbackStart = 0;
@@ -335,6 +346,148 @@ void sendReject(ENetPeer *peer, const char *why)
     enet_peer_disconnect_later(peer, 1);
 }
 #endif
+const char* cinematicKind(netcinematic::Kind kind)
+{
+    return kind == netcinematic::Kind::Outro ? "outro" : kind == netcinematic::Kind::Map ? "map" : "intro";
+}
+int cinematicRemaining(const netcinematic::State& state)
+{
+    unsigned mask = state.participants & ~state.done;
+    int count = 0;
+    for (; mask; mask >>= 1) count += mask & 1;
+    return count;
+}
+void stopLocalCinematic(bool resumeMusic = false)
+{
+    if (gDedicated) return;
+    bool const wasActive = localCinematicId != 0;
+    // A newly admitted client can draw the waiting screen before it is in
+    // the participant mask. Restore that screen's palette on disconnect too.
+    credCinematicEnd();
+    localCinematicId = localCinematicStart = 0;
+    localCinematicFinished = localCinematicOpened = false;
+    cinematicSkip.reset();
+    if (wasActive)
+    {
+        gInput = gNetInput = {};
+        ctrlClearAllInput();
+        if (resumeMusic && gGameStarted && !gStartNewGame)
+        {
+            ambInit();
+            levelTryPlayMusicOrNothing(gGameOptions.nEpisode, gGameOptions.nLevel);
+        }
+    }
+}
+void showCinematicState(const netcinematic::State& state)
+{
+    if (clientCinematic.id != state.id || !state.active)
+        stopLocalCinematic(!state.active);
+    clientCinematic = state;
+}
+uint8_t cinematicParticipants()
+{
+    uint8_t mask = 0;
+    for (int p = 0; p < 8; ++p)
+        if (!slots[p].pendingDrop && (slots[p].active || slots[p].admitted)) mask |= 1u << p;
+    return mask;
+}
+void sendCinematicState(int p)
+{
+    if (!serverCinematic.id) return;
+    if (p == myconnectindex && !gDedicated)
+    {
+        showCinematicState(serverCinematic);
+        return;
+    }
+#ifndef NETCODE_DISABLE
+    netwire::Writer w;
+    if (netcinematic::writeState(w, serverCinematic))
+        sendTo(slots[p].peer, netwire::CinematicState, w.data);
+#endif
+}
+void publishCinematicState()
+{
+    LOG_F(INFO, "NET cinematic id=%u state=%s kind=%s participants=%u done=%u remaining=%d",
+          serverCinematic.id, serverCinematic.active ? "active" : "end", cinematicKind(serverCinematic.descriptor.kind),
+          unsigned(serverCinematic.participants), unsigned(serverCinematic.done), cinematicRemaining(serverCinematic));
+    for (int p = 0; p < 8; ++p)
+        if (slots[p].active || slots[p].admitted) sendCinematicState(p);
+}
+void startQueuedCinematic(uint8_t participants)
+{
+    serverCinematic = {};
+    if (!++nextCinematicId) ++nextCinematicId;
+    serverCinematic.id = nextCinematicId;
+    serverCinematic.active = true;
+    serverCinematic.participants = participants;
+    serverCinematic.descriptor = std::move(cinematicQueue.front());
+    cinematicQueue.pop_front();
+    cinematicBarrier.start(serverCinematic.id, participants);
+}
+void updateServerCinematic()
+{
+    if (!netIsServer() || !serverCinematic.active || gStartNewGame) return;
+    uint8_t const participants = cinematicParticipants();
+    cinematicBarrier.updateParticipants(participants);
+    bool changed = serverCinematic.participants != participants || serverCinematic.done != cinematicBarrier.done();
+    serverCinematic.participants = participants;
+    serverCinematic.done = cinematicBarrier.done();
+    if (cinematicBarrier.complete())
+    {
+        if (!cinematicQueue.empty() && participants)
+            startQueuedCinematic(participants);
+        else
+        {
+            cinematicQueue.clear();
+            cinematicBarrier.reset();
+            serverCinematic.active = false;
+            serverCinematic.participants = serverCinematic.done = 0;
+            nextTickTime = timerGetTicks();
+            lastSnapshotTick = 0;
+            for (auto& c : slots) { c.commands = {}; c.lastInput = {}; c.lastInputTime = 0; }
+        }
+        changed = true;
+    }
+    if (changed) publishCinematicState();
+}
+std::string cinematicRelativePath(std::string path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+    while (path.compare(0, 2, "./") == 0) path.erase(0, 2);
+    if ((!path.empty() && path[0] == '/') || path.find(':') != std::string::npos)
+        path.erase(0, path.find_last_of('/') + 1);
+    return path;
+}
+void appendCinematic(std::deque<netcinematic::Descriptor>& queue, const LevelCinematic& scene, netcinematic::Kind kind)
+{
+    netcinematic::Descriptor descriptor;
+    descriptor.video = cinematicRelativePath(scene.video);
+    descriptor.audio = cinematicRelativePath(scene.audio);
+    descriptor.audioResource = scene.audioResource;
+    descriptor.kind = kind;
+    if (netcinematic::validDescriptor(descriptor)) queue.push_back(std::move(descriptor));
+    else LOG_F(WARNING, "NET ignoring invalid cinematic path: %s", scene.video.c_str());
+}
+void finishLocalCinematic(const char* reason)
+{
+    localCinematicFinished = true;
+    localCinematicOpened = false;
+    credCinematicEnd();
+    cinematicSkip.reset();
+    LOG_F(INFO, "NET cinematic local id=%u state=waiting reason=%s", localCinematicId, reason);
+    if (netIsServer())
+        cinematicBarrier.markDone(localCinematicId, myconnectindex);
+#ifndef NETCODE_DISABLE
+    else if (!demoPlayback)
+    {
+        netwire::Writer w;
+        netcinematic::Done done;
+        done.slotGeneration = clientSlotGeneration;
+        done.id = localCinematicId;
+        if (netcinematic::writeDone(w, done)) sendTo(serverPeer, netwire::CinematicDone, w.data);
+    }
+#endif
+}
 int serverAutoAim()
 {
     return gDedicated ? netServerSettings().autoAim : ClipRange(gAutoAim, 0, 3);
@@ -760,6 +913,8 @@ void removePlayer(int p)
         actPostSprite(gPlayer[p].nSprite, kStatFree);
     }
     uint32_t generation = slots[p].generation;
+    // Clear acknowledgement ownership before this slot can be reused.
+    cinematicBarrier.updateParticipants(cinematicBarrier.participants() & ~(1u << p));
     slots[p]            = ClientSlot();
     slots[p].generation = generation;
     rebuildRoster();
@@ -777,6 +932,9 @@ void sendWelcome(int p)
     {
         if (!error.empty())
             LOG_F(ERROR, "NET bootstrap: %s", error.c_str());
+        else
+            LOG_F(INFO, "NET bootstrap deferred slot=%d started=%d ready=%d changing=%d generation=%u",
+                  p, int(gGameStarted), int(ready2send), int(gStartNewGame), mapGeneration);
         return;
     }
     netwire::Writer w;
@@ -787,11 +945,15 @@ void sendWelcome(int p)
     w.u32(uint32_t(packed.size()));
     w.bytes(packed.data(), packed.size());
     netwire::writeServerRules(w, serverRules());
-    sendTo(slots[p].peer, netwire::Welcome, w.data);
+    if (!sendTo(slots[p].peer, netwire::Welcome, w.data))
+        LOG_F(ERROR, "NET bootstrap send failed slot=%d map_generation=%u", p, mapGeneration);
+    else
+        LOG_F(INFO, "NET bootstrap sent slot=%d map_generation=%u", p, mapGeneration);
     slots[p].ready       = false;
     slots[p].pendingReady = false;
     sendVoteOptions(p);
     sendVoteStatus(p);
+    sendCinematicState(p);
     slots[p].snapshotAck = 0;
     slots[p].mapDownloadNext = 0;
     slots[p].mapDownloadStarted = false;
@@ -1019,6 +1181,8 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
             replayFirstWelcome = false;
         }
         session              = h.session;
+        stopLocalCinematic();
+        clientCinematic = {};
         mapGeneration        = h.generation;
         clientSlotGeneration = slotGeneration;
         clientMapCRC         = crc;
@@ -1250,6 +1414,15 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
         return true;
     }
+    if (h.type == netwire::CinematicState)
+    {
+        netcinematic::State state;
+        if (replay || !netcinematic::readState(r, state)) return false;
+        showCinematicState(state);
+        // Movies and the remote-viewer barrier are not simulation packets.
+        // Packet demos preserve gameplay while omitting these frozen intervals.
+        return true;
+    }
     if (h.type == netwire::VoteOptions)
     {
         netwire::VoteOptionsPayload options;
@@ -1445,6 +1618,20 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         if (!c.active && !c.joinOrder) c.joinOrder = ++nextJoinOrder;
         c.pendingReady = true;
     }
+    else if (h.type == netwire::CinematicDone)
+    {
+        netcinematic::Done done;
+        if (!netcinematic::readDone(r, done) || done.slotGeneration != c.generation)
+        {
+            malformedMessages++;
+            return;
+        }
+        if ((c.ready || c.pendingReady) && serverCinematic.active)
+        {
+            cinematicBarrier.updateParticipants(cinematicParticipants());
+            cinematicBarrier.markDone(done.id, slot);
+        }
+    }
     else if (h.type == netwire::SnapshotAck)
     {
         uint32_t id = r.u32();
@@ -1453,6 +1640,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
     }
     else if (h.type == netwire::Commands && c.ready)
     {
+        if (serverCinematic.active) return;
         uint32_t generation = r.u32();
         unsigned count      = r.u8();
         if (generation != c.generation || !count || count > 8)
@@ -1684,6 +1872,12 @@ void netInitialize(bool bConsole)
 }
 void netDeinitialize(void)
 {
+    stopLocalCinematic();
+    serverCinematic = clientCinematic = {};
+    cinematicQueue.clear();
+    pendingOutros.clear();
+    cinematicBarrier.reset();
+    nextCinematicId = 0;
     netStopPacketRecording();
     netDemoStopPlayback();
     demoPlayback = false;
@@ -1764,7 +1958,7 @@ void netUpdate(void)
                         occupied++;
                 if (occupied < ClipRange(gInitialNetPlayers, 1, 8))
                     for (int p = 0; p < 8; p++)
-                        if (!slots[p].peer && !slots[p].active)
+                        if (!slots[p].peer && !slots[p].active && !slots[p].pendingDrop)
                         {
                             slot = p;
                             break;
@@ -1820,6 +2014,8 @@ void netUpdate(void)
             else
             {
                 serverPeer          = nullptr;
+                stopLocalCinematic();
+                clientCinematic = {};
                 clientSnapshotReady = false;
                 mapDownloadDisconnected = clientDownloadingMap;
                 netLagometerDisconnect(true);
@@ -1829,6 +2025,7 @@ void netUpdate(void)
     }
     pumpMapDownloads();
     updateVote();
+    updateServerCinematic();
     enet_host_flush(host);
     servicing = false;
 #endif
@@ -1913,9 +2110,62 @@ void netDrawConnectionStatus()
         viewDrawText(3, "See console for details", 160, 100, -128, 0, 1, 1);
     }
 }
+void netQueueEpisodeOutro(int episode, int level)
+{
+    if (!netIsServer() || gGameOptions.nGameType != kGameTypeCoop || !pendingOutros.empty()) return;
+    LevelCinematic scene;
+    if (levelGetOutroCinematic(episode, level, scene))
+        appendCinematic(pendingOutros, scene, netcinematic::Kind::Outro);
+}
+bool netCinematicActive()
+{
+    if (!netIsLive() || demoPlayback) return false;
+    return netIsServer() ? serverCinematic.active && serverCinematic.participants != 0 : clientCinematic.active;
+}
+void netDrawCinematic()
+{
+    if (gDedicated || demoPlayback || !netIsLive() || !clientCinematic.active || !gGameStarted || gStartNewGame
+        || (netIsClient() && !clientLoaded)) return;
+    if (myconnectindex < 0 || !(clientCinematic.participants & (1u << myconnectindex)))
+    {
+        credCinematicDrawWaiting();
+        return;
+    }
+    if (localCinematicId != clientCinematic.id)
+    {
+        stopLocalCinematic();
+        localCinematicId = clientCinematic.id;
+        sndStopSong();
+        sndKillAllSounds();
+        sfxKillAllSounds();
+        ambKillAll();
+        auto const& scene = clientCinematic.descriptor;
+        localCinematicOpened = credCinematicBegin(scene.video.c_str(), scene.audio.c_str(), scene.audioResource);
+        localCinematicStart = timerGetTicks();
+        LOG_F(INFO, "NET cinematic local id=%u state=%s reason=%s kind=%s video=%s",
+              localCinematicId, localCinematicOpened ? "playing" : "waiting", localCinematicOpened ? "started" : "missing",
+              cinematicKind(scene.kind), scene.video.c_str());
+        if (!localCinematicOpened) finishLocalCinematic("missing");
+    }
+    if (!localCinematicFinished)
+    {
+        uint32_t const now = timerGetTicks();
+        if (cinematicSkip.update(now, KB_KeyDown[sc_Space] != 0, appactive != 0))
+            finishLocalCinematic("skipped");
+        else if (!credCinematicFrame(now - localCinematicStart))
+            finishLocalCinematic("completed");
+        else
+            credCinematicDrawSkip(cinematicSkip.progress(now));
+    }
+    if (localCinematicFinished) credCinematicDrawWaiting();
+}
 void netOnLevelChanging()
 {
     if (!netIsServer()) return;
+    stopLocalCinematic();
+    serverCinematic = clientCinematic = {};
+    cinematicQueue.clear();
+    cinematicBarrier.reset();
     cancelVote("Map vote cancelled because the server is changing levels");
     mapVote.cancel();
     voteState = netwire::VoteState::Idle;
@@ -1959,6 +2209,16 @@ void netOnLevelStarted()
         snapshotBudget                             = 30;
         snapshotCache.clear();
         nextTickTime = timerGetTicks();
+        if (gGameOptions.nGameType == kGameTypeCoop)
+        {
+            cinematicQueue.swap(pendingOutros);
+            std::vector<LevelCinematic> intros;
+            levelCollectIntroCinematics(gGameOptions.nEpisode, gGameOptions.nLevel, intros);
+            for (const auto& scene : intros)
+                appendCinematic(cinematicQueue, scene, scene.mapScene ? netcinematic::Kind::Map : netcinematic::Kind::Intro);
+            if (!cinematicQueue.empty()) startQueuedCinematic(cinematicParticipants());
+        }
+        pendingOutros.clear();
         for (int p = 0; p < 8; p++)
         {
             slots[p].commands         = netwire::CommandQueue();
@@ -1973,6 +2233,7 @@ void netOnLevelStarted()
         }
         LOG_F(INFO, "NET map generation=%u crc=%08x players=%d", mapGeneration, gGameOptions.uMapCRC, numplayers);
         if (!gDedicated) { sendVoteOptions(myconnectindex); sendVoteStatus(myconnectindex); }
+        if (serverCinematic.active) publishCinematicState();
     }
     else
     {
@@ -2037,10 +2298,19 @@ bool netServerBeginTick()
             LOG_F(INFO, "NET joined slot=%d generation=%u players=%d tick=%u", p, c.generation, numplayers, serverTick);
             sendVoteOptions(p);
             sendVoteStatus(p);
+            sendCinematicState(p);
             lastSnapshotTick = 0;
         }
         if (!c.active)
             continue;
+        if (serverCinematic.active)
+        {
+            c.commands = {};
+            c.lastInput = {};
+            gFifoInput[gNetFifoTail & 255][p] = {};
+            gNetFifoHead[p] = gNetFifoTail + 1;
+            continue;
+        }
         netwire::Command command;
         GINPUT           input = {};
         if (c.ready && c.commands.pop(command))
@@ -2061,6 +2331,10 @@ bool netServerBeginTick()
         gFifoInput[gNetFifoTail & 255][p] = input;
         gNetFifoHead[p]                   = gNetFifoTail + 1;
     }
+    updateServerCinematic();
+    // An empty dedicated server can keep ticking, but its first admitted
+    // player still receives the queued intro before gameplay begins.
+    if (serverCinematic.active && serverCinematic.participants) return false;
     serverInTick = true;
     balanceTeams();
     return true;
@@ -2128,6 +2402,11 @@ void netServerEndTick()
 }
 void netGetInput(void)
 {
+    if (netCinematicActive())
+    {
+        gInput = gNetInput = {};
+        return;
+    }
     if (netIsClient())
     {
         if (!clientSnapshotReady || demoPlayback)
@@ -2399,6 +2678,10 @@ void netDrawMapVote()
 }
 void netPrintStatus()
 {
+    auto const& scene = netIsServer() ? serverCinematic : clientCinematic;
+    LOG_F(INFO, "NET cinematic status id=%u state=%s kind=%s participants=%u done=%u remaining=%d local=%s",
+          scene.id, scene.active ? "active" : "end", cinematicKind(scene.descriptor.kind), unsigned(scene.participants),
+          unsigned(scene.done), cinematicRemaining(scene), localCinematicId ? (localCinematicFinished ? "waiting" : "playing") : "idle");
     NetPredictionStats prediction = netPredictGetStats();
     LOG_F(INFO,
           "NET prediction commands=%llu replayed=%llu reconciliations=%llu pending=%u correction=%d max_correction=%d history_overflows=%llu predicted_sounds=%llu "

@@ -25,3 +25,11 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 void credLogosDos(void);
 void credReset(void);
 char credPlaySmk(const char *pzSMK, const char *pzWAV, int nWAV);
+
+// Nonblocking cooperative playback. The caller owns event/network pumping,
+// elapsed real time, skipping, and presentation with videoNextPage().
+bool credCinematicBegin(const char *video, const char *wave, int waveResource);
+bool credCinematicFrame(unsigned elapsedMs);
+void credCinematicEnd();
+void credCinematicDrawWaiting();
+void credCinematicDrawSkip(float progress);

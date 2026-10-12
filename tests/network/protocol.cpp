@@ -42,7 +42,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 3,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 4,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -59,11 +59,14 @@ void framing()
         bad = encoded; field(bad, offset, 0xffffffffu); CHECK(!decode(bad));
     }
     bad = encoded; field(bad, 8, 0); CHECK(!decode(bad));
+    bad = encoded; field(bad, 4, 3); CHECK(!decode(bad)); // The previous protocol cannot honor cinematic barriers.
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
     static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
                   "Existing packet and demo message IDs must not change");
     static_assert(netwire::VoteRequest == 16 && netwire::VoteStatus == 17 && netwire::VoteOptions == 18,
                   "Map-vote messages append to existing message IDs");
+    static_assert(netwire::CinematicState == 19 && netwire::CinematicDone == 20,
+                  "Cinematic messages append to existing message IDs");
     for (uint32_t type = netwire::Hello; type < netwire::TypeCount; ++type) {
         header.type = type;
         CHECK(decode(netwire::encode(header, payload)));

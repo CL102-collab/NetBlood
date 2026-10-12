@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 3;
+constexpr uint32_t Version    = 4;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -36,6 +36,8 @@ enum Type : uint32_t
     VoteRequest,
     VoteStatus,
     VoteOptions,
+    CinematicState,
+    CinematicDone,
     TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.

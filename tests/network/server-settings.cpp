@@ -10,15 +10,38 @@
 bool gDedicated = true, gGameStarted = true, gStartNewGame = false;
 bool ready2send = true;
 int gLevelTime = 0;
+int gNextLevel = 0;
+int32_t gAutoAim = 1;
 int connecthead = -1, connectpoint2[MAXMULTIPLAYERS];
 GAMEOPTIONS gGameOptions = {};
 PKT_STARTGAME gPacketStartGame = {};
 EPISODEINFO gEpisodeInfo[kMaxEpisodes] = {};
 int gEpisodeCount = kMaxEpisodes;
 static bool isServer = true;
+static bool cinematicActive = false;
+static int queuedOutros = 0, outroEpisode = -1, outroLevel = -1;
 static int preparedMaps = 0;
 static std::string readMapName;
 bool netIsServer() { return isServer; }
+bool netCinematicActive() { return cinematicActive; }
+void netQueueEpisodeOutro(int episode, int level)
+{
+    ++queuedOutros;
+    outroEpisode = episode;
+    outroLevel = level;
+}
+void levelSetupOptions(int episode, int level)
+{
+    gGameOptions.nEpisode = episode;
+    gGameOptions.nLevel = level;
+    std::strcpy(gGameOptions.zLevelName, gEpisodeInfo[episode].levelsInfo[level].Filename);
+}
+// Vote application retains the custom-map loading branch at link time. These
+// policy scenarios use stock metadata; unexpected filesystem use is a failure.
+void ChangeExtension(char*, const char*) { std::abort(); }
+IniFile::IniFile(const char*, char) { std::abort(); }
+IniFile::~IniFile() {}
+void levelLoadMapInfo(IniFile*, LEVELINFO*, const char*) { std::abort(); }
 bool netMapRead(const char* name, std::vector<uint8_t>&, std::string&)
 {
     readMapName = name;
@@ -63,6 +86,9 @@ void reset()
     initialMaps.clear();
     gDedicated = gGameStarted = isServer = true;
     gStartNewGame = false;
+    cinematicActive = false;
+    queuedOutros = 0;
+    outroEpisode = outroLevel = -1;
     ready2send = 1;
     gLevelTime = 0;
     gGameOptions = {};
@@ -194,6 +220,7 @@ void coopRoutes()
         CHECK(nextLevel == (exitType == kLevelExitNormal ? 1 : 2));
         CHECK(preserveInventory);
         CHECK((gGameOptions.uGameFlags & kGameFlagContinuing) != 0);
+        CHECK(queuedOutros == 0); // Moving within an episode has no episode outro.
     }
     reset(); settings.gameType = kGameTypeCoop; settings.episode = 2;
     gEpisodeInfo[1].nLevels = 3;
@@ -201,16 +228,32 @@ void coopRoutes()
     CHECK(netServerHandleLevelExit(kLevelExitNormal));
     CHECK(nextEpisode == 1 && nextLevel == 0); // Episode loops when complete.
     CHECK(!preserveInventory);
+    CHECK(queuedOutros == 1 && outroEpisode == 1 && outroLevel == 0);
+    CHECK(netServerHandleLevelExit(kLevelExitNormal));
+    CHECK(queuedOutros == 1); // Repeated exits cannot queue the same outro twice.
     reset(); settings.gameType = kGameTypeCoop; settings.timeLimitMinutes = 1;
     gEpisodeInfo[1].nLevels = 3;
     gEpisodeInfo[1].levelsInfo[0].EndingA = 1;
     gLevelTime = 1800;
     netServerCheckLimits();
     CHECK(pendingAdvance && nextLevel == 0 && !preserveInventory); // Single-map timer restarts.
+    CHECK(queuedOutros == 0);
     reset(); settings.gameType = kGameTypeCoop; settings.timeLimitMinutes = 1; settings.episode = 2;
     gLevelTime = 1800;
     netServerCheckLimits();
     CHECK(pendingAdvance && nextLevel == 1 && preserveInventory); // Episode timer advances.
+    CHECK(queuedOutros == 0);
+    reset(); settings.gameType = kGameTypeCoop; settings.episode = 2;
+    gGameOptions.nLevel = 2;
+    gEpisodeInfo[1].levelsInfo[2].EndingA = -1;
+    CHECK(netServerHandleLevelExit(kLevelExitNormal));
+    CHECK(queuedOutros == 1 && outroEpisode == 1 && outroLevel == 2);
+    CHECK(nextLevel == 0 && !preserveInventory);
+    reset(); settings.gameType = kGameTypeCoop; settings.episode = 2;
+    rotation = {"E2M1", "E2M2"};
+    gEpisodeInfo[1].levelsInfo[0].EndingA = -1;
+    CHECK(netServerHandleLevelExit(kLevelExitNormal));
+    CHECK(queuedOutros == 0); // A rotation does not complete the selected episode.
     reset(); gDedicated = false;
     CHECK(!netServerHandleLevelExit(kLevelExitNormal) && !pendingAdvance);
     reset(); isServer = false;
@@ -251,7 +294,7 @@ void mapVotePolicy()
     CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
     CHECK(error.find("disabled") != std::string::npos);
 
-    for (int guard = 0; guard < 6; ++guard) {
+    for (int guard = 0; guard < 7; ++guard) {
         reset(); rotation = {"E1M1"};
         if (guard == 0) isServer = false;
         if (guard == 1) gGameStarted = false;
@@ -259,6 +302,7 @@ void mapVotePolicy()
         if (guard == 3) pendingAdvance = true;
         if (guard == 4) gGameOptions.uGameFlags = kGameFlagContinuing;
         if (guard == 5) ready2send = 0;
+        if (guard == 6) cinematicActive = true;
         CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
         CHECK(!error.empty());
     }
@@ -275,6 +319,11 @@ void mapVotePolicy()
     CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E2M2", index, error));
     CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
     CHECK(netServerResolveVote(NetServerVoteAction::Next, "", index, error));
+    cinematicActive = true;
+    CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(!netServerResolveVote(NetServerVoteAction::Next, "", index, error));
+    CHECK(error.find("in progress") != std::string::npos);
+    cinematicActive = false;
     CHECK(nextVoteMap(target, error) && target == "E2M2");
     VoteNextLevel next;
     CHECK(nextVoteEpisode(next, error) && next.episode == 1 && next.level == 1 && next.preserveInventory);
@@ -324,11 +373,38 @@ void listenCustomRestart()
     CHECK(gStartNewGame && gPacketStartGame.userMap == 0);
     CHECK(gPacketStartGame.episodeId == 0 && gPacketStartGame.levelId == 9);
     CHECK(std::memcmp(&original, &gGameOptions, sizeof(original)) == 0);
+    CHECK(queuedOutros == 0);
+}
+
+void listenCoopNextCinematic()
+{
+    for (bool finalLevel : {false, true})
+    {
+        reset();
+        gDedicated = false;
+        gGameOptions.nGameType = kGameTypeCoop;
+        gGameOptions.nLevel = finalLevel ? 2 : 0;
+        gEpisodeInfo[1].nLevels = 3;
+        gEpisodeInfo[1].levelsInfo[0].EndingA = 1;
+        gEpisodeInfo[1].levelsInfo[2].EndingA = -1;
+        std::strcpy(gEpisodeInfo[1].levelsInfo[0].Filename, "E2M1");
+        std::strcpy(gEpisodeInfo[1].levelsInfo[1].Filename, "E2M2");
+        std::strcpy(gEpisodeInfo[1].levelsInfo[2].Filename, "E2M3");
+        std::string error;
+        CHECK(netServerApplyVote(NetServerVoteAction::Next, 0, error));
+        CHECK(error.empty() && gStartNewGame);
+        CHECK(gGameOptions.nEpisode == 1 && gGameOptions.nLevel == (finalLevel ? 0 : 1));
+        CHECK(queuedOutros == (finalLevel ? 1 : 0));
+        if (finalLevel)
+            CHECK(outroEpisode == 1 && outroLevel == 2); // Capture the outgoing map before selecting the next one.
+        else
+            CHECK((gGameOptions.uGameFlags & kGameFlagContinuing) != 0);
+    }
 }
 }
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); coopRoutes(); mapVotePolicy(); listenCustomRestart();
-    std::printf("PASS: dedicated limits, hot-join scores, map vote policy, clock/role guards and coop exits (%u assertions)\n", assertions);
+    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); listenCoopNextCinematic();
+    std::printf("PASS: dedicated limits, hot-join scores, map vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
 }

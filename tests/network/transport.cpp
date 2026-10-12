@@ -1,10 +1,12 @@
 // Real loopback UDP transport: verify on-wire copies and receiver deduplication.
 #include "enet.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -65,6 +67,7 @@ void session(unsigned configuredCopies, bool loss)
     ENetHost* server = enet_host_create(&address, 2, 3, 0, 0);
     ENetHost* client = enet_host_create(nullptr, 1, 3, 0, 0);
     CHECK(server && client && server->packetCopies == 1 && client->packetCopies == 1);
+    server->checksum = client->checksum = enet_crc32;
     CHECK(enet_socket_set_option(server->socket, ENET_SOCKOPT_RCVBUF, 4*1024*1024) == 0);
     CHECK(enet_socket_set_option(client->socket, ENET_SOCKOPT_RCVBUF, 4*1024*1024) == 0);
     server->packetCopies = configuredCopies; client->packetCopies = configuredCopies;
@@ -139,11 +142,115 @@ void session(unsigned configuredCopies, bool loss)
                 copies, configuredCopies, relay.up.size(), relay.down.size(), relay.dropped);
     enet_host_destroy(client); enet_host_destroy(server);
 }
+
+size_t ENET_CALLBACK checkCompressionBounds(void* context, const ENetBuffer* buffers, size_t count,
+                                           size_t inLimit, enet_uint8*, size_t outLimit)
+{
+    size_t bytes = 0;
+    for (size_t i = 0; i < count; ++i) bytes += buffers[i].dataLength;
+    CHECK(bytes == inLimit && bytes == outLimit);
+    ++*static_cast<unsigned*>(context);
+    return 0; // Exercise compressor bounds while retaining the original bytes.
+}
+
+void checksumMtuBoundary(bool compressionProbe)
+{
+    ENetAddress address = {}; CHECK(enet_address_set_host(&address, loopback) == 0);
+    ENetHost* server = enet_host_create(&address, 8, 3, 0, 0);
+    CHECK(server);
+    server->checksum = enet_crc32;
+    server->packetCopies = 3;
+    unsigned compressionCalls = 0;
+    ENetCompressor compressor = {};
+    compressor.context = &compressionCalls;
+    compressor.compress = checkCompressionBounds;
+    if (compressionProbe) enet_host_compress(server, &compressor);
+    std::array<ENetHost*, 3> clients = {};
+    std::array<ENetPeer*, 3> remote = {};
+    std::array<std::unique_ptr<Relay>, 3> relay;
+    std::array<unsigned, 3> received = {};
+    unsigned accepted = 0, connected = 0;
+    bool sent = false;
+    // Before checksum reservation these two reliable commands coalesced into
+    // 1404 bytes for an MTU of 1400. Every retry repeated the truncation: larger
+    // multi-player Welcome packets and their accompanying status could hang.
+    const size_t firstLength = server->mtu - sizeof(ENetProtocolHeader) - sizeof(ENetProtocolSendFragment) - sizeof(enet_uint32);
+    const size_t secondLength = sizeof(ENetProtocolSendFragment) + sizeof(enet_uint32) - 2 * sizeof(ENetProtocolSendReliable);
+    std::array<Bytes, 2> payloads = {{Bytes(firstLength), Bytes(secondLength)}};
+    for (unsigned i = 0; i < payloads.size(); ++i)
+        for (size_t j = 0; j < payloads[i].size(); ++j) payloads[i][j] = uint8_t(i * 73 + j * 17);
+    for (unsigned i = 0; i < clients.size(); ++i)
+    {
+        clients[i] = enet_host_create(nullptr, 1, 3, 0, 0);
+        CHECK(clients[i]);
+        clients[i]->checksum = enet_crc32;
+        clients[i]->packetCopies = 3;
+        if (compressionProbe) enet_host_compress(clients[i], &compressor);
+        relay[i].reset(new Relay(server->address, false));
+        CHECK(enet_host_connect(clients[i], &relay[i]->address, 3, i));
+    }
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        for (auto& route : relay) route->pump();
+        ENetEvent event;
+        int status;
+        while ((status = enet_host_service(server, &event, 0)) > 0)
+        {
+            CHECK(event.type == ENET_EVENT_TYPE_CONNECT);
+            CHECK(event.data < remote.size() && !remote[event.data]);
+            remote[event.data] = event.peer;
+            ++accepted;
+        }
+        CHECK(status >= 0);
+        for (unsigned i = 0; i < clients.size(); ++i)
+        {
+            while ((status = enet_host_service(clients[i], &event, 0)) > 0)
+            {
+                if (event.type == ENET_EVENT_TYPE_CONNECT) { ++connected; continue; }
+                CHECK(event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == 0);
+                CHECK(received[i] < payloads.size());
+                const auto& expected = payloads[received[i]++];
+                CHECK(event.packet->dataLength == expected.size());
+                CHECK(std::memcmp(event.packet->data, expected.data(), expected.size()) == 0);
+                enet_packet_destroy(event.packet);
+            }
+            CHECK(status >= 0);
+        }
+        if (accepted == clients.size() && connected == clients.size() && !sent)
+        {
+            for (auto* peer : remote)
+                for (auto& payload : payloads)
+                    CHECK(enet_peer_send(peer, 0, enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE)) == 0);
+            // Flush only after every command is queued, exercising coalescing
+            // and all three peers in the same send_outgoing_commands pass.
+            enet_host_flush(server);
+            sent = true;
+        }
+        if (received[0] == 2 && received[1] == 2 && received[2] == 2) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(sent && accepted == 3 && connected == 3);
+    for (unsigned i = 0; i < clients.size(); ++i)
+    {
+        CHECK(received[i] == 2);
+        relay[i]->pump();
+        for (const auto& packet : relay[i]->up) CHECK(packet.size() <= clients[i]->mtu);
+        for (const auto& packet : relay[i]->down) CHECK(packet.size() <= server->mtu);
+        groups(relay[i]->up, 3);
+        groups(relay[i]->down, 3);
+        enet_host_destroy(clients[i]);
+    }
+    enet_host_destroy(server);
+    CHECK(!compressionProbe || compressionCalls > 0);
+    std::printf("PASS: CRC MTU boundary, three simultaneous peers, coalesced reliable packets, triplicate copies, compressor_bounds=%d\n", int(compressionProbe));
+}
 }
 int main()
 {
     CHECK(enet_initialize() == 0);
     session(1, false); session(3, false); session(3, true);
     session(0, false); session(9, false);
+    checksumMtuBoundary(false); checksumMtuBoundary(true);
     enet_deinitialize();
 }

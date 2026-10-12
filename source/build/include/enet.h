@@ -2466,11 +2466,15 @@ extern "C" {
         }
 
         if (host->checksum != NULL) {
-            enet_uint32 *checksum = (enet_uint32 *) &host->receivedData[headerSize - sizeof(enet_uint32)];
-            enet_uint32 desiredChecksum = *checksum;
+            enet_uint8 *checksum = &host->receivedData[headerSize - sizeof(enet_uint32)];
+            enet_uint32 desiredChecksum;
+            enet_uint32 checksumSeed = peer != NULL ? peer->connectID : 0;
             ENetBuffer buffer;
 
-            *checksum = peer != NULL ? peer->connectID : 0;
+            // ACK-only headers are two bytes, so their CRC is not necessarily
+            // aligned for a uint32 access (notably on non-x86 platforms).
+            memcpy(&desiredChecksum, checksum, sizeof(desiredChecksum));
+            memcpy(checksum, &checksumSeed, sizeof(checksumSeed));
 
             buffer.data       = host->receivedData;
             buffer.dataLength = host->receivedDataLength;
@@ -3021,7 +3025,10 @@ extern "C" {
                 host->headerFlags  = 0;
                 host->commandCount = 0;
                 host->bufferCount  = 1;
-                host->packetSize   = sizeof(ENetProtocolHeader);
+                // Reserve the checksum before packing commands. Otherwise a
+                // coalesced datagram can exceed the negotiated MTU by four
+                // bytes and be truncated on every reliable retransmission.
+                host->packetSize   = sizeof(ENetProtocolHeader) + (host->checksum != NULL ? sizeof(enet_uint32) : 0);
 
                 if (!enet_list_empty(&currentPeer->acknowledgements)) {
                     enet_protocol_send_acknowledgements(host, currentPeer);
@@ -3100,7 +3107,7 @@ extern "C" {
 
                 shouldCompress = 0;
                 if (host->compressor.context != NULL && host->compressor.compress != NULL) {
-                    size_t originalSize = host->packetSize - sizeof(ENetProtocolHeader),
+                    size_t originalSize = host->packetSize - sizeof(ENetProtocolHeader) - (host->checksum != NULL ? sizeof(enet_uint32) : 0),
                       compressedSize    = host->compressor.compress(host->compressor.context, &host->buffers[1], host->bufferCount - 1, originalSize, host->packetData[1], originalSize);
                     if (compressedSize > 0 && compressedSize < originalSize) {
                         host->headerFlags |= ENET_PROTOCOL_HEADER_FLAG_COMPRESSED;
@@ -3116,10 +3123,12 @@ extern "C" {
                 }
                 header->peerID = ENET_HOST_TO_NET_16(currentPeer->outgoingPeerID | host->headerFlags);
                 if (host->checksum != NULL) {
-                    enet_uint32 *checksum = (enet_uint32 *) &headerData[host->buffers->dataLength];
-                    *checksum = currentPeer->outgoingPeerID < ENET_PROTOCOL_MAXIMUM_PEER_ID ? currentPeer->connectID : 0;
+                    enet_uint8 *checksumBytes = &headerData[host->buffers->dataLength];
+                    enet_uint32 checksum = currentPeer->outgoingPeerID < ENET_PROTOCOL_MAXIMUM_PEER_ID ? currentPeer->connectID : 0;
+                    memcpy(checksumBytes, &checksum, sizeof(checksum));
                     host->buffers->dataLength += sizeof(enet_uint32);
-                    *checksum = host->checksum(host->buffers, host->bufferCount);
+                    checksum = host->checksum(host->buffers, host->bufferCount);
+                    memcpy(checksumBytes, &checksum, sizeof(checksum));
                 }
 
                 if (shouldCompress > 0) {

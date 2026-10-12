@@ -4,6 +4,7 @@
 #include "common_game.h"
 #include "crc32.h"
 #include "globals.h"
+#include "levels.h"
 #include "resource.h"
 #include "sound.h"
 #include "tile.h"
@@ -39,6 +40,75 @@ std::string displayName(const char* path)
     for (auto& ch : name)
         if (uint8_t(ch) < 32 || uint8_t(ch) == 127) ch = '?';
     return name;
+}
+
+bool cinematicVideoType(const char* type)
+{
+    return type && (!Bstrcasecmp(type, "SMK") || !Bstrcasecmp(type, "OGV"));
+}
+
+bool sameCinematicFile(const char* path, const std::string& declared)
+{
+    if (!path || !*path || declared.empty()) return false;
+    auto name = canonicalName(displayName(path));
+    auto expected = canonicalName(displayName(declared.c_str()));
+    // Movie lookup also searches a basename under movie/, movies/, video/,
+    // and videos/, including old DOS absolute paths in installed INI files.
+    name.erase(0, name.find_last_of('/') + 1);
+    expected.erase(0, expected.find_last_of('/') + 1);
+    return name == expected;
+}
+
+std::vector<LevelCinematic> cinematicAudio()
+{
+    std::vector<LevelCinematic> scenes;
+    for (int episode = 0; episode < gEpisodeCount; ++episode)
+    {
+        auto const& info = gEpisodeInfo[episode];
+        if (info.nLevels > 0)
+        {
+            LevelCinematic outro;
+            if (levelGetOutroCinematic(episode, 0, outro)) scenes.push_back(std::move(outro));
+        }
+        for (int level = 0; level < info.nLevels; ++level)
+            levelCollectIntroCinematics(episode, level, scenes, true);
+    }
+    return scenes;
+}
+
+bool optionalCinematicFile(const char* path)
+{
+    const char* extension = path ? Bstrrchr(path, '.') : nullptr;
+    if (!extension) return false;
+    if (cinematicVideoType(extension + 1)) return true;
+    if (Bstrcasecmp(extension + 1, "WAV")) return false;
+    for (auto const& scene : cinematicAudio())
+    {
+        if (sameCinematicFile(path, scene.audio)) return true;
+        if (scene.audioResource <= 0) continue;
+        for (unsigned i = 0; i < gSoundRes.count; ++i)
+        {
+            auto const& node = gSoundRes.dict[i];
+            if (node.id != unsigned(scene.audioResource) || !node.type || !node.name || Bstrcasecmp(node.type, "WAV")) continue;
+            auto const name = std::string(node.name) + ".WAV";
+            if (sameCinematicFile(path, name) || (node.path && sameCinematicFile(path, node.path))) return true;
+        }
+    }
+    return false;
+}
+
+bool optionalCinematicResource(const DICTNODE& node, const char* domain)
+{
+    if (cinematicVideoType(node.type)) return true;
+    // RAW samples and gameplay metadata remain mandatory, even when their
+    // filenames or numeric IDs coincide with a movie's WAV accompaniment.
+    if (!node.type || Bstrcasecmp(node.type, "WAV")) return false;
+    auto const name = std::string(node.name) + ".WAV";
+    if (optionalCinematicFile(name.c_str()) || (node.path && optionalCinematicFile(node.path))) return true;
+    if (!std::strcmp(domain, "sound"))
+        for (auto const& scene : cinematicAudio())
+            if (scene.audioResource > 0 && node.id == unsigned(scene.audioResource)) return true;
+    return false;
 }
 
 void rememberAsset(std::string key, const char* path, uint64_t size, const netassets::Digest& md5)
@@ -167,7 +237,7 @@ void addOtherOverrides(Resource& resources, const char* domain)
         // resources include RAW sound samples and palette/voxel replacements.
         if (!Bstrcasecmp(node->type, "MAP") || !Bstrcasecmp(node->type, "QAV") ||
             !Bstrcasecmp(node->type, "SEQ") || !Bstrcasecmp(node->type, "DAT") ||
-            !Bstrcasecmp(node->type, "SFX")) continue;
+            !Bstrcasecmp(node->type, "SFX") || optionalCinematicResource(*node, domain)) continue;
         auto const name = canonicalName(std::string(node->name) + (node->type[0] ? "." : "") + node->type);
         std::vector<uint8_t> original(node->size);
         if (node->size) resources.Read(node, original.data());
@@ -184,7 +254,7 @@ void addDeferredOverrides(Resource& resources, const char* domain)
     {
         auto const* node = &resources.dict[i];
         if (!node->name || !node->type || (node->flags & (DICT_EXTERNAL | DICT_BUFFER)) ||
-            !Bstrcasecmp(node->type, "MAP")) continue;
+            !Bstrcasecmp(node->type, "MAP") || optionalCinematicResource(*node, domain)) continue;
         // Name-based Resource::Lookup will prefer this loose file when first
         // used, potentially after the startup manifest has been frozen. Probe
         // with the same VFS precedence without changing the resource index.
@@ -201,6 +271,13 @@ uint32_t netContentCRC()
 {
     static uint32_t fingerprint = 0;
     if (contentFrozen) return fingerprint;
+    // Resource scripts may have tracked loose audio before levelLoadDefaults
+    // established which files accompany cinematics. Reclassify those sources
+    // now, while keeping complete archives and gameplay resources mandatory.
+    contentManifest.erase(std::remove_if(contentManifest.begin(), contentManifest.end(),
+        [](const netassets::Asset& asset) {
+            return asset.key.compare(0, 7, "source:") == 0 && optionalCinematicFile(asset.name.c_str());
+        }), contentManifest.end());
     uint32_t crc = 0;
     addText(crc, "NBlood authoritative content v1");
     addNumber(crc, netwire::Version);
@@ -237,7 +314,7 @@ const std::vector<netassets::Asset>& netContentManifest()
 
 void netContentTrackFile(const char* path, bool searchMod)
 {
-    if (contentFrozen || !path || !*path) return;
+    if (contentFrozen || !path || !*path || optionalCinematicFile(path)) return;
     auto const key = "source:" + canonicalName(displayName(path));
     if (std::any_of(contentManifest.begin(), contentManifest.end(),
             [&](const netassets::Asset& entry) { return entry.key == key; })) return;

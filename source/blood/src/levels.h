@@ -23,6 +23,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #pragma once
 #include "common_game.h"
 #include "inifile.h"
+#include <string>
+#include <vector>
 
 #define kMaxMessages 32
 #define kMaxEpisodes 7
@@ -113,6 +115,19 @@ struct EPISODEINFO
     char cutsceneAWavPath[BMAX_PATH];
     char cutsceneBWavPath[BMAX_PATH];
 };
+
+// Network cinematics use server-selected descriptors rather than requiring
+// clients to share optional movie paths or files in their local installation.
+struct LevelCinematic
+{
+    std::string video, audio;
+    int audioResource = -1;
+    bool mapScene = false;
+};
+
+// Asset inventory can include episode movies regardless of the current map.
+void levelCollectIntroCinematics(int nEpisode, int nLevel, std::vector<LevelCinematic>& scenes, bool ignoreUserMap = false);
+bool levelGetOutroCinematic(int nEpisode, int nLevel, LevelCinematic& scene);
 
 extern EPISODEINFO gEpisodeInfo[];
 extern GAMEOPTIONS gSingleGameOptions;

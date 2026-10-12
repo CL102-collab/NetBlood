@@ -225,6 +225,20 @@ libsmackerdec_obj := $(obj)/$(libsmackerdec)
 libsmackerdec_cflags :=
 
 
+#### libtheora (portable decoding API; Ogg is supplied by audiolib)
+
+libtheora := libtheora
+libtheora_root := $(source)/$(libtheora)
+libtheora_src := $(libtheora_root)/src
+libtheora_inc := $(libtheora_root)/include
+libtheora_obj := $(obj)/$(libtheora)
+libtheora_objs := bitpack.c decinfo.c decode.c dequant.c fragment.c huffdec.c \
+    idct.c info.c internal.c quant.c state.c
+# Upstream is C99, while this project normally compiles .c files as C++.
+libtheora_force_c := 1
+libtheora_cflags := -I$(libtheora_inc) -include $(libtheora_inc)/ogg/ogg.h -std=c99
+
+
 #### hmpplay
 
 hmpplay := hmpplay
@@ -725,9 +739,9 @@ blood_src := $(blood_root)/src
 blood_rsrc := $(blood_root)/rsrc
 blood_obj := $(obj)/$(blood)
 
-blood_cflags := -I$(blood_src)
+blood_cflags := -I$(blood_src) -I$(libtheora_inc)
 
-blood_game_deps := audiolib mact libsmackerdec
+blood_game_deps := audiolib mact libsmackerdec libtheora
 
 ifneq (0,$(NETCODE))
     blood_game_deps += enet
@@ -771,6 +785,7 @@ blood_game_objs := \
 	common.cpp \
 	config.cpp \
 	controls.cpp \
+	cinematic_ogv.cpp \
 	credits.cpp \
 	db.cpp \
 	demo.cpp \
@@ -1280,6 +1295,7 @@ libraries := \
     mact \
     voidwrap \
     libsmackerdec \
+    libtheora \
     hmpplay \
     n64 \
 
@@ -1423,7 +1439,7 @@ $$($1_obj)/%.$$o: $$($1_src)/%.yasm | $$($1_obj)
 $$($1_obj)/%.$$o: $$($1_src)/%.c | $$($1_obj)
 	$$(COMPILE_STATUS)
 	$$(call MKDIR,$$(dir $$@))
-	$$(RECIPE_IF) $$(COMPILER_C) $$($1_cflags) -c $$< -o $$@ $$(RECIPE_RESULT_COMPILE)
+	$$(RECIPE_IF) $$(if $$($1_force_c),$$(CC) $$(CONLYFLAGS) $$(filter-out -fno-threadsafe-statics,$$(COMMONFLAGS)) $$(CWARNS) $$(CONLYWARNS) $$(COMPILERFLAGS) $$(CUSTOMOPT),$$(COMPILER_C)) $$($1_cflags) -c $$< -o $$@ $$(RECIPE_RESULT_COMPILE)
 
 $$($1_obj)/%.$$o: $$($1_src)/%.cpp | $$($1_obj)
 	$$(COMPILE_STATUS)

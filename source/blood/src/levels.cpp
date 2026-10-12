@@ -86,6 +86,92 @@ void levelOverrideINI(const char *pzIni)
 
 static char zSmkPath[BMAX_PATH], zWavPath[BMAX_PATH];
 
+namespace {
+bool cinematicLevelValid(int episode, int level)
+{
+    return episode >= 0 && episode < gEpisodeCount && level >= 0
+        && level < gEpisodeInfo[episode].nLevels;
+}
+
+bool stockCinematicEpisode(int episode, const char* key)
+{
+    // The original CD installer fills commented-out CutScene keys. Recognize
+    // only the stock layout, so missing movie declarations in mods stay absent.
+    static int const mapCounts[] = {8, 9, 8, 9};
+    if (bINIOverride || !BloodINI || episode < 0 || episode >= 4
+        || gEpisodeInfo[episode].nLevels != mapCounts[episode]) return false;
+    const char* iniName = BloodIniFile;
+    for (const char* p = BloodIniFile; *p; ++p)
+        if (*p == '/' || *p == '\\') iniName = p + 1;
+    if (Bstrcasecmp(iniName, "BLOOD.INI")) return false;
+    char section[32];
+    Bsnprintf(section, sizeof(section), "Episode%d", episode + 1);
+    // An explicitly empty key intentionally disables the stock cinematic.
+    if (BloodINI->KeyExists(section, key)) return false;
+    for (int level = 0; level < mapCounts[episode]; ++level)
+    {
+        char name[32];
+        Bsnprintf(name, sizeof(name), "E%dM%d", episode + 1, level + 1);
+        if (Bstrcasecmp(gEpisodeInfo[episode].levelsInfo[level].Filename, name)) return false;
+    }
+    return true;
+}
+
+LevelCinematic cinematicDescriptor(const char* video, const char* audio, int audioResource)
+{
+    LevelCinematic scene;
+    scene.video.assign(video, strnlen(video, BMAX_PATH));
+    scene.audio.assign(audio, strnlen(audio, BMAX_PATH));
+    scene.audioResource = audioResource;
+    return scene;
+}
+
+LevelCinematic stockCinematicDescriptor(int movie)
+{
+    // Verified against the original One Unit: Whole Blood installer script:
+    // CS1 begins episode 1; CS5 precedes E4M8; CS2/3/4/6 end episodes 1/2/3/4.
+    char video[32], audio[32];
+    Bsnprintf(video, sizeof(video), "CS%d.SMK", movie);
+    Bsnprintf(audio, sizeof(audio), "CS%d822M.WAV", movie);
+    return cinematicDescriptor(video, audio, 0);
+}
+}
+
+void levelCollectIntroCinematics(int nEpisode, int nLevel, std::vector<LevelCinematic>& scenes, bool ignoreUserMap)
+{
+    if (!cinematicLevelValid(nEpisode, nLevel)) return;
+    auto const& episode = gEpisodeInfo[nEpisode];
+    if (ignoreUserMap || !gGameOptions.szUserMap[0])
+    {
+        if (episode.cutsceneASmkPath[0] && episode.cutALevel == unsigned(nLevel))
+            scenes.push_back(cinematicDescriptor(episode.cutsceneASmkPath, episode.cutsceneAWavPath, episode.cutsceneAWavRsrcID));
+        else if (!episode.cutsceneASmkPath[0] && stockCinematicEpisode(nEpisode, "CutSceneA")
+                 && ((nEpisode == 0 && nLevel == 0) || (nEpisode == 3 && nLevel == 7)))
+            scenes.push_back(stockCinematicDescriptor(nEpisode == 0 ? 1 : 5));
+    }
+    auto const& map = episode.levelsInfo[nLevel];
+    if (map.cutVideo[0])
+    {
+        scenes.push_back(cinematicDescriptor(map.cutVideo, map.cutSound, 0));
+        scenes.back().mapScene = true;
+    }
+}
+
+bool levelGetOutroCinematic(int nEpisode, int nLevel, LevelCinematic& scene)
+{
+    scene = {};
+    if (!cinematicLevelValid(nEpisode, nLevel)) return false;
+    auto const& episode = gEpisodeInfo[nEpisode];
+    if (episode.cutsceneBSmkPath[0])
+        scene = cinematicDescriptor(episode.cutsceneBSmkPath, episode.cutsceneBWavPath, episode.cutsceneBWavRsrcID);
+    else if (stockCinematicEpisode(nEpisode, "CutSceneB"))
+    {
+        static int const movies[] = {2, 3, 4, 6};
+        scene = stockCinematicDescriptor(movies[nEpisode]);
+    }
+    return !scene.video.empty();
+}
+
 void levelPlayIntroScene(int nEpisode, int nLevel)
 {
     sndStopSong();

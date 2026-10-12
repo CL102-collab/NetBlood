@@ -184,7 +184,7 @@ maps or restart games directly, start games, host another server, or change serv
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata and map-vote messages use wire protocol 3. Rebuild the server and all
+The mandatory rule metadata, map-vote and cinematic messages use wire protocol 4. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 
@@ -435,3 +435,67 @@ network scheduling deterministic. Stop it with SIGINT/SIGTERM to save counters.
 These checks establish the tested local scenarios and parser/resource bounds.
 They do not establish Internet-scale load capacity, hostile-network security,
 cross-platform simulation parity, or exhaustive gameplay/map/mod compatibility.
+
+## Cooperative cinematics
+
+The standalone checks exercise the production packet codec, participant
+barrier, skip timer and episode/movie selection, including malformed packets,
+clock wrap, focus changes and stock versus custom INI metadata. The OGV
+decoder checks generate synthetic Theora/Vorbis fixtures with `ffmpeg`; they
+exercise frame timing, color conversion, audio, completion and damaged files
+without needing game assets.
+
+```sh
+tests/network/cinematics-test.sh
+SANITIZE=1 tests/network/cinematics-test.sh
+tests/network/cinematic-levels-test.sh
+SANITIZE=1 tests/network/cinematic-levels-test.sh
+tests/network/cinematic-assets-test.sh
+SANITIZE=1 tests/network/cinematic-assets-test.sh
+tests/network/cinematic-ogv-test.sh
+SANITIZE=1 tests/network/cinematic-ogv-test.sh
+```
+
+Co-op servers synchronize episode intros, map cinematics and episode endings.
+Each player watches their locally installed Smacker (`.SMK`) or Ogg Theora
+(`.ogv`) version. Missing or unreadable movies show white waiting text on a
+black screen. Holding Space continuously for three seconds skips only the
+local movie; releasing Space or losing focus resets the hold. Finished and
+skipped players wait until all current participants finish. A join during a
+movie participates in that movie; later joins do not replay finished movies.
+Disconnecting a watcher removes them from the barrier. The server continues
+servicing UDP and joins while world simulation is paused.
+
+Episode movies use the INI `CutSceneA`/`CutSceneB` and `CutWavA`/`CutWavB`
+settings; map movies use `CutScene` and `CutWav`. A matching `.ogv` replacement
+is preferred to `.smk`. The game searches its resource paths and the `movie`,
+`movies`, `video`, `videos` and `cutscenes` directories. Stock episode movie
+filenames are recognized when the original Blood INI has its movie keys
+commented out. Movie files remain optional for joining the server.
+
+```sh
+python3 tests/network/cinematics.py \
+  --binary ./nblood \
+  --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-cinematics-evidence
+```
+
+Run under X11 or Xvfb. The asset directory must contain the original
+`CRYPTIC.SMK`; no game movies are stored in this repository. The harness makes
+Theora/Vorbis test clips using `ffmpeg`, builds small legal Blood maps and a
+custom episode INI, and uses ordinary movement to activate their exit sectors.
+It checks dedicated and listen servers, natural episode and map transitions,
+SMK and replacement OGV decoding, missing-movie waiting screens, personal skip
+hold timing and release reset, frozen world ticks, hot joins, disconnects and
+packet-demo playback. Packet demos omit cinematic control messages and the
+paused interval; their gameplay snapshots remain replayable offline without
+waiting for remote players.
+
+Screenshot checks use Pillow, `xwininfo`, `xprop`, ImageMagick `import` and Xlib.
+They verify a black waiting screen with white text and visible color movie
+frames, and save captures in the evidence directory. `--skip-screenshots`
+omits pixel checks; X11 tools and Xlib are still used to focus each game window
+before injecting real SDL key events. `--renderer 3` or `--renderer 5` also
+exercises the Polymost or Vulkan cinematic presentation path when enabled in
+the tested binary. `result.json` contains the tested binary digest, commands,
+phase results, movie timing, screenshots, logs and demo playback comparison.

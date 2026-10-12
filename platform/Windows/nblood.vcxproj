@@ -148,7 +148,45 @@
       <DebugInformationFormat>None</DebugInformationFormat>
     </ClCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>../../source/libtheora/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\source\libtheora\src\bitpack.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\decinfo.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\decode.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\dequant.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\fragment.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\huffdec.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\idct.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\info.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\internal.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\quant.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\..\source\libtheora\src\state.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="..\..\source\blood\rsrc\eduke32_icon.c" />
     <ClCompile Include="..\..\source\blood\src\actor.cpp" />
     <ClCompile Include="..\..\source\blood\src\ai.cpp" />
@@ -180,6 +218,7 @@
     <ClCompile Include="..\..\source\blood\src\common.cpp" />
     <ClCompile Include="..\..\source\blood\src\config.cpp" />
     <ClCompile Include="..\..\source\blood\src\controls.cpp" />
+    <ClCompile Include="..\..\source\blood\src\cinematic_ogv.cpp" />
     <ClCompile Include="..\..\source\blood\src\credits.cpp" />
     <ClCompile Include="..\..\source\blood\src\db.cpp" />
     <ClCompile Include="..\..\source\blood\src\demo.cpp" />
@@ -302,6 +341,7 @@
     <ClInclude Include="..\..\source\blood\src\common_game.h" />
     <ClInclude Include="..\..\source\blood\src\config.h" />
     <ClInclude Include="..\..\source\blood\src\controls.h" />
+    <ClInclude Include="..\..\source\blood\src\cinematic_ogv.h" />
     <ClInclude Include="..\..\source\blood\src\credits.h" />
     <ClInclude Include="..\..\source\blood\src\db.h" />
     <ClInclude Include="..\..\source\blood\src\demo.h" />
@@ -336,6 +376,7 @@
     <ClInclude Include="..\..\source\blood\src\levels.h" />
     <ClInclude Include="..\..\source\blood\src\loadsave.h" />
     <ClInclude Include="..\..\source\blood\src\misc.h" />
+    <ClInclude Include="..\..\source\blood\src\netcinematic.h" />
     <ClInclude Include="..\..\source\blood\src\network.h" />
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />
     <ClInclude Include="..\..\source\blood\src\netassets.h" />

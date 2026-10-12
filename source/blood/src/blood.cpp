@@ -1236,6 +1236,8 @@ void ProcessFrame(void)
                 netServerAdvanceMap();
             else
             {
+                if (gGameOptions.nGameType == kGameTypeCoop && (gGameOptions.uGameFlags & kGameFlagEnding))
+                    netQueueEpisodeOutro(gGameOptions.nEpisode, gGameOptions.nLevel);
                 int const nextLevel = (gGameOptions.uGameFlags & kGameFlagEnding) ? 0 : gNextLevel;
                 gGameOptions.uGameFlags &= ~kGameFlagEnding;
                 levelSetupOptions(gGameOptions.nEpisode, nextLevel);
@@ -2268,7 +2270,7 @@ RESTART:
                     gNetInput = gInput;
                     gInput = {};
                     netGetInput();
-                    if (netIsClient())
+                    if (netIsClient() && !netCinematicActive())
                     {
                         // Client presentation advances without running world/weapon callbacks.
                         sndProcess();
@@ -2375,10 +2377,16 @@ RESTART:
             if (gQuitGame)
                 continue;
 
+            // Cinematics can start before the first gameplay snapshot; keep
+            // console binds available while ordinary input sampling is gated.
+            if (netCinematicActive() && netIsClient() && !netClientHasSnapshot())
+                CONTROL_ProcessBinds();
             OSD_DispatchQueued();
 
             if (!gGameStarted)
                 ctrlGetInput();
+
+            netDrawCinematic();
 
             switch (gInputMode)
             {

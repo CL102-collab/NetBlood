@@ -160,6 +160,7 @@ void queueAdvance(int exitType, const char* reason, bool limit = false)
         int const episode = settings.episode ? settings.episode - 1 : nextEpisode;
         if (nextLevel < 0 || nextLevel >= gEpisodeInfo[episode].nLevels)
         {
+            netQueueEpisodeOutro(gGameOptions.nEpisode, gGameOptions.nLevel);
             nextEpisode = episode;
             nextLevel = 0;
             preserveInventory = false;
@@ -176,7 +177,7 @@ bool voteAllowed(std::string& error)
         error = "Only a multiplayer server can run map votes.";
     else if (!settings.mapVoteEnabled)
         error = "Map voting is disabled on this server.";
-    else if (!gGameStarted || !ready2send || pendingAdvance || gStartNewGame
+    else if (!gGameStarted || !ready2send || pendingAdvance || gStartNewGame || netCinematicActive()
              || (gGameOptions.uGameFlags & (kGameFlagContinuing | kGameFlagEnding)))
         error = "A map change is already in progress.";
     else
@@ -445,6 +446,9 @@ void netServerAdvanceMap()
         // Honor that target within the selected episode; a rotation still wins.
         nextEpisode = settings.episode ? settings.episode - 1 : gGameOptions.nEpisode;
         nextLevel = (gGameOptions.uGameFlags & kGameFlagEnding) ? 0 : gNextLevel;
+        if (rotation.empty() && settings.gameType == kGameTypeCoop && !gGameOptions.szUserMap[0]
+            && (gGameOptions.uGameFlags & kGameFlagEnding))
+            netQueueEpisodeOutro(gGameOptions.nEpisode, gGameOptions.nLevel);
         preserveInventory = rotation.empty() && settings.gameType == kGameTypeCoop && !gGameOptions.szUserMap[0]
             && !(gGameOptions.uGameFlags & kGameFlagEnding);
         if (nextLevel < 0 || nextLevel >= gEpisodeInfo[nextEpisode].nLevels)
@@ -540,6 +544,8 @@ bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::s
         {
             VoteNextLevel target;
             if (!nextVoteEpisode(target, error)) return false;
+            if (!target.preserveInventory)
+                netQueueEpisodeOutro(gGameOptions.nEpisode, gGameOptions.nLevel);
             levelSetupOptions(target.episode, target.level);
             gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
             if (target.preserveInventory) gGameOptions.uGameFlags |= kGameFlagContinuing;
