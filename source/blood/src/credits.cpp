@@ -549,13 +549,34 @@ void cinematicRect(int x, int y, int w, int h, bool white)
         Bmemset(reinterpret_cast<uint8_t *>(frameplace) + y * bytesperline + x, white ? 255 : 0, right - x);
 }
 
-void cinematicText(const char *text, int x, int y, int scale)
+void cinematicFrame(int x, int y, int w, int h, int thickness, bool white)
 {
-    for (auto p = reinterpret_cast<const unsigned char *>(text); *p; ++p, x += 8 * scale)
-        for (int row = 0; row < 8; ++row)
-            for (int col = 0; col < 8; ++col)
-                if (static_cast<unsigned char>(textfont[*p * 8 + row]) & (128 >> col))
-                    cinematicRect(x + col * scale, y + row * scale, scale, scale, true);
+    cinematicRect(x, y, w, thickness, white);
+    cinematicRect(x, y + h - thickness, w, thickness, white);
+    cinematicRect(x, y + thickness, thickness, h - 2 * thickness, white);
+    cinematicRect(x + w - thickness, y + thickness, thickness, h - 2 * thickness, white);
+}
+
+void cinematicOutlinedFrame(int x, int y, int w, int h, int scale)
+{
+    cinematicFrame(x - scale, y - scale, w + 2 * scale, h + 2 * scale, 3 * scale, false);
+    cinematicFrame(x, y, w, h, scale, true);
+}
+
+void cinematicText(const char *text, int x, int y, int scale, bool outlined = false)
+{
+    // Paint the outlines first so neighboring glyphs cannot cover white text.
+    for (int pass = outlined ? 0 : 1; pass < 2; ++pass)
+    {
+        int penX = x;
+        int const border = pass == 0 ? scale : 0;
+        for (auto p = reinterpret_cast<const unsigned char *>(text); *p; ++p, penX += 8 * scale)
+            for (int row = 0; row < 8; ++row)
+                for (int col = 0; col < 8; ++col)
+                    if (static_cast<unsigned char>(textfont[*p * 8 + row]) & (128 >> col))
+                        cinematicRect(penX + col * scale - border, y + row * scale - border,
+                                      scale + 2 * border, scale + 2 * border, pass != 0);
+    }
 }
 
 void cinematicSmackerPixels()
@@ -828,14 +849,15 @@ void credCinematicDrawSkip(float progress)
     int const width = 196 * scale, height = 38 * scale;
     int const x = xdim - width - 12 * scale, y = ydim - height - 12 * scale;
     cinematicCanvasBegin();
-    cinematicRect(x, y, width, height, false);
-    cinematicRect(x + 4 * scale, y + 4 * scale, 56 * scale, 20 * scale, true);
-    cinematicRect(x + 5 * scale, y + 5 * scale, 54 * scale, 18 * scale, false);
-    cinematicText("SPACE", x + 12 * scale, y + 10 * scale, scale);
-    cinematicText("Hold 3s to skip", x + 68 * scale, y + 10 * scale, scale);
-    cinematicRect(x + 4 * scale, y + 30 * scale, 188 * scale, 3 * scale, true);
-    cinematicRect(x + 5 * scale, y + 31 * scale, 186 * scale, scale, false);
-    int const fill = static_cast<int>(186 * scale * std::max(0.f, std::min(1.f, progress)));
-    cinematicRect(x + 5 * scale, y + 31 * scale, fill, scale, true);
+    cinematicOutlinedFrame(x + 4 * scale, y + 4 * scale, 56 * scale, 20 * scale, scale);
+    cinematicText("SPACE", x + 12 * scale, y + 10 * scale, scale, true);
+    cinematicText("Hold 3s to skip", x + 68 * scale, y + 10 * scale, scale, true);
+    cinematicOutlinedFrame(x + 4 * scale, y + 29 * scale, 188 * scale, 5 * scale, scale);
+    int const fill = static_cast<int>(184 * scale * std::max(0.f, std::min(1.f, progress)));
+    if (fill > 0)
+    {
+        cinematicRect(x + 5 * scale, y + 30 * scale, fill + 2 * scale, 3 * scale, false);
+        cinematicRect(x + 6 * scale, y + 31 * scale, fill, scale, true);
+    }
     cinematicCanvasEnd();
 }
