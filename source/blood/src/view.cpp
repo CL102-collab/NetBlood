@@ -1802,8 +1802,15 @@ void viewDrawScoreboard()
         return left.slot < right.slot;
     });
     size_t const count = std::min(rows.size(), size_t(kMaxPlayers));
+    int teamCounts[3]{};
+    for (size_t index = 0; index < count; ++index)
+        ++teamCounts[rows[index].team < 2 ? rows[index].team : 2];
+    int const groups = teamCounts[2] ? 3 : 2;
     int const scale = std::max(1, std::min(xdim / 320, ydim / 200));
-    int const width = 304, height = 54 + int(std::max(count, size_t(1))) * 14;
+    int const width = 304;
+    // Even eight players plus a joining section fit in the 320x200 HUD space.
+    int const height = (teams ? 38 + groups * 14 + (groups - 1) * 2 : 54)
+        + int(std::max(count, size_t(1))) * 14;
     int const x = (xdim - width * scale) / 2, y = (ydim - height * scale) / 2;
     auto rect = [&](int left, int top, int w, int h, uint32_t color)
     {
@@ -1820,14 +1827,14 @@ void viewDrawScoreboard()
     text(teams ? "TEAMS" : gGameOptions.nGameType == kGameTypeCoop ? "CO-OP" : "BLOODBATH",
          width - 8, 8, 0xc0b6a2, true, true);
     rect(8, 20, width - 16, 1, 0x645848);
-    text("NAME", 35, 24, 0xb4b4b4);
-    text("SCORE", 212, 24, 0xb4b4b4, true, true);
-    text("PING", 253, 24, 0xb4b4b4, true, true);
-    text("TIME", 292, 24, 0xb4b4b4, true, true);
-    for (size_t index = 0; index < count; ++index)
+    auto columns = [&](int top)
     {
-        auto const &row = rows[index];
-        int const top = 36 + int(index) * 14;
+        text("SCORE", 212, top, 0xb4b4b4, true, true);
+        text("PING", 253, top, 0xb4b4b4, true, true);
+        text("TIME", 292, top, 0xb4b4b4, true, true);
+    };
+    auto drawRow = [&](netscoreboard::Row const &row, int top, size_t index)
+    {
         bool const local = row.slot == myconnectindex;
         uint32_t const color = teams && row.team < 2 ? (row.team ? 0xff8585 : 0x8ab7ff) : 0xededed;
         rect(4, top - 2, width - 8, 14, local ? 0x38332b : (index & 1) ? 0x202023 : 0x19191c);
@@ -1850,8 +1857,41 @@ void viewDrawScoreboard()
         if (row.elapsedMinutes > 99999) Bstrcpy(value, "99999+");
         else Bsnprintf(value, sizeof(value), "%u", row.elapsedMinutes);
         text(value, 292, top + 1, 0xd8d8d8, true, true);
+    };
+    if (teams)
+    {
+        int top = 24;
+        for (int team = 0; team < groups; ++team)
+        {
+            uint32_t const color = team == 0 ? 0x8ab7ff : team == 1 ? 0xff8585 : 0xb4b4b4;
+            uint32_t const background = team == 0 ? 0x182a43 : team == 1 ? 0x431d23 : 0x303034;
+            rect(4, top, width - 8, 10, background);
+            rect(4, top, 3, 10, color);
+            char label[32];
+            Bsnprintf(label, sizeof(label), "%s (%d)",
+                      team == 0 ? "BLUE TEAM" : team == 1 ? "RED TEAM" : "JOINING", teamCounts[team]);
+            text(label, 10, top + 1, color, false);
+            columns(top + 1);
+            top += 14;
+            size_t teamIndex = 0;
+            for (size_t index = 0; index < count; ++index)
+                if ((rows[index].team < 2 ? rows[index].team : 2) == team)
+                {
+                    drawRow(rows[index], top, teamIndex++);
+                    top += 14;
+                }
+            if (team + 1 < groups) top += 2;
+        }
+        if (!count) text("Waiting for server player information...", 12, top + 1, 0xb4b4b4);
     }
-    if (!count) text("Waiting for server player information...", 12, 38, 0xb4b4b4);
+    else
+    {
+        text("NAME", 35, 24, 0xb4b4b4);
+        columns(24);
+        for (size_t index = 0; index < count; ++index)
+            drawRow(rows[index], 36 + int(index) * 14, index);
+        if (!count) text("Waiting for server player information...", 12, 38, 0xb4b4b4);
+    }
     text("Ping: server RTT (ms)   Time: minutes connected", 8, height - 11, 0xaaa59b);
     scoreboardCanvasEnd();
 }

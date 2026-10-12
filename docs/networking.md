@@ -151,6 +151,12 @@ supplies this information and refreshes it once per second. Connection time
 continues across map changes and resets when a player reconnects. The local
 player on a listen server has zero network latency.
 
+In team games, players appear below separate blue and red team headers.
+Each header shows the team's player count and labels the per-player score,
+ping, and time columns. Players are ordered by score within their team, and
+your row is highlighted. Players still joining appear in a separate neutral
+section until the server assigns their team.
+
 Country flags use an offline IPv4/IPv6 country database bundled with the game; no
 external lookup service or server configuration is needed. The data describes
 the IP network's registration country, which can differ from the player's
