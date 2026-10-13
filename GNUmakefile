@@ -789,6 +789,8 @@ blood_game_objs := \
 	credits.cpp \
 	db.cpp \
 	demo.cpp \
+	discord_presence.cpp \
+	discord_rpc.cpp \
 	dude.cpp \
 	endgame.cpp \
 	eventq.cpp \

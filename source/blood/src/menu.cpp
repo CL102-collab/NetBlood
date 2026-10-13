@@ -2763,21 +2763,33 @@ void NetworkHostGame(CGameMenuItemChain *pItem)
 void NetworkJoinGame(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    unsigned long const port = strtoul(zNetPortBuffer, NULL, 10);
+    NetworkJoinEndpoint(zNetAddressBuffer, port > 0 && port <= 65535 ? static_cast<uint16_t>(port) : kNetDefaultPort);
+}
+
+void NetworkJoinEndpoint(const char* host, uint16_t port)
+{
+    // Copy first: callers can supply the current address, which remains separate
+    // from the much shorter legacy join-menu edit buffer.
+    std::string const address = host;
     sndStopSong();
     FX_StopAllSounds();
     UpdateDacs(0, true);
-    strcpy(gNetAddress, zNetAddressBuffer);
-    gNetPort = strtoul(zNetPortBuffer, NULL, 10);
-    if (!gNetPort)
-        gNetPort = kNetDefaultPort;
     if (gDemo.at0 || gDemo.at1)
         gDemo.Close();
     netDisconnect();
+    Bstrncpyz(gNetAddress, address.c_str(), sizeof(gNetAddress));
+    gNetPort = port;
     gNetMode = NETWORK_CLIENT;
     netInitialize(false);
     gGameStarted = false;
     gStartNewGame = false;
     gPaused = false;
+    gQuitRequest = 0;
+    gInput = gNetInput = {};
+    KB_ClearKeysDown();
+    KB_FlushKeyboardQueue();
+    keyFlushScans();
     UpdateNetworkMenus();
     gGameMenuMgr.Deactivate();
     viewSetMessage("Connecting to server...");

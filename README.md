@@ -49,6 +49,14 @@ The default port is 23513. Run registration again if you move the executable.
 Set up your game assets normally first. Links launch a new game process using
 its usual saved settings. See [join-link details](docs/networking.md#join-links-on-windows-and-linux).
 
+### Discord Rich Presence
+
+Discord can display the current map, game mode, elapsed playing time, server
+address and party size, with Join and game invitations. Configure a project-owned
+Discord Application ID with `discord_appid` in the game console; no ID is bundled.
+See [Discord setup and joining](docs/discord.md) for Windows/Linux registration,
+listen-host addresses and the `discord_enabled` toggle.
+
 ### Dedicated multiplayer server
 
 Start a headless server with hot-join and server-owned gameplay rules:

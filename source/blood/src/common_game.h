@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "pragmas.h"
 #include "misc.h"
 #include "network.h"
+#include "discord_presence.h"
 
 extern int g_useCwd;
 #ifndef APPNAME
@@ -587,6 +588,7 @@ extern void G_SetupGlobalPsky(void);
 static inline int gameHandleEvents(void)
 {
     netGetPackets();
+    discordPresencePump();
     return handleevents();
 }
 

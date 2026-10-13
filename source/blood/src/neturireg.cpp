@@ -2,6 +2,7 @@
 #include "neturireg.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -227,8 +228,26 @@ bool writeDesktopFile(std::string const& path, std::string const& contents, std:
     return true;
 }
 
-bool setDefaultHandler(std::string& error)
+bool setDefaultHandler(std::string const& desktop, std::string const& mime, std::string& error)
 {
+    // Some xdg-mime versions try to create mimeapps.list before its parent
+    // directory and nevertheless return success on a fresh user profile.
+    char const* const configHome = std::getenv("XDG_CONFIG_HOME");
+    std::string config;
+    if (configHome && *configHome)
+        config = configHome;
+    else
+    {
+        char const* const home = std::getenv("HOME");
+        if (!home || !*home)
+        {
+            error = "Set HOME or an absolute XDG_CONFIG_HOME before registering the URL handler.";
+            return false;
+        }
+        config = std::string(home) + "/.config";
+    }
+    if (!safePath(config, error) || !createDirectories(config, error))
+        return false;
     int descriptors[2];
     if (pipe(descriptors) != 0)
         return posixError(error, "Cannot start xdg-mime");
@@ -250,8 +269,8 @@ bool setDefaultHandler(std::string& error)
     if (!child)
     {
         close(descriptors[0]);
-        execlp("xdg-mime", "xdg-mime", "default", "netblood.desktop",
-               "x-scheme-handler/netblood", static_cast<char*>(nullptr));
+        execlp("xdg-mime", "xdg-mime", "default", desktop.c_str(),
+               mime.c_str(), static_cast<char*>(nullptr));
         int const failure = errno;
         // sizeof(int) is smaller than PIPE_BUF: a single write is atomic.
         while (write(descriptors[1], &failure, sizeof(failure)) < 0 && errno == EINTR) {}
@@ -289,12 +308,13 @@ bool setDefaultHandler(std::string& error)
     return true;
 }
 #endif
-} // namespace
-
-bool registerHandler(std::string& error)
+bool registerPlatformHandler(std::string const& scheme, std::string const& arguments,
+                             std::string const& desktop, std::string const& comment,
+                             std::string& error)
 {
-    error.clear();
 #if defined(_WIN32)
+    (void) desktop;
+    (void) comment;
     std::wstring path;
     if (!executablePath(path, error))
         return false;
@@ -306,14 +326,16 @@ bool registerHandler(std::string& error)
         if (c == L'%') commandPath += L'%';
         commandPath += c;
     }
+    std::wstring const key = L"Software\\Classes\\" + std::wstring(scheme.begin(), scheme.end());
+    std::wstring const wideArguments(arguments.begin(), arguments.end());
     // Write the complete launch command before advertising the association.
-    if (!registryString(L"Software\\Classes\\netblood\\shell\\open\\command", nullptr,
-                        L"\"" + commandPath + L"\" -connect-uri \"%1\"", error)
-        || !registryString(L"Software\\Classes\\netblood\\shell", nullptr, L"open", error)
-        || !registryString(L"Software\\Classes\\netblood\\DefaultIcon", nullptr,
+    if (!registryString((key + L"\\shell\\open\\command").c_str(), nullptr,
+                        L"\"" + commandPath + L"\" " + wideArguments, error)
+        || !registryString((key + L"\\shell").c_str(), nullptr, L"open", error)
+        || !registryString((key + L"\\DefaultIcon").c_str(), nullptr,
                            L"\"" + path + L"\",0", error)
-        || !registryString(L"Software\\Classes\\netblood", nullptr, L"URL:NetBlood Protocol", error)
-        || !registryString(L"Software\\Classes\\netblood", L"URL Protocol", L"", error))
+        || !registryString(key.c_str(), nullptr, L"URL:NetBlood Protocol", error)
+        || !registryString(key.c_str(), L"URL Protocol", L"", error))
         return false;
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return true;
@@ -356,16 +378,65 @@ bool registerHandler(std::string& error)
             return posixError(error, "Cannot access /usr/bin/env to launch the URL handler");
         command = "/usr/bin/env -- " + command;
     }
+    std::string const mime = "x-scheme-handler/" + scheme;
     std::string const contents = "[Desktop Entry]\nType=Application\nName=NetBlood\n"
-        "Comment=Join a NetBlood multiplayer server\nExec=" + command
-        + " -connect-uri %u\nPath=" + desktopString(directoryOf(path))
-        + "\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/netblood;\n";
-    return writeDesktopFile(directory + "/netblood.desktop", contents, error)
-        && setDefaultHandler(error);
+        "Comment=" + comment + "\nExec=" + command
+        + " " + arguments + "\nPath=" + desktopString(directoryOf(path))
+        + "\nTerminal=false\nNoDisplay=true\nMimeType=" + mime + ";\n";
+    return writeDesktopFile(directory + "/" + desktop, contents, error)
+        && setDefaultHandler(desktop, mime, error);
 #else
+    (void) scheme;
+    (void) arguments;
+    (void) desktop;
+    (void) comment;
     error = "NetBlood URL handler registration is supported on Windows and Linux.";
     return false;
 #endif
+}
+} // namespace
+
+bool registerHandler(std::string& error)
+{
+    error.clear();
+#if defined(_WIN32)
+    char const* const arguments = "-connect-uri \"%1\"";
+#else
+    char const* const arguments = "-connect-uri %u";
+#endif
+    return registerPlatformHandler("netblood", arguments, "netblood.desktop",
+                                   "Join a NetBlood multiplayer server", error);
+}
+
+bool registerDiscordHandler(std::string const& applicationId, std::string& error)
+{
+    error.clear();
+    uint64_t value = 0;
+    bool valid = !applicationId.empty() && applicationId.size() <= 20;
+    for (unsigned char c : applicationId)
+    {
+        if (c < '0' || c > '9' || value > (UINT64_MAX - (c - '0')) / 10)
+        {
+            valid = false;
+            break;
+        }
+        value = value * 10 + (c - '0');
+    }
+    if (!valid || !value)
+    {
+        error = "Discord Application ID must be a nonzero decimal number of at most 20 digits within the uint64 range.";
+        return false;
+    }
+    std::string arguments = "-discord-launch " + applicationId;
+#if defined(__linux__)
+    // GIO only considers a desktop entry URI-capable when Exec includes a URI
+    // field code. The launch mode validates this trailing argument's scheme,
+    // then discards it; the actual Discord join secret arrives over IPC.
+    arguments += " %u";
+#endif
+    return registerPlatformHandler("discord-" + applicationId, arguments,
+                                   "netblood-discord-" + applicationId + ".desktop",
+                                   "Launch NetBlood from Discord", error);
 }
 
 bool prepareLaunch(std::string& error)

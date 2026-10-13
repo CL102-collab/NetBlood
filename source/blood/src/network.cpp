@@ -2021,6 +2021,43 @@ bool netIsServer()
 { return gNetMode == NETWORK_SERVER; }
 bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
+bool netGetPresenceInfo(NetPresenceInfo& info)
+{
+    info = {};
+#ifndef NETCODE_DISABLE
+    if (!initialized || !host || demoPlayback || !gGameStarted || !session)
+        return false;
+    info.server = netIsServer();
+    if (info.server)
+    {
+        if (gDedicated || !mapGeneration || !ready2send) return false;
+        info.maxPlayers = gInitialNetPlayers;
+        info.port = static_cast<uint16_t>(gNetPort);
+    }
+    else
+    {
+        if (!serverPeer || serverPeer->state != ENET_PEER_STATE_CONNECTED || !clientLoaded || !clientSnapshotReady)
+            return false;
+        char address[64];
+        if (enet_address_get_host_ip(&serverPeer->address, address, sizeof(address)) != 0)
+            return false;
+        // ENet uses a dual-stack IPv6 socket, including IPv4-mapped addresses.
+        const unsigned char* bytes = serverPeer->address.host.s6_addr;
+        bool mapped = bytes[10] == 255 && bytes[11] == 255;
+        for (int n = 0; n < 10; ++n) mapped &= bytes[n] == 0;
+        if (mapped)
+            Bsnprintf(address, sizeof(address), "%u.%u.%u.%u", bytes[12], bytes[13], bytes[14], bytes[15]);
+        info.address = address;
+        info.port = serverPeer->address.port;
+        info.maxPlayers = static_cast<int>(clientServerRules.maxPlayers);
+    }
+    info.session = session;
+    info.players = numplayers;
+    return info.players > 0 && info.maxPlayers >= info.players;
+#else
+    return false;
+#endif
+}
 bool netAllowHolsterWeapon()
 {
     if (!netIsLive() || gGameOptions.nGameType != kGameTypeBloodBath) return true;
@@ -2311,6 +2348,7 @@ void netDisconnect()
     netResetToSinglePlayer();
     gGameStarted = false;
     ready2send   = false;
+    discordPresencePump();
 }
 void netUpdate(void)
 {

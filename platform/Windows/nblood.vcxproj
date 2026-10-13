@@ -222,6 +222,8 @@
     <ClCompile Include="..\..\source\blood\src\credits.cpp" />
     <ClCompile Include="..\..\source\blood\src\db.cpp" />
     <ClCompile Include="..\..\source\blood\src\demo.cpp" />
+    <ClCompile Include="..\..\source\blood\src\discord_presence.cpp" />
+    <ClCompile Include="..\..\source\blood\src\discord_rpc.cpp" />
     <ClCompile Include="..\..\source\blood\src\dude.cpp" />
     <ClCompile Include="..\..\source\blood\src\endgame.cpp" />
     <ClCompile Include="..\..\source\blood\src\eventq.cpp" />
@@ -347,6 +349,8 @@
     <ClInclude Include="..\..\source\blood\src\credits.h" />
     <ClInclude Include="..\..\source\blood\src\db.h" />
     <ClInclude Include="..\..\source\blood\src\demo.h" />
+    <ClInclude Include="..\..\source\blood\src\discord_presence.h" />
+    <ClInclude Include="..\..\source\blood\src\discord_rpc.h" />
     <ClInclude Include="..\..\source\blood\src\dude.h" />
     <ClInclude Include="..\..\source\blood\src\endgame.h" />
     <ClInclude Include="..\..\source\blood\src\eventq.h" />

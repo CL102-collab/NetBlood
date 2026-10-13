@@ -74,6 +74,18 @@ extern NETWORKMODE gNetMode;
 extern char gNetAddress[254];
 extern int gNetPort;
 
+// Presentation-only session information. Packet demos never expose a live
+// endpoint, and clients only become connected after their first snapshot.
+struct NetPresenceInfo
+{
+    bool server = false;
+    uint32_t session = 0;
+    int players = 0, maxPlayers = 0;
+    std::string address;
+    uint16_t port = 0;
+};
+bool netGetPresenceInfo(NetPresenceInfo& info);
+
 
 struct PKT_STARTGAME {
     short version;

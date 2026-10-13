@@ -477,6 +477,15 @@ _DEMOPLAYBACK:
     pValidateInfo = NULL;
     while (at1 && !gQuitGame)
     {
+        if (!gDemoRunValidation)
+        {
+            discordPresencePump();
+            if (discordPresenceHasPendingJoin())
+            {
+                StopPlayback();
+                break;
+            }
+        }
         while (totalclock >= gNetFifoClock && !gQuitGame)
         {
             if (!v4)

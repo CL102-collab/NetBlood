@@ -69,6 +69,20 @@ static int osdcmd_net_status(osdcmdptr_t parm)
     return OSDCMD_OK;
 }
 
+static int osdcmd_discord_status(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    discordPresencePrintStatus();
+    return OSDCMD_OK;
+}
+
+static int osdcmd_discord_register(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    discordPresenceRegister();
+    return OSDCMD_OK;
+}
+
 static int osdcmd_callvote(osdcmdptr_t parm)
 {
     if (parm->numparms == 2 && !Bstrcasecmp(parm->parms[0], "map") && parm->parms[1][0])
@@ -984,6 +998,15 @@ static int osdcmd_inittimer(osdcmdptr_t parm)
 
 static int osdcmd_cvar_set_game(osdcmdptr_t parm)
 {
+    if (parm->numparms && (!Bstrcasecmp(parm->name, "discord_appid") || !Bstrcasecmp(parm->name, "discord_server_address")))
+    {
+        std::string error;
+        if (parm->numparms != 1 || !discordPresenceValidateSetting(parm->name, parm->parms[0], error))
+        {
+            OSD_Printf("%s: %s\n", parm->name, error.empty() ? "Expected exactly one value." : error.c_str());
+            return OSDCMD_OK;
+        }
+    }
     int const r = osdcmd_cvar_set(parm);
 
     if (r != OSDCMD_OK || gDedicated) return r;
@@ -1232,6 +1255,9 @@ int32_t registerosdcommands(void)
         { "net_packetcopies", "total identical UDP datagrams per send (default 3)", (void *)&gNetPacketCopies, CVAR_INT, 1, 8 },
         { "net_snapshotrate", "server snapshots per second (simulation remains 30 Hz)", (void *)&gNetSnapshotRate, CVAR_INT, 1, 30 },
         { "net_lagometer", "show snapshot latency, interpolation and packet loss", (void *)&gNetLagometer, CVAR_BOOL, 0, 1 },
+        { "discord_enabled", "enable Discord Rich Presence and game invitations", (void *)&gDiscordEnabled, CVAR_BOOL, 0, 1 },
+        { "discord_appid", "Discord application ID (empty until configured)", (void *)gDiscordApplicationId, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordApplicationId) },
+        { "discord_server_address", "listen server's public invitation link, netblood://host:port", (void *)gDiscordServerAddress, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordServerAddress) },
         { "net_address","sets network address used for multiplayer", (void *)zNetAddressBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 16 },
         { "net_port","sets network port used for multiplayer", (void *)zNetPortBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 6 },
 //
@@ -1297,6 +1323,8 @@ int32_t registerosdcommands(void)
         }
     }
     OSD_RegisterFunction("net_status", "net_status: show session and prediction statistics", osdcmd_net_status);
+    OSD_RegisterFunction("discord_status", "discord_status: show Discord connection and configuration status", osdcmd_discord_status);
+    OSD_RegisterFunction("discord_register", "discord_register: register this executable for Discord invitations using discord_appid", osdcmd_discord_register);
     OSD_RegisterFunction("callvote", "callvote map <mapname> | restart | next: propose a map change; use vote_maps for allowed maps", osdcmd_callvote);
     OSD_RegisterFunction("vote", "vote yes|no: cast your ballot in the active map vote", osdcmd_vote);
     OSD_RegisterFunction("vote_maps", "vote_maps: list the server's allowed map-vote targets", osdcmd_vote_maps);

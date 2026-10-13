@@ -64,7 +64,7 @@ char Wait(int nTicks)
     while (totalclock < nTicks)
     {
         gameHandleEvents();
-        if (keyJoyGetScan())
+        if (discordPresenceHasPendingJoin() || keyJoyGetScan())
             return FALSE;
     }
     return TRUE;
@@ -186,6 +186,8 @@ int credKOpen4Load(char *&pzFile)
 
 char credPlaySmk(const char *_pzSMK, const char *_pzWAV, int nWav)
 {
+    if (discordPresenceHasPendingJoin())
+        return TRUE;
 #if 0
     CSMKPlayer smkPlayer;
     if (dword_148E14 >= 0)
@@ -300,6 +302,8 @@ char credPlaySmk(const char *_pzSMK, const char *_pzWAV, int nWav)
     do
     {
         gameHandleEvents();
+        if (discordPresenceHasPendingJoin())
+            break;
         if (scale((int)(totalclock-nStartTime), nFrameRate, kTicRate) < nFrame)
             continue;
 

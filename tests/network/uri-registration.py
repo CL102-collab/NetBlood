@@ -19,12 +19,19 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPER = r'''
 #include "neturireg.h"
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <unistd.h>
 int main(int argc, char** argv)
 {
     std::string error;
+    if (argc == 3 && std::strcmp(argv[1], "--register-discord") == 0)
+    {
+        if (neturi::registerDiscordHandler(argv[2], error)) return 0;
+        std::cerr << error << '\n';
+        return 1;
+    }
     if (argc == 1)
     {
         if (neturi::registerHandler(error)) return 0;
@@ -52,7 +59,7 @@ def run(argv, env, **kwargs):
 
 
 def main():
-    for tool in (os.environ.get("CXX", "c++"), "gio", "desktop-file-validate"):
+    for tool in (os.environ.get("CXX", "c++"), "gio", "xdg-mime", "desktop-file-validate"):
         if not shutil.which(tool):
             raise RuntimeError(f"Required test tool missing: {tool}")
     with tempfile.TemporaryDirectory(prefix="netblood-uri-registration-") as temporary:
@@ -81,6 +88,10 @@ def main():
                    NETBLOOD_URI_TEST_LOG=str(base / "launched"))
         expected = ["default", "netblood.desktop", "x-scheme-handler/netblood"]
         uri = "netblood://example.com:23513"
+        application_id = "1234567890123456789"
+        discord_scheme = "discord-" + application_id
+        discord_desktop = "netblood-" + discord_scheme + ".desktop"
+        discord_mime = "x-scheme-handler/" + discord_scheme
         directories = ["plain", "a space", 'a "quote"', "a \\slash", "$dollar `tick`",
                        "percent %f %u %%", "a=b", "caf\u00e9", "trailing space "]
         for name in directories:
@@ -109,12 +120,51 @@ def main():
                         break
                 time.sleep(0.02)
             assert actual == expected_launch, (name, actual)
+            result = run([str(installed), "--register-discord", application_id], env, cwd="/")
+            assert result.returncode == 0, (name, result.stderr)
+            assert json.loads(Path(env["NETBLOOD_XDG_TEST_LOG"]).read_text()) == [
+                "default", discord_desktop, discord_mime]
+            desktop = Path(env["XDG_DATA_HOME"]) / "applications" / discord_desktop
+            result = run(["desktop-file-validate", str(desktop)], env)
+            assert result.returncode == 0, (name, result.stdout, result.stderr, desktop.read_text())
+            actual_env = dict(env, PATH=os.environ.get("PATH", ""))
+            result = run(["xdg-mime", "default", discord_desktop, discord_mime], actual_env)
+            assert result.returncode == 0, (name, result.stderr)
+            launch_log.unlink(missing_ok=True)
+            # Even a hostile URI must remain a single trailing argument, never
+            # additional game options or shell expansions.
+            discord_uri = discord_scheme + "://--connect-uri/$touch%20ignored?%22%20-dedicated"
+            result = run(["gio", "open", discord_uri], actual_env, cwd="/")
+            assert result.returncode == 0, (name, result.stderr, desktop.read_text())
+            deadline = time.monotonic() + 5
+            expected_launch = [str(directory), str(installed), "-discord-launch", application_id, discord_uri, ""]
+            actual = None
+            while time.monotonic() < deadline:
+                if launch_log.exists():
+                    actual = launch_log.read_bytes().decode().split("\0")
+                    if actual == expected_launch:
+                        break
+                time.sleep(0.02)
+            assert actual == expected_launch, (name, actual)
+        desktop = Path(env["XDG_DATA_HOME"]) / "applications" / discord_desktop
+        original_contents = desktop.read_bytes()
+        for invalid_id in ("", "0", "000", "18446744073709551616", "123456789012345678901",
+                           "12a", "+12", " 12", "12\n", "12/../../bad", "12;echo", '12"',
+                           "$(touch bad)", "12%1", "12\\42", "12\u0661"):
+            result = run([str(executable), "--register-discord", invalid_id], env)
+            assert result.returncode == 1 and "Application ID" in result.stderr, (invalid_id, result)
+            assert desktop.read_bytes() == original_contents
+        for valid_id in ("1", "18446744073709551615"):
+            result = run([str(executable), "--register-discord", valid_id], env)
+            assert result.returncode == 0, (valid_id, result.stderr)
         directory = base / "unsafe%=path"
         directory.mkdir()
         installed = directory / "NetBlood"
         shutil.copyfile(executable, installed)
         installed.chmod(0o755)
         result = run([str(installed)], env)
+        assert result.returncode == 1 and "contains both '%' and '='" in result.stderr
+        result = run([str(installed), "--register-discord", application_id], env)
         assert result.returncode == 1 and "contains both '%' and '='" in result.stderr
         fallback = dict(env)
         fallback.pop("XDG_DATA_HOME")
@@ -123,6 +173,9 @@ def main():
         for bad in ("relative", str(base / "bad\npath")):
             invalid = dict(env, XDG_DATA_HOME=bad)
             result = run([str(executable)], invalid)
+            assert result.returncode == 1 and result.stderr.strip(), result
+            invalid = dict(env, XDG_CONFIG_HOME=bad)
+            result = run([str(executable), "--register-discord", application_id], invalid)
             assert result.returncode == 1 and result.stderr.strip(), result
         invalid = dict(env)
         invalid.pop("HOME")
@@ -136,7 +189,8 @@ def main():
         blocked.write_text("file")
         invalid = dict(env, XDG_DATA_HOME=str(blocked))
         assert "not a directory" in run([str(executable)], invalid).stderr
-        print(f"URL registration: {len(directories)} GIO launches and registration failure cases passed")
+        print(f"URL registration: {len(directories)} NetBlood + {len(directories)} Discord GIO launches, "
+              "Discord ID validation and registration failure cases passed")
 
 
 if __name__ == "__main__":

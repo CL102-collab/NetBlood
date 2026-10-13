@@ -60,6 +60,7 @@ extern char zUserMapName[BMAX_PATH];
 void drawLoadingScreen(int nTile);
 void SetupMenus(void);
 void UpdateNetworkMenus(void);
+void NetworkJoinEndpoint(const char* host, uint16_t port);
 bool CanOpenGameMenu(CGameMenu const *pMenu);
 void QuickSaveGame(void);
 void QuickLoadGame(void);

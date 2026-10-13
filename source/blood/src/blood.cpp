@@ -203,6 +203,7 @@ void M32RunScript(const char *s)
 
 void ShutDown(void)
 {
+    discordPresenceShutdown();
     if (!in3dmode() && !gDedicated)
         return;
     if (!gDedicated)
@@ -1377,6 +1378,7 @@ void PrintHelp(void)
         "netblood://host[:port]\tJoin a server from a connection link (no other arguments)\n"
         "-connect-uri [URI]\tOpen a netblood:// connection link (no other arguments)\n"
         "-register-uri\tRegister netblood:// links for this user, then exit\n"
+        "-discord-launch [ID]\tLaunch for a Discord invitation (registered handler only)\n"
         "-game_dir [dir]\tSpecify game data directory\n"
         "-g [file.grp]\tLoad additional game data\n"
         "-h [file.def]\tLoad an alternate definitions file\n"
@@ -1956,15 +1958,37 @@ static int UriCommandError(const std::string& error)
 // Returns -1 for normal game startup, or an exit status for a completed command.
 static int HandleUriCommandLine(int& argc, char const * const * argv)
 {
-    bool registration = false, connection = false;
+    bool registration = false, connection = false, discordLaunch = false;
     for (int i = 1; i < argc; ++i)
     {
         registration |= IsUriSwitch(argv[i], "register-uri");
         connection |= IsUriSwitch(argv[i], "connect-uri") || !Bstrncasecmp(argv[i], "netblood:", 9);
+        discordLaunch |= IsUriSwitch(argv[i], "discord-launch");
     }
-    if (!registration && !connection) return -1;
+    if (!registration && !connection && !discordLaunch) return -1;
 
     std::string error;
+    if (discordLaunch)
+    {
+        if ((argc != 3 && argc != 4) || !IsUriSwitch(argv[1], "discord-launch") || Bstrchr(argv[1], '=')
+            || !discordPresenceSetLaunchApplication(argv[2], error))
+            return UriCommandError("Discord invitations must launch with -discord-launch and a valid application ID only.");
+        if (argc == 4)
+        {
+            // GIO requires %u in desktop URI handlers. The launch URI is only
+            // checked for this application; its contents never become options
+            // or an endpoint. Discord supplies the actual join through IPC.
+            std::string const scheme = std::string("discord-") + argv[2] + ":";
+            if (Bstrlen(argv[3]) > 1024 || Bstrncasecmp(argv[3], scheme.c_str(), scheme.size()))
+                return UriCommandError("Discord launch URI does not match the requested application.");
+        }
+        if (!neturi::prepareLaunch(error)) return UriCommandError(error);
+        bQuickStart = bNoDemo = true;
+        gNoSetup = true;
+        gCommandSetup = false;
+        argc = 1;
+        return -1;
+    }
     if (registration)
     {
         if (argc != 2 || !IsUriSwitch(argv[1], "register-uri") || Bstrchr(argv[1], '='))
@@ -2293,6 +2317,7 @@ int app_main(int argc, char const * const * argv)
         OSD_Exec("autoexec.cfg");
 
     CONFIG_SetScoreboardDefaultKey();
+    discordPresenceInitialize();
 
     if (!bQuickStart)
         credLogosDos();
@@ -2343,6 +2368,8 @@ RESTART:
     while (!gQuitGame)
     {
         bool bDraw;
+        discordPresencePump();
+        discordPresenceApplyPendingJoin();
         if (netIsLive())
             netClientPump();
         if (gGameStarted && (!netIsClient() || netClientHasSnapshot()))
@@ -2559,6 +2586,12 @@ RESTART:
         levelSetupOptions(0,0);
         while (gGameMenuMgr.m_bActive)
         {
+            discordPresencePump();
+            if (discordPresenceHasPendingJoin())
+            {
+                gGameMenuMgr.Deactivate();
+                break;
+            }
             gGameMenuMgr.Process();
             if (engineFPSLimit())
             {

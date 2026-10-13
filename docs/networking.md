@@ -134,6 +134,10 @@ Steam/GOG asset discovery still apply. Set up the installation and its game
 assets normally before opening links. The existing Windows prompt for an
 already-running copy still applies; links do not replace an active session.
 
+Discord can also display the current session and let friends join or invite
+players through its desktop client. See [Discord Rich Presence](discord.md) for
+Application ID configuration and launch registration.
+
 ### Client version compatibility
 
 On connection, the server advertises its required network protocol version and

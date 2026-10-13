@@ -677,3 +677,40 @@ lookup despite correct HKCU registration. For that isolated Wine test only,
 `NETBLOOD_TEST_WINE_CLASSES=1` explicitly enables a logged HKCR mirror after
 verifying the production HKCU values. This tests command dispatch and directory
 handling; it does not verify native Windows' per-user association lookup.
+
+## Discord Rich Presence
+
+```sh
+SANITIZE=1 tests/network/discord-rpc-test.sh
+python3 tests/network/uri-registration.py
+python3 tests/network/discord-presence.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-discord-evidence
+```
+
+The standalone RPC test uses a private mock Discord Unix socket. It covers
+handshake and READY gating, fragmented/coalesced frames, JSON escaping, presence
+metadata, party and join secrets, full IPv6 events, update coalescing, immediate
+join removal, malformed frames, reconnects and bounded shutdown. It needs a
+C++11 compiler and no game assets or Discord account.
+
+The live game test requires X11/Xvfb, GIO, `xdg-utils` and Blood assets. Private
+HOME/XDG directories isolate registration and mock IPC. It checks map/mode/server
+metadata and stable elapsed time, actual server joins from Discord events,
+full-server join removal, map changes, packet demos through EOF, malformed
+invitations, disabling integration and clearing stale join state. It also
+launches a closed game through its registered Discord URI handler and verifies
+the subsequent invitation connection. A listen host and invited client must
+share one party ID when the host advertises a DNS name and the client uses its
+resolved numeric IP address.
+The mock uses a fixture Application ID; it never signs in to Discord.
+
+`discord-rpc-windows.cpp` exercises the production Windows named-pipe transport.
+Compile it together with `source/blood/src/discord_rpc.cpp`, the Blood and Build
+include paths, and C++11 threading support. It includes a standalone sjson
+implementation. Tests cover pipe discovery, framing, presence, IPv6 joins,
+reconnects and shutdown, and can run under Wine in an isolated prefix.
+
+These tests verify the integration's local protocol and game behavior. Discord's
+actual profile, Join control and invitation UI additionally need a real
+project-owned Application ID and Discord accounts for manual verification.
