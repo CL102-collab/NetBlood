@@ -246,6 +246,7 @@
     <ClCompile Include="..\..\source\blood\src\mirrors.cpp" />
     <ClCompile Include="..\..\source\blood\src\misc.cpp" />
     <ClCompile Include="..\..\source\blood\src\network.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netstun_client.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontent.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontentreport.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcountry.cpp" />
@@ -384,6 +385,8 @@
     <ClInclude Include="..\..\source\blood\src\misc.h" />
     <ClInclude Include="..\..\source\blood\src\netcinematic.h" />
     <ClInclude Include="..\..\source\blood\src\network.h" />
+    <ClInclude Include="..\..\source\blood\src\netstun.h" />
+    <ClInclude Include="..\..\source\blood\src\netstun_client.h" />
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />
     <ClInclude Include="..\..\source\blood\src\netassets.h" />
     <ClInclude Include="..\..\source\blood\src\netcontentreport.h" />

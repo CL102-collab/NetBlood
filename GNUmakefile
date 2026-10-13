@@ -813,6 +813,7 @@ blood_game_objs := \
 	mirrors.cpp \
 	misc.cpp \
 	network.cpp \
+	netstun_client.cpp \
 	netcontent.cpp \
 	netcontentreport.cpp \
 	netcountry.cpp \

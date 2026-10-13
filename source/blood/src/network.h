@@ -73,6 +73,11 @@ extern bool ready2send;
 extern NETWORKMODE gNetMode;
 extern char gNetAddress[254];
 extern int gNetPort;
+extern char gNetStunServer[300];
+bool netValidateStunSetting(const char* value, std::string& error);
+void netParseStunOption(const char* value);
+void netApplyStunOption();
+void netPrintStunStatus();
 
 // Presentation-only session information. Packet demos never expose a live
 // endpoint, and clients only become connected after their first snapshot.
@@ -82,6 +87,7 @@ struct NetPresenceInfo
     uint32_t session = 0;
     int players = 0, maxPlayers = 0;
     std::string address;
+    std::string joinUri;
     uint16_t port = 0;
 };
 bool netGetPresenceInfo(NetPresenceInfo& info);

@@ -138,6 +138,11 @@ Discord can also display the current session and let friends join or invite
 players through its desktop client. See [Discord Rich Presence](discord.md) for
 Application ID configuration and launch registration.
 
+Hosted games can use [public STUN discovery](stun.md) to find their mapped UDP
+endpoint for connection links and Discord invitations. Google's public servers
+are the default; `-stunserver off` disables discovery. STUN does not guarantee
+reachability through restrictive NAT/CGNAT.
+
 ### Client version compatibility
 
 On connection, the server advertises its required network protocol version and

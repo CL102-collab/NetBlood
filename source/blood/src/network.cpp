@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "pragmas.h"
 #ifndef NETCODE_DISABLE
 #include "enet.h"
+#include "netstun_client.h"
 #endif
 #include "compat.h"
 #include "config.h"
@@ -37,6 +38,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "network.h"
 #include "netserver.h"
+#include "neturi.h"
 #include "netcoop.h"
 #include "player.h"
 #include "osd.h"
@@ -73,6 +75,7 @@ NETWORKMODE gNetMode = NETWORK_NONE;
 char        gNetAddress[254]; // Full DNS hostname (253 bytes) plus terminator.
 // PORT-TODO: Use different port?
 int gNetPort = kNetDefaultPort;
+char gNetStunServer[300] = "auto";
 
 
 PKT_STARTGAME gPacketStartGame;
@@ -100,9 +103,17 @@ PKT_STARTGAME gPacketStartGame;
 #include <algorithm>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
+#ifndef NETCODE_DISABLE
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <pthread.h>
+#endif
+#endif
 
 extern void MenuSetupEpisodeInfo(void);
 
@@ -114,6 +125,21 @@ static_assert(MAXPLAYERNAME - 1 == netscoreboard::MaxName, "Scoreboard names mus
 namespace
 {
 using Bytes = std::vector<uint8_t>;
+std::string stunOption, clientPublicEndpoint, connectionError;
+bool hasStunOption = false, clientTransportConnected = false;
+uint32_t clientConnectStarted = 0;
+
+bool stunEndpoint(const char* value, neturi::Endpoint& endpoint, std::string& error)
+{
+    std::string uri = value;
+    if (Bstrncasecmp(value, "netblood://", sizeof("netblood://") - 1)) uri = "netblood://" + uri;
+    if (!neturi::parse(uri, endpoint, error)) return false;
+    std::string authority = uri.substr(sizeof("netblood://") - 1);
+    if (!authority.empty() && authority.back() == '/') authority.pop_back();
+    bool const explicitPort = authority[0] == '[' ? authority.find("]:") != std::string::npos : authority.find(':') != std::string::npos;
+    if (!explicitPort) endpoint.port = 3478;
+    return true;
+}
 struct CachedSnapshot
 {
     uint32_t id = 0;
@@ -229,6 +255,224 @@ void                             restoreClientLevels()
 #ifndef NETCODE_DISABLE
 ENetHost     *host           = nullptr;
 ENetPeer     *serverPeer     = nullptr;
+netstun::Client stun;
+struct StunLookup
+{
+    std::mutex mutex;
+    bool done = false;
+    std::vector<neturi::Endpoint> names;
+    std::vector<ENetAddress> endpoints;
+    std::string error;
+};
+std::shared_ptr<StunLookup> stunLookup;
+std::vector<neturi::Endpoint> stunLookupNames;
+bool stunLookupRetry = false;
+uint32_t stunLookupFailedAt = 0;
+std::string stunSetupError, stunLastStatus, stunLastError, serverPublicEndpoint, advertisedPublicEndpoint;
+
+int interceptStun(ENetHost* owner, void*) { return stun.intercept(owner); }
+
+std::string numericAddress(ENetAddress address)
+{
+    char text[64];
+    if (enet_address_get_host_ip(&address, text, sizeof(text)) != 0) return {};
+    const unsigned char* bytes = address.host.s6_addr;
+    bool mapped = bytes[10] == 255 && bytes[11] == 255;
+    for (int n = 0; n < 10; ++n) mapped &= bytes[n] == 0;
+    if (mapped) Bsnprintf(text, sizeof(text), "%u.%u.%u.%u", bytes[12], bytes[13], bytes[14], bytes[15]);
+    return text;
+}
+
+std::string endpointUri(const ENetAddress& address)
+{
+    std::string const name = numericAddress(address);
+    if (name.empty()) return {};
+    return "netblood://" + (name.find(':') == std::string::npos ? name : "[" + name + "]") + ":" + std::to_string(address.port);
+}
+
+void resolveStunLookup(std::shared_ptr<StunLookup> const& lookup)
+{
+    std::vector<ENetAddress> endpoints;
+    std::string error;
+#ifdef _WIN32
+    // Disconnect can release ENet's Winsock reference while DNS is blocked.
+    // This worker owns a separate reference until all resolver calls finish.
+    WSADATA data;
+    bool const networkingReady = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    if (!networkingReady) error = "Cannot initialize Windows networking for STUN DNS lookup.";
+#else
+    bool const networkingReady = true;
+#endif
+    if (networkingReady)
+    {
+        for (auto& name : lookup->names)
+        {
+            ENetAddress address = {};
+            if (enet_address_set_host(&address, &name.host[0]) == 0)
+            {
+                address.port = name.port;
+                endpoints.push_back(address);
+            }
+        }
+    }
+#ifdef _WIN32
+    if (networkingReady) WSACleanup();
+#endif
+    std::lock_guard<std::mutex> lock(lookup->mutex);
+    lookup->endpoints = std::move(endpoints);
+    lookup->error = std::move(error);
+    lookup->done = true;
+}
+
+#ifdef _WIN32
+unsigned __stdcall runStunLookup(void* argument)
+#else
+void* runStunLookup(void* argument)
+#endif
+{
+    std::unique_ptr<std::shared_ptr<StunLookup>> owner(static_cast<std::shared_ptr<StunLookup>*>(argument));
+    resolveStunLookup(*owner);
+#ifdef _WIN32
+    return 0;
+#else
+    return nullptr;
+#endif
+}
+
+void beginStunLookup(uint32_t now)
+{
+    if (stunLookup || stunLookupNames.empty() || !host) return;
+    auto lookup = std::make_shared<StunLookup>();
+    lookup->names = stunLookupNames;
+    auto* argument = new (std::nothrow) std::shared_ptr<StunLookup>(lookup);
+    bool started = false;
+    if (argument)
+    {
+        // std::thread throws on creation failure, but this game is built with
+        // -fno-exceptions. These APIs report exhaustion without terminating it.
+#ifdef _WIN32
+        uintptr_t const thread = _beginthreadex(nullptr, 0, runStunLookup, argument, 0, nullptr);
+        started = thread != 0;
+        if (started) CloseHandle(reinterpret_cast<HANDLE>(thread));
+#else
+        pthread_attr_t attributes;
+        if (pthread_attr_init(&attributes) == 0)
+        {
+            if (pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED) == 0)
+            {
+                pthread_t thread;
+                started = pthread_create(&thread, &attributes, runStunLookup, argument) == 0;
+            }
+            pthread_attr_destroy(&attributes);
+        }
+#endif
+    }
+    if (started)
+    {
+        stunLookup = std::move(lookup);
+        stunLookupRetry = false;
+    }
+    else
+    {
+        delete argument;
+        stunSetupError = "Cannot start STUN DNS worker. Retrying in 30 seconds; direct connections remain available.";
+        stunLookupRetry = true;
+        stunLookupFailedAt = now;
+    }
+}
+
+std::string currentStunStatus()
+{
+    if (stunLookup) return stunSetupError.empty() ? "resolving STUN servers" : "retrying STUN DNS lookup";
+    if (stunLookupRetry) return "STUN DNS unavailable (retry pending)";
+    if (!stunSetupError.empty()) return "STUN discovery unavailable";
+    return stun.status();
+}
+
+std::string currentStunError() { return stunSetupError.empty() ? stun.error() : stunSetupError; }
+
+void startStun()
+{
+    if (!netIsServer() || !*gNetStunServer || !Bstrcasecmp(gNetStunServer, "off")) return;
+    std::vector<neturi::Endpoint> names;
+    if (!Bstrcasecmp(gNetStunServer, "auto"))
+    {
+        for (const char* name : { "stun.l.google.com", "stun1.l.google.com", "stun2.l.google.com" })
+        {
+            neturi::Endpoint endpoint;
+            endpoint.host = name;
+            endpoint.port = 19302;
+            names.push_back(endpoint);
+        }
+    }
+    else
+    {
+        neturi::Endpoint endpoint;
+        std::string error;
+        if (!stunEndpoint(gNetStunServer, endpoint, error))
+        {
+            stunSetupError = error;
+            return;
+        }
+        names.push_back(endpoint);
+    }
+    uint32_t const now = timerGetTicks();
+    if (!stun.start(host, now))
+    {
+        stunSetupError = stun.error();
+        return;
+    }
+    enet_host_set_intercept(host, interceptStun);
+    // DNS can take seconds when offline. The worker owns only its result; it
+    // never touches the game/socket, and disconnect need not wait for the OS.
+    stunLookupNames = std::move(names);
+    beginStunLookup(now);
+}
+
+void updateStun()
+{
+    uint32_t const now = timerGetTicks();
+    if (stunLookupRetry && now - stunLookupFailedAt >= 30000) beginStunLookup(now);
+    if (stunLookup)
+    {
+        auto lookup = stunLookup;
+        std::lock_guard<std::mutex> lock(lookup->mutex);
+        if (lookup->done)
+        {
+            std::string error = lookup->error;
+            if (lookup->endpoints.empty())
+            {
+                if (error.empty()) error = "Could not resolve STUN servers.";
+                error += " Retrying in 30 seconds; direct connections remain available.";
+            }
+            else stun.configure(lookup->endpoints, now, error);
+            stunSetupError = error;
+            stunLookupRetry = !error.empty();
+            if (stunLookupRetry) stunLookupFailedAt = now;
+            stunLookup.reset();
+        }
+    }
+    stun.pump(now);
+    ENetAddress observed;
+    std::string const discovered = stun.discoveredAddress(observed) ? endpointUri(observed) : "";
+    if (serverPublicEndpoint != discovered)
+    {
+        serverPublicEndpoint = discovered;
+        if (!discovered.empty()) LOG_F(INFO, "NET STUN discovered %s (incoming reachability is not verified)", discovered.c_str());
+    }
+    std::string const status = currentStunStatus();
+    if (stunLastStatus != status)
+    {
+        if (stun.active() || stunLookup || !stunSetupError.empty()) LOG_F(INFO, "NET STUN %s", status.c_str());
+        stunLastStatus = status;
+    }
+    std::string const error = currentStunError();
+    if (stunLastError != error)
+    {
+        if (!error.empty()) LOG_F(WARNING, "NET STUN: %s", error.c_str());
+        stunLastError = error;
+    }
+}
 constexpr int ControlChannel = 0, CommandChannel = 1, SnapshotChannel = 2;
 #endif
 uint8_t playerMask()
@@ -360,6 +604,21 @@ void sendReject(ENetPeer *peer, const char *why)
     w.text(why, 160);
     sendTo(peer, netwire::Reject, w.data);
     enet_peer_disconnect_later(peer, 1);
+}
+
+void sendPublicEndpoint(ENetPeer* peer)
+{
+    netwire::Writer writer;
+    writer.text(serverPublicEndpoint, 300);
+    sendTo(peer, netwire::PublicEndpoint, writer.data);
+}
+
+void updatePublicEndpoint()
+{
+    if (!netIsServer() || serverPublicEndpoint == advertisedPublicEndpoint) return;
+    for (const auto& client : slots)
+        if (client.ready || client.pendingReady) sendPublicEndpoint(client.peer);
+    advertisedPublicEndpoint = serverPublicEndpoint;
 }
 bool sendConnectionPacket(ENetPeer *peer, Bytes wire)
 {
@@ -1656,6 +1915,24 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
         return true;
     }
+    if (h.type == netwire::PublicEndpoint)
+    {
+        // Discovery metadata does not belong in recordings and never changes
+        // where this client is connected. It is only used for invitations.
+        if (replay) return false;
+        std::string const uri = r.text(300);
+        neturi::Endpoint endpoint;
+        std::string error;
+        if (!r.end() || (!uri.empty() && (!neturi::parse(uri, endpoint, error)
+            || (!neturi::detail::ipv4(endpoint.host) && !neturi::detail::ipv6(endpoint.host)))))
+        {
+            malformedMessages++;
+            return false;
+        }
+        clientPublicEndpoint = uri;
+        clientReceived[h.type] = h.sequence;
+        return true;
+    }
     if (!syntheticBaseline)
         clientReceived[h.type] = h.sequence;
     if (h.type == netwire::VoteStatus)
@@ -1876,6 +2153,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         }
         if (!c.active && !c.joinOrder) c.joinOrder = ++nextJoinOrder;
         c.pendingReady = true;
+        sendPublicEndpoint(peer);
     }
     else if (h.type == netwire::CinematicDone)
     {
@@ -2021,6 +2299,40 @@ bool netIsServer()
 { return gNetMode == NETWORK_SERVER; }
 bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
+bool netValidateStunSetting(const char* value, std::string& error)
+{
+    if (!*value || !Bstrcasecmp(value, "auto") || !Bstrcasecmp(value, "off")) return true;
+    if (Bstrlen(value) >= sizeof(gNetStunServer))
+    {
+        error = "STUN server address is too long.";
+        return false;
+    }
+    neturi::Endpoint endpoint;
+    return stunEndpoint(value, endpoint, error);
+}
+void netParseStunOption(const char* value)
+{
+    std::string error;
+    if (!netValidateStunSetting(value, error)) ThrowError("-stunserver: %s", error.c_str());
+    stunOption = value;
+    hasStunOption = true;
+}
+void netApplyStunOption()
+{
+    if (hasStunOption) Bstrncpyz(gNetStunServer, stunOption.c_str(), sizeof(gNetStunServer));
+}
+void netPrintStunStatus()
+{
+#ifndef NETCODE_DISABLE
+    LOG_F(INFO, "NET STUN status=%s", currentStunStatus().c_str());
+    std::string const error = currentStunError();
+    if (!error.empty()) LOG_F(WARNING, "NET STUN: %s", error.c_str());
+    if (!serverPublicEndpoint.empty())
+        LOG_F(INFO, "NET STUN discovered %s (incoming reachability is not verified)", serverPublicEndpoint.c_str());
+#else
+    OSD_Printf("Networking is disabled in this build.\n");
+#endif
+}
 bool netGetPresenceInfo(NetPresenceInfo& info)
 {
     info = {};
@@ -2033,6 +2345,7 @@ bool netGetPresenceInfo(NetPresenceInfo& info)
         if (gDedicated || !mapGeneration || !ready2send) return false;
         info.maxPlayers = gInitialNetPlayers;
         info.port = static_cast<uint16_t>(gNetPort);
+        info.joinUri = serverPublicEndpoint;
     }
     else
     {
@@ -2050,6 +2363,24 @@ bool netGetPresenceInfo(NetPresenceInfo& info)
         info.address = address;
         info.port = serverPeer->address.port;
         info.maxPlayers = static_cast<int>(clientServerRules.maxPlayers);
+        // Preserve an address that already worked over the public Internet.
+        // A STUN mapping can differ from the forwarded port and is unverified;
+        // only replace local/private endpoints for invitations from LAN clients.
+        bool local;
+        if (mapped)
+            local = bytes[12] == 10 || bytes[12] == 127
+                || (bytes[12] == 172 && (bytes[13] & 0xf0) == 16)
+                || (bytes[12] == 192 && bytes[13] == 168)
+                || (bytes[12] == 169 && bytes[13] == 254)
+                || (bytes[12] == 100 && (bytes[13] & 0xc0) == 64);
+        else
+        {
+            bool loopback = bytes[15] == 1;
+            for (int n = 0; n < 15; ++n) loopback &= bytes[n] == 0;
+            local = loopback || (bytes[0] & 0xfe) == 0xfc
+                || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80);
+        }
+        if (local) info.joinUri = clientPublicEndpoint;
     }
     info.session = session;
     info.players = numplayers;
@@ -2186,6 +2517,7 @@ void netResetToSinglePlayer(void)
 void netInitialize(bool bConsole)
 {
     UNREFERENCED_PARAMETER(bConsole);
+    netApplyStunOption();
     NETWORKMODE mode = gNetMode;
     if (mode != NETWORK_NONE)
     {
@@ -2273,6 +2605,8 @@ void netInitialize(bool bConsole)
     host->packetCopies       = ClipRange(gNetPacketCopies, 1, 8);
     enet_socket_set_option(host->socket, ENET_SOCKOPT_RCVBUF, 4 * 1024 * 1024);
     enet_socket_set_option(host->socket, ENET_SOCKOPT_SNDBUF, 4 * 1024 * 1024);
+    clientConnectStarted = timerGetTicks();
+    startStun();
 #else
     LOG_F(ERROR, "Networking is disabled in this build");
     netResetToSinglePlayer();
@@ -2322,14 +2656,28 @@ void netDeinitialize(void)
             if (host->peers[n].state != ENET_PEER_STATE_DISCONNECTED)
                 enet_peer_disconnect_now(&host->peers[n], 0);
         enet_host_flush(host);
+        stun.stop();
+        enet_host_set_intercept(host, nullptr);
         enet_host_destroy(host);
         host = nullptr;
     }
     serverPeer = nullptr;
+    stunLookup.reset();
+    stunLookupNames.clear();
+    stunLookupRetry = false;
+    stunLookupFailedAt = 0;
+    stunSetupError.clear();
+    serverPublicEndpoint.clear();
+    advertisedPublicEndpoint.clear();
+    stunLastStatus.clear();
+    stunLastError.clear();
     if (initialized)
         enet_deinitialize();
 #endif
     initialized  = false;
+    clientPublicEndpoint.clear();
+    connectionError.clear();
+    clientTransportConnected = false;
     clientLoaded = clientSnapshotReady = false;
     pendingClientPackets.clear();
     pendingClientBytes = 0;
@@ -2357,6 +2705,14 @@ void netUpdate(void)
         return;
     servicing          = true;
     host->packetCopies = ClipRange(gNetPacketCopies, 1, 8);
+    updateStun();
+    if (!netIsServer() && serverPeer && !clientTransportConnected && timerGetTicks() - clientConnectStarted >= 15000)
+    {
+        enet_peer_reset(serverPeer);
+        serverPeer = nullptr;
+        connectionError = "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
+        LOG_F(ERROR, "NET connection failed: %s", connectionError.c_str());
+    }
     ENetEvent event;
     int       budget = 256;
     while (budget-- && enet_host_service(host, &event, 0) > 0)
@@ -2400,6 +2756,7 @@ void netUpdate(void)
             }
             else
             {
+                clientTransportConnected = true;
                 netwire::Writer w;
                 w.u32(contentCRC);
                 w.text(szPlayerName, MAXPLAYERNAME - 1);
@@ -2437,6 +2794,11 @@ void netUpdate(void)
             else
             {
                 serverPeer          = nullptr;
+                if (!clientTransportConnected)
+                {
+                    connectionError = "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
+                    LOG_F(ERROR, "NET connection failed: %s", connectionError.c_str());
+                }
                 stopLocalCinematic();
                 clientCinematic = {};
                 scoreboard = {};
@@ -2448,6 +2810,7 @@ void netUpdate(void)
         }
     }
     pumpMapDownloads();
+    updatePublicEndpoint();
     updateVote();
     updateServerCinematic();
     updateScoreboard();
@@ -2529,6 +2892,13 @@ void netDrawConnectionStatus()
     }
     if (netContentReportDraw())
         return;
+    if (!connectionError.empty() && !gGameStarted && !gGameMenuMgr.m_bActive)
+    {
+        const char* lines[] = { "No reply from the server", "Check its address and UDP port.",
+            "STUN cannot bypass every NAT/CGNAT.", "Use port forwarding or a publicly", "reachable dedicated server." };
+        for (int i = 0; i < 5; ++i) viewDrawText(3, lines[i], 160, 70 + 12 * i, -128, 0, 1, 1);
+        return;
+    }
     if (clientDownloadingMap)
     {
         char progress[80];

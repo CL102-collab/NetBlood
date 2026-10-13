@@ -48,16 +48,19 @@ retries registration manually, for example after moving a portable installation.
 Linux registration requires `xdg-utils`. The existing `netblood://` link handler
 continues to serve ordinary website and chat links.
 
-Clients use the actual server endpoint from their network connection, including
-IPv6. A graphical listen host must supply its reachable address because a socket
-bound to all interfaces cannot tell the game its public Internet address:
+Clients connected over a LAN/private address use the server's
+[STUN-discovered public endpoint](stun.md) when one is available. Clients
+connected to a public address preserve that working address and port, including
+IPv6. A graphical listen host also uses discovery automatically.
+To specify a reachable address explicitly, overriding discovery for the host:
 
 ```text
 discord_server_address "netblood://server.example:23513"
 ```
 
-This setting applies to the listen host; connected clients continue to advertise
-their actual server endpoint. Clear it with `discord_server_address ""`.
+This setting applies to the listen host. Connected clients use the server's
+discovered endpoint or their actual connection endpoint. Clear the override
+with `discord_server_address ""`.
 The address must be reachable by the invited player; Discord does not provide
 game traffic relay or NAT traversal. Existing
 map download, asset checks and protocol compatibility checks still apply.

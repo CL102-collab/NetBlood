@@ -118,7 +118,11 @@ discordrpc::Activity activity()
     {
         if (*gDiscordServerAddress)
             hasEndpoint = parseJoin(gDiscordServerAddress, endpoint, error);
+        else if (!info.joinUri.empty())
+            hasEndpoint = parseJoin(info.joinUri, endpoint, error);
     }
+    else if (!info.joinUri.empty())
+        hasEndpoint = parseJoin(info.joinUri, endpoint, error);
     else
     {
         endpoint.host = info.address;
@@ -291,6 +295,8 @@ void discordPresencePrintStatus()
         : ready ? "connected" : "waiting for Discord desktop";
     LOG_F(INFO, "DISCORD status=%s application=%s", state, *gDiscordApplicationId ? gDiscordApplicationId : "unset");
     if (!registrationError.empty()) LOG_F(WARNING, "DISCORD launch registration: %s", registrationError.c_str());
-    if (gNetMode == NETWORK_SERVER && !*gDiscordServerAddress)
+    NetPresenceInfo info;
+    if (gNetMode == NETWORK_SERVER && !*gDiscordServerAddress
+        && (!netGetPresenceInfo(info) || info.joinUri.empty()))
         OSD_Printf("Set discord_server_address to netblood://public-host:port to enable invitations from this listen server.\n");
 }

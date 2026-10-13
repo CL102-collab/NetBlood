@@ -93,7 +93,8 @@ class Game:
         if name == "client-1":
             environment["NBLOOD_NET_VERIFY_SNAPSHOTS"] = "1"
         command = [str(args.binary), "-usecwd", "-nosetup", "-noautoload", "-quick", "-nodemo",
-                   "-cfg", "network.cfg", f"-j={args.assets}", f"-j={args.engine_data}"]
+                   "-cfg", "network.cfg", f"-j={args.assets}", f"-j={args.engine_data}",
+                   "-stunserver", "off"]  # Fixtures must not contact public discovery services.
         if dedicated:
             for variable in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
                 environment.pop(variable, None)

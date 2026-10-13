@@ -57,6 +57,14 @@ Discord Application ID with `discord_appid` in the game console; no ID is bundle
 See [Discord setup and joining](docs/discord.md) for Windows/Linux registration,
 listen-host addresses and the `discord_enabled` toggle.
 
+### Public UDP address discovery
+
+Hosted games use Google's public STUN servers to discover their mapped IP and
+port for connection links and Discord invitations. No relay service is required.
+Use `-stunserver off` to disable discovery or configure a custom server.
+STUN alone cannot make every NAT/CGNAT-hosted server reachable.
+See [STUN configuration and limits](docs/stun.md).
+
 ### Dedicated multiplayer server
 
 Start a headless server with hot-join and server-owned gameplay rules:

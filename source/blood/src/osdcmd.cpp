@@ -76,6 +76,13 @@ static int osdcmd_discord_status(osdcmdptr_t parm)
     return OSDCMD_OK;
 }
 
+static int osdcmd_net_stun_status(osdcmdptr_t parm)
+{
+    if (parm->numparms) return OSDCMD_SHOWHELP;
+    netPrintStunStatus();
+    return OSDCMD_OK;
+}
+
 static int osdcmd_discord_register(osdcmdptr_t parm)
 {
     if (parm->numparms) return OSDCMD_SHOWHELP;
@@ -998,6 +1005,15 @@ static int osdcmd_inittimer(osdcmdptr_t parm)
 
 static int osdcmd_cvar_set_game(osdcmdptr_t parm)
 {
+    if (parm->numparms && !Bstrcasecmp(parm->name, "net_stun_server"))
+    {
+        std::string error;
+        if (parm->numparms != 1 || !netValidateStunSetting(parm->parms[0], error))
+        {
+            OSD_Printf("net_stun_server: %s\n", error.empty() ? "Expected exactly one value." : error.c_str());
+            return OSDCMD_OK;
+        }
+    }
     if (parm->numparms && (!Bstrcasecmp(parm->name, "discord_appid") || !Bstrcasecmp(parm->name, "discord_server_address")))
     {
         std::string error;
@@ -1255,6 +1271,7 @@ int32_t registerosdcommands(void)
         { "net_packetcopies", "total identical UDP datagrams per send (default 3)", (void *)&gNetPacketCopies, CVAR_INT, 1, 8 },
         { "net_snapshotrate", "server snapshots per second (simulation remains 30 Hz)", (void *)&gNetSnapshotRate, CVAR_INT, 1, 30 },
         { "net_lagometer", "show snapshot latency, interpolation and packet loss", (void *)&gNetLagometer, CVAR_BOOL, 0, 1 },
+        { "net_stun_server", "next hosted game's STUN discovery: auto (Google), off, or host:port", (void *)gNetStunServer, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gNetStunServer) },
         { "discord_enabled", "enable Discord Rich Presence and game invitations", (void *)&gDiscordEnabled, CVAR_BOOL, 0, 1 },
         { "discord_appid", "Discord application ID (empty until configured)", (void *)gDiscordApplicationId, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordApplicationId) },
         { "discord_server_address", "listen server's public invitation link, netblood://host:port", (void *)gDiscordServerAddress, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordServerAddress) },
@@ -1323,6 +1340,7 @@ int32_t registerosdcommands(void)
         }
     }
     OSD_RegisterFunction("net_status", "net_status: show session and prediction statistics", osdcmd_net_status);
+    OSD_RegisterFunction("net_stun_status", "net_stun_status: show public UDP endpoint discovery; STUN does not prove incoming reachability", osdcmd_net_stun_status);
     OSD_RegisterFunction("discord_status", "discord_status: show Discord connection and configuration status", osdcmd_discord_status);
     OSD_RegisterFunction("discord_register", "discord_register: register this executable for Discord invitations using discord_appid", osdcmd_discord_register);
     OSD_RegisterFunction("callvote", "callvote map <mapname> | restart | next: propose a map change; use vote_maps for allowed maps", osdcmd_callvote);

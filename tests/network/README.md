@@ -678,6 +678,28 @@ lookup despite correct HKCU registration. For that isolated Wine test only,
 verifying the production HKCU values. This tests command dispatch and directory
 handling; it does not verify native Windows' per-user association lookup.
 
+## STUN discovery
+
+```sh
+SANITIZE=1 tests/network/stun-test.sh
+SANITIZE=1 tests/network/stun-client-test.sh
+python3 tests/network/stun-live.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-stun-evidence
+```
+
+These checks use local UDP fixtures only. The codec covers RFC 5769 IPv4/IPv6,
+strict framing, mapped-address attributes and malformed input. The socket test
+checks discovery on the actual ENet socket, endpoint/transaction validation,
+fallback, expiry, opt-out, and concurrent reliable/fragmented gameplay traffic
+with unchanged datagram triplication. It can also run as a Windows build under
+Wine. The live test exercises dedicated/listen hosts, discovery metadata shared
+with LAN clients and Discord, map transitions, packet-demo isolation, DNS retry,
+and initial-connection timeout diagnostics. Its DNS fixture intercepts only a
+test hostname and maps it to loopback after a simulated temporary failure.
+Public-service reachability and arbitrary ISP CGNAT behavior are not simulated
+by a successful local test.
+
 ## Discord Rich Presence
 
 ```sh

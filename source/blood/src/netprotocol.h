@@ -39,6 +39,7 @@ enum Type : uint32_t
     CinematicState,
     CinematicDone,
     Scoreboard,
+    PublicEndpoint, // Optional live discovery metadata; never recorded in demos.
     TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.

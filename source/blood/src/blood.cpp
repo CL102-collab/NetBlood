@@ -1361,6 +1361,7 @@ SWITCH switches[] = {
     { "holsterweapon", 59, 1 },
     { "chaseview", 60, 1 },
     { "lives", 61, 1 },
+    { "stunserver", 62, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1375,6 +1376,7 @@ void PrintHelp(void)
         "-cachesize #\tSet cache size in kB\n"
         "-cfg [file.cfg]\tUse an alternate configuration file\n"
         "-client [host]\tConnect to a multiplayer game\n"
+        "-stunserver [auto|off|host:port]\tPublic UDP address discovery (default: Google STUN)\n"
         "netblood://host[:port]\tJoin a server from a connection link (no other arguments)\n"
         "-connect-uri [URI]\tOpen a netblood:// connection link (no other arguments)\n"
         "-register-uri\tRegister netblood:// links for this user, then exit\n"
@@ -1760,6 +1762,10 @@ void ParseOptions(void)
             else
                 ThrowError("Unknown game type: %s", OptArgv[0]);
             break;
+        case 62:
+            if (OptArgc < 1) ThrowError("Missing argument for -stunserver");
+            netParseStunOption(OptArgv[0]);
+            break;
         }
     }
     netServerValidateOptions(gRequestedGameType, bAddUserMap);
@@ -1961,6 +1967,11 @@ static int HandleUriCommandLine(int& argc, char const * const * argv)
     bool registration = false, connection = false, discordLaunch = false;
     for (int i = 1; i < argc; ++i)
     {
+        if (IsUriSwitch(argv[i], "stunserver") && !Bstrchr(argv[i], '=') && i + 1 < argc)
+        {
+            ++i; // A service address belongs to the explicit option, not URI launching.
+            continue;
+        }
         registration |= IsUriSwitch(argv[i], "register-uri");
         connection |= IsUriSwitch(argv[i], "connect-uri") || !Bstrncasecmp(argv[i], "netblood:", 9);
         discordLaunch |= IsUriSwitch(argv[i], "discord-launch");
