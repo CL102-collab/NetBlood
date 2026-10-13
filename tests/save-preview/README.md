@@ -17,8 +17,12 @@ session. Software, Polymost and Vulkan are checked by default;
 A generated room and ART file contain only static grayscale patterns. The
 fixture saves an unchanged camera first without overlays and then with a
 reduced viewport, HUD, message, crosshair and first-person weapon. Both embedded
-320×200 previews must be byte-identical and contain only world pixels. Ordinary
-camera movement followed by overwriting and quicksaving must refresh the
+320×200 previews must be byte-identical and contain only world pixels. Gray
+shading can quantize to slightly colored entries in Blood's palette, so
+the color check accepts only entries reachable from grayscale through the
+engine's weighted nearest-color conversion, including ties. This also covers
+the intermediate gray shades introduced by ambient occlusion.
+Ordinary camera movement followed by overwriting and quicksaving must refresh the
 image. Screenshot comparisons verify the selected slot's actual menu thumbnail,
 empty-slot fallback, and cache refresh. Slots zero and five deliberately leave
 holes in the save list.

@@ -9,6 +9,7 @@ despite visible HUD, crosshair, message and first-person weapon changes.
 
 import argparse
 import copy
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -49,8 +50,9 @@ def room():
 
 
 def art():
-    # Every texel uses the base palette's gray ramp. Rendering world-only must
-    # never introduce the colored HUD, pitchfork, menu backdrop or blood QAV.
+    # Every texel uses the base palette's gray ramp. World-only rendering must
+    # not introduce HUD, pitchfork, menu backdrop or blood QAV colors, though
+    # shaded gray RGB values can quantize to slightly colored palette entries.
     data = bytearray(struct.pack("<4I", 1, 6, 6000, 6005))
     data += struct.pack("<12H", *([16] * 12))
     data += bytes(6 * 4)
@@ -111,6 +113,21 @@ def save_metadata(data):
     return matches[0] if matches else None
 
 
+@lru_cache(maxsize=4)
+def gray_palette_indices(palette):
+    """Palette results reachable from gray RGB, including nearest-color ties."""
+    colors = [tuple(palette[index:index + 3]) for index in range(0, 255 * 3, 3)]
+    reachable = set()
+    for gray in range(256):
+        # screen.cpp initializes colmatch.cpp with these squared-distance
+        # weights; save previews exclude transparent palette index 255.
+        distances = [30 * (red - gray) ** 2 + 59 * (green - gray) ** 2
+                     + 11 * (blue - gray) ** 2 for red, green, blue in colors]
+        nearest = min(distances)
+        reachable.update(index for index, distance in enumerate(distances) if distance == nearest)
+    return frozenset(reachable)
+
+
 def preview(path, palette, png, gray=True):
     from PIL import Image
 
@@ -125,10 +142,11 @@ def preview(path, palette, png, gray=True):
     image.putpalette(palette)
     image = image.convert("RGB")
     image.save(png)
-    rgb = list(image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata())
-    colored = sum(max(pixel) - min(pixel) > 3 for pixel in rgb)
     if gray:
-        require(colored == 0, f"{path}: world-only gray fixture contains {colored} colored HUD/menu/weapon pixels")
+        reachable = gray_palette_indices(palette)
+        unexpected = sum(pixel not in reachable for pixel in pixels)
+        require(unexpected == 0,
+                f"{path}: world-only gray fixture contains {unexpected} palette pixels unreachable from grayscale")
     require(len(set(pixels)) >= 5, "preview is blank or does not contain the patterned world")
     return {"path": str(path), "image": str(png), "crc32": f"{checksum:08x}",
             "sha256": hashlib.sha256(pixels).hexdigest(), "bytes": len(data),
