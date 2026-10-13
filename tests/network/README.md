@@ -178,7 +178,7 @@ exclusive.
 | `-friendlyfire` | `on` or `off` (default); teammate damage in co-op and teams |
 | `-holsterweapon` | `on` or `off` (default); permission to holster in Bloodbath |
 | `-chaseview` | `on` or `off` (default); permission to use chase view in Bloodbath |
-| `-mapvote` | `on` (default) or `off`; enables player map votes |
+| `-mapvote` | `on` (default) or `off`; enables player map and team-shuffle votes |
 | `-maplist` | A `.txt` filename, up to 256 maps and 128 KiB |
 | `-episode` | Cooperative episode, numbered from 1 |
 | `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
@@ -322,42 +322,54 @@ including live, dead, kneeling and reviving players, equipment/score preservatio
 and carried-flag handling. These need no running game or game assets; add
 `SANITIZE=1` for sanitizer coverage.
 
-## Player map votes
+## Player map and team-shuffle votes
 
-Dedicated servers enable map voting by default. Add `-mapvote off` to disable
-it, or specify `-mapvote on` explicitly. Votes can change only the map; the
+Dedicated servers enable player voting by default. Add `-mapvote off` to disable
+both map and team-shuffle votes, or specify `-mapvote on` explicitly. The
 server's game mode, time/score limits and other rules remain authoritative.
 
 Players use these console commands:
 
 | Command | Action |
 | --- | --- |
-| `vote_maps` | List maps available for a Bloodbath or teams vote |
+| `vote_maps` | List voting options and allowed rotation maps |
 | `callvote map E1M2` | Propose a map from the server's configured rotation |
 | `callvote restart` | Propose restarting the current co-op map |
 | `callvote next` | Propose the next co-op map |
+| `callvote shuffle` | Propose balanced random teams in teams mode |
 | `vote yes` / `vote no` | Cast one ballot in the active vote |
 | `vote_status` | Show the current vote, counts and time remaining |
 
-Bloodbath and teams votes require a map rotation; a server started without
-`-maplist` cannot accept votes to select a map. Names match rotation entries
+Bloodbath and teams map-selection votes require a map rotation; a server
+started without `-maplist` cannot accept votes to select a map. Names match rotation entries
 case-insensitively, with an optional `.MAP` suffix. Co-op accepts only restart
 or next, following the normal episode exit (or next rotation entry). A custom
 standalone map has no next level, but can be restarted. Listen servers also
 allow co-op restart and next votes.
+Team-shuffle votes are available only in teams mode and do not require a
+rotation. Bloodbath and co-op reject them.
+
+A passed shuffle randomly redistributes the currently connected players into
+teams differing in size by at most one, then restarts the current map with
+fresh scores, health and starting equipment. The map, rotation position and
+server settings are retained. Team colors and spawn points follow the new
+assignment, which persists across later map transitions. Connection ages and
+vote cooldowns are retained. At least two players must be present to shuffle.
 
 Each vote runs for the full **30 seconds**. The caller automatically votes yes.
 The server fixes the electorate to the players present when the vote starts;
 late joiners can see the vote but cannot vote in it. Each eligible player has
-one ballot and cannot change it. A map changes only if at least **51% of that
+one ballot and cannot change it. A proposal passes only if at least **51% of that
 electorate** participates and at least **51% votes yes**, rounding the required
 count up. For example, three players require two yes votes; two players require
 both. Abstentions and disconnected players do not reduce the required count.
 
-Only one vote can run at a time. Each player must wait **two minutes** from
-their accepted vote call before calling another; unsuccessful votes also count.
+Only one vote of either kind can run at a time. Each player must wait **two
+minutes** from their accepted vote call before calling another; unsuccessful votes also count.
 The cooldown survives map transitions. Rejected calls do not consume a
-cooldown. Ordinary server-driven map changes cancel any active vote.
+cooldown. Map and team-shuffle calls share this cooldown. Ordinary server-driven
+map changes cancel any active vote; neither kind can interrupt the 15-second
+end-of-match intermission.
 
 Exercise the system using real game clients and real vote deadlines:
 
@@ -385,6 +397,28 @@ standalone identity without registering its map slot a second time.
 
 Use `--listen-restart-only` to isolate the 30-second listen-server restart
 check without repeating the dedicated-server ballots and playback.
+
+Exercise team-shuffle ballots, their shared map-vote guards and packet playback:
+
+```sh
+python3 tests/network/team-shuffle.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-team-shuffle-evidence
+```
+
+This uses real 30-second votes and ordinary fatal falls on a generated map.
+A failed vote must preserve teams and the current map; a passed vote must
+restart that map, reset an actual nonzero score, revive dead players and assign
+balanced teams consistently on the server and every client. It checks fixed
+electorates, late joiners, map/shuffle mutual exclusion and shared cooldowns,
+team colors, retained connection ages, server rules and rotation position,
+subsequent map-vote progression, disabled voting, non-team rejection and
+shuffle availability without a rotation. A graphical listen host also shuffles
+and restarts its custom map without changing the map registration. A mid-vote
+packet recording must replay to the exact final snapshot and retain the team assignments. The final
+phase waits for a real one-minute time limit and verifies a shuffle cannot
+interrupt the end-of-match pause; `--skip-intermission` omits that phase.
+All servers explicitly disable public STUN for these local tests.
 
 ## End-of-match intermission
 

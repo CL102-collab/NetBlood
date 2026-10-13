@@ -98,6 +98,8 @@ static int osdcmd_callvote(osdcmdptr_t parm)
         netCallMapVote("restart", nullptr);
     else if (parm->numparms == 1 && !Bstrcasecmp(parm->parms[0], "next"))
         netCallMapVote("next", nullptr);
+    else if (parm->numparms == 1 && !Bstrcasecmp(parm->parms[0], "shuffle"))
+        netCallMapVote("shuffle", nullptr);
     else
         return OSDCMD_SHOWHELP;
     return OSDCMD_OK;
@@ -1343,10 +1345,10 @@ int32_t registerosdcommands(void)
     OSD_RegisterFunction("net_stun_status", "net_stun_status: show public UDP endpoint discovery; STUN does not prove incoming reachability", osdcmd_net_stun_status);
     OSD_RegisterFunction("discord_status", "discord_status: show Discord connection and configuration status", osdcmd_discord_status);
     OSD_RegisterFunction("discord_register", "discord_register: register this executable for Discord invitations using discord_appid", osdcmd_discord_register);
-    OSD_RegisterFunction("callvote", "callvote map <mapname> | restart | next: propose a map change; use vote_maps for allowed maps", osdcmd_callvote);
-    OSD_RegisterFunction("vote", "vote yes|no: cast your ballot in the active map vote", osdcmd_vote);
-    OSD_RegisterFunction("vote_maps", "vote_maps: list the server's allowed map-vote targets", osdcmd_vote_maps);
-    OSD_RegisterFunction("vote_status", "vote_status: show the active map vote and its remaining time", osdcmd_vote_status);
+    OSD_RegisterFunction("callvote", "callvote map <mapname> | restart | next | shuffle: propose a map change or team shuffle; vote_maps lists options", osdcmd_callvote);
+    OSD_RegisterFunction("vote", "vote yes|no: cast your ballot in the active vote", osdcmd_vote);
+    OSD_RegisterFunction("vote_maps", "vote_maps: list the server's voting options and allowed maps", osdcmd_vote_maps);
+    OSD_RegisterFunction("vote_status", "vote_status: show the active vote and its remaining time", osdcmd_vote_status);
     OSD_RegisterFunction("net_disconnect", "net_disconnect: leave the current session", osdcmd_net_disconnect);
     OSD_RegisterFunction("net_record", "net_record <path>: record authoritative packets", osdcmd_net_record);
     OSD_RegisterFunction("net_stoprecord", "net_stoprecord: finish the packet demo", osdcmd_net_stoprecord);

@@ -25,7 +25,20 @@ static unsigned intermissions = 0;
 static int queuedOutros = 0, outroEpisode = -1, outroLevel = -1;
 static int preparedMaps = 0;
 static std::string readMapName;
+static bool mapReadable = true, shuffleSucceeds = true;
+static int shufflePlayers = 2, shuffles = 0;
 bool netIsServer() { return isServer; }
+int netTeamShufflePlayerCount() { return shufflePlayers; }
+bool netShuffleTeams(std::string& error)
+{
+    if (!shuffleSucceeds)
+    {
+        error = "The player roster changed before the shuffle could be applied.";
+        return false;
+    }
+    ++shuffles;
+    return true;
+}
 bool netCinematicActive() { return cinematicActive; }
 bool netIntermissionActive() { return intermissionActive; }
 bool netIntermissionFinished() { return intermissionActive && nowMilliseconds - intermissionStarted >= 15000; }
@@ -54,10 +67,11 @@ void ChangeExtension(char*, const char*) { std::abort(); }
 IniFile::IniFile(const char*, char) { std::abort(); }
 IniFile::~IniFile() {}
 void levelLoadMapInfo(IniFile*, LEVELINFO*, const char*) { std::abort(); }
-bool netMapRead(const char* name, std::vector<uint8_t>&, std::string&)
+bool netMapRead(const char* name, std::vector<uint8_t>&, std::string& error)
 {
     readMapName = name;
-    return true; // File I/O is outside this policy test.
+    if (!mapReadable) error = "Map file is missing.";
+    return mapReadable; // File I/O is outside this policy test.
 }
 void netPrepareCurrentMapSettings()
 {
@@ -104,6 +118,10 @@ void reset()
     intermissions = 0;
     nowMilliseconds = intermissionStarted = 0;
     preparedMaps = 0;
+    readMapName.clear();
+    mapReadable = shuffleSucceeds = true;
+    shufflePlayers = 2;
+    shuffles = 0;
     queuedOutros = 0;
     outroEpisode = outroLevel = -1;
     ready2send = 1;
@@ -494,6 +512,110 @@ void listenCustomRestart()
     CHECK(queuedOutros == 0);
 }
 
+void teamShufflePolicy()
+{
+    std::string error;
+    size_t index = 77;
+    for (int mode : {kGameTypeSinglePlayer, kGameTypeCoop, kGameTypeBloodBath})
+    {
+        reset(); settings.gameType = mode;
+        CHECK(!netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+        CHECK(error.find("team games") != std::string::npos && index == 77);
+        CHECK(!netServerApplyVote(NetServerVoteAction::Shuffle, 0, error));
+        CHECK(shuffles == 0 && preparedMaps == 0 && !gStartNewGame);
+    }
+    for (int guard = 0; guard < 12; ++guard)
+    {
+        reset(); settings.gameType = kGameTypeTeams;
+        if (guard == 0) isServer = false;
+        if (guard == 1) gGameStarted = false;
+        if (guard == 2) gStartNewGame = true;
+        if (guard == 3) pendingAdvance = true;
+        if (guard == 4) gGameOptions.uGameFlags = kGameFlagContinuing;
+        if (guard == 5) gGameOptions.uGameFlags = kGameFlagEnding;
+        if (guard == 6) ready2send = false;
+        if (guard == 7) cinematicActive = true;
+        if (guard == 8) intermissionActive = true;
+        if (guard == 9) settings.mapVoteEnabled = false;
+        if (guard == 10) shufflePlayers = 0;
+        if (guard == 11) shufflePlayers = 1;
+        CHECK(!netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+        CHECK(!netServerApplyVote(NetServerVoteAction::Shuffle, 0, error));
+        CHECK(!error.empty() && index == 77);
+        CHECK(shuffles == 0 && preparedMaps == 0 && readMapName.empty());
+    }
+
+    reset(); settings.gameType = kGameTypeTeams;
+    CHECK(!netServerResolveVote(NetServerVoteAction::Shuffle, "E1M1", index, error));
+    CHECK(error.find("map name") != std::string::npos);
+    CHECK(netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+    CHECK(error.empty() && index == 0 && shuffles == 0);
+    shufflePlayers = 1; // A voter disconnected before voting completed.
+    CHECK(!netServerApplyVote(NetServerVoteAction::Shuffle, index, error));
+    CHECK(error.find("two players") != std::string::npos);
+    CHECK(shuffles == 0 && preparedMaps == 0 && !gStartNewGame);
+
+    reset(); settings.gameType = kGameTypeTeams;
+    std::strcpy(gGameOptions.zLevelName, "E2M1");
+    mapReadable = false;
+    CHECK(netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+    CHECK(!netServerApplyVote(NetServerVoteAction::Shuffle, index, error));
+    CHECK(error.find("E2M1") != std::string::npos && error.find("missing") != std::string::npos);
+    CHECK(shuffles == 0 && preparedMaps == 0 && !gStartNewGame);
+    mapReadable = true; shuffleSucceeds = false;
+    CHECK(!netServerApplyVote(NetServerVoteAction::Shuffle, index, error));
+    CHECK(!error.empty() && shuffles == 0 && preparedMaps == 0 && !gStartNewGame);
+
+    // Both hosting modes support a fresh shuffle of their current stock/custom
+    // map, with or without a rotation. Rotations and locked settings never move.
+    for (bool dedicated : {false, true})
+        for (bool hasRotation : {false, true})
+            for (bool custom : {false, true})
+            {
+                reset();
+                gDedicated = dedicated;
+                settings.gameType = dedicated ? kGameTypeTeams : kGameTypeCoop;
+                gGameOptions.nGameType = kGameTypeTeams;
+                settings.maxPlayers = 6; settings.timeLimitMinutes = 17;
+                settings.scoreLimit = 23; settings.autoAim = 0;
+                settings.weaponsStay = false; settings.friendlyFire = true;
+                settings.holsterWeapon = settings.chaseView = true;
+                settings.mapList = hasRotation ? "rotation.txt" : "";
+                if (hasRotation)
+                {
+                    rotation = {"E2M1", "E2M2", "E2M3"};
+                    settings.rotationIndex = 1; settings.rotationCount = 3;
+                }
+                gGameOptions.nEpisode = 1; gGameOptions.nLevel = 1;
+                gGameOptions.nDifficulty = 4;
+                std::strcpy(gGameOptions.zLevelName, custom ? "custom" : "E2M2");
+                if (custom) std::strcpy(gGameOptions.szUserMap, "custom.map");
+                gGameOptions.uGameFlags = kGameFlagPlayIntro | kGameFlagPlayOutro;
+                GAMEOPTIONS expected = gGameOptions;
+                expected.uGameFlags &= ~kGameFlagPlayOutro;
+                CHECK(netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+                CHECK(netServerApplyVote(NetServerVoteAction::Shuffle, index, error));
+                CHECK(error.empty() && shuffles == 1 && preparedMaps == 1 && gStartNewGame);
+                CHECK(readMapName == (custom ? "custom.map" : "E2M2"));
+                CHECK(std::memcmp(&gGameOptions, &expected, sizeof(expected)) == 0);
+                CHECK(!pendingAdvance && queuedOutros == 0 && !intermissionActive);
+                CHECK(gPacketStartGame.episodeId == 1 && gPacketStartGame.levelId == 1);
+                CHECK(gPacketStartGame.userMap == (dedicated && custom));
+                CHECK(settings.rotationIndex == (hasRotation ? 1u : 0u));
+                CHECK(settings.rotationCount == (hasRotation ? 3u : 0u));
+                CHECK(settings.mapList == (hasRotation ? "rotation.txt" : ""));
+                CHECK(settings.gameType == (dedicated ? kGameTypeTeams : kGameTypeCoop));
+                CHECK(settings.maxPlayers == 6 && settings.timeLimitMinutes == 17 && settings.scoreLimit == 23);
+                CHECK(settings.autoAim == 0 && !settings.weaponsStay && settings.friendlyFire);
+                CHECK(settings.holsterWeapon && settings.chaseView);
+            }
+
+    reset(); gDedicated = false;
+    settings.gameType = kGameTypeTeams; gGameOptions.nGameType = kGameTypeBloodBath;
+    CHECK(!netServerResolveVote(NetServerVoteAction::Shuffle, "", index, error));
+    CHECK(error.find("team games") != std::string::npos); // Listen mode wins over stale dedicated settings.
+}
+
 void listenCoopNextCinematic()
 {
     for (bool finalLevel : {false, true})
@@ -523,6 +645,6 @@ void listenCoopNextCinematic()
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); listenCoopNextCinematic();
-    std::printf("PASS: dedicated limits, timed intermissions, hot-join scores, map vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
+    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); teamShufflePolicy(); listenCoopNextCinematic();
+    std::printf("PASS: dedicated limits, timed intermissions, hot-join scores, map/shuffle vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
 }

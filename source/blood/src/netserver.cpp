@@ -175,9 +175,9 @@ void queueAdvance(int exitType, const char* reason, bool limit = false)
 bool voteAllowed(std::string& error)
 {
     if (!netIsServer())
-        error = "Only a multiplayer server can run map votes.";
+        error = "Only a multiplayer server can run votes.";
     else if (!settings.mapVoteEnabled)
-        error = "Map voting is disabled on this server.";
+        error = "Voting is disabled on this server.";
     else if (!gGameStarted || !ready2send || pendingAdvance || gStartNewGame || netCinematicActive()
              || netIntermissionActive()
              || (gGameOptions.uGameFlags & (kGameFlagContinuing | kGameFlagEnding)))
@@ -252,6 +252,19 @@ bool nextVoteMap(std::string& name, std::string& error)
 bool voteTarget(NetServerVoteAction action, size_t index, std::string& name, std::string& error)
 {
     int const gameType = gDedicated ? settings.gameType : gGameOptions.nGameType;
+    if (action == NetServerVoteAction::Shuffle)
+    {
+        if (gameType != kGameTypeTeams)
+            error = "Team shuffle voting is only available in team games.";
+        else if (netTeamShufflePlayerCount() < 2)
+            error = "At least two players are required to shuffle teams.";
+        else
+        {
+            name = gGameOptions.szUserMap[0] ? gGameOptions.szUserMap : gGameOptions.zLevelName;
+            return true;
+        }
+        return false;
+    }
     if (gameType == kGameTypeCoop)
     {
         if (action == NetServerVoteAction::Restart)
@@ -551,7 +564,7 @@ bool netServerResolveVote(NetServerVoteAction action, const std::string& map,
     }
     else if (!map.empty())
     {
-        error = "Restart and next-level votes do not accept a map name.";
+        error = "Restart, next-level and team-shuffle votes do not accept a map name.";
         return false;
     }
     std::string name;
@@ -576,6 +589,10 @@ bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::s
         error = "Cannot load voted map '" + name + "': " + mapError;
         return false;
     }
+    // Validate the map before changing authoritative team assignments. A player
+    // may also have disconnected since the vote began, so recheck the roster.
+    if (action == NetServerVoteAction::Shuffle && !netShuffleTeams(error))
+        return false;
     if (action == NetServerVoteAction::Next)
     {
         if (gDedicated)
@@ -602,14 +619,14 @@ bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::s
             settings.rotationIndex = rotationIndex;
             selectMap(rotation[rotationIndex].c_str());
         }
-        // Both selecting a rotation map and restarting co-op start a fresh
-        // round; co-op Next retains the usual episode inventory behavior.
+        // Selecting a rotation map, restarting co-op or shuffling teams starts
+        // a fresh round; co-op Next retains the usual episode inventory behavior.
         gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
         netPrepareCurrentMapSettings();
         // A listen server has already registered this map. Reuse its slot on
         // restart instead of appending the same custom map with levelAddUserMap.
         // Keep szUserMap intact so it still has no implicit next episode level.
-        if (action == NetServerVoteAction::Restart && !gDedicated)
+        if ((action == NetServerVoteAction::Restart || action == NetServerVoteAction::Shuffle) && !gDedicated)
             gPacketStartGame.userMap = 0;
         LOG_F(INFO, "NET map vote applied: map=%s rotation_index=%u rotation_count=%u",
               gGameOptions.zLevelName, unsigned(settings.rotationIndex), unsigned(settings.rotationCount));

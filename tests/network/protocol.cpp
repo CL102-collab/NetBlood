@@ -188,9 +188,15 @@ void voteInvalid(const Payload& invalid, bool (*write)(netwire::Writer&, const P
 void mapVotes()
 {
     using namespace netwire;
+    static_assert(uint32_t(VoteCommand::List) == 1 && uint32_t(VoteCommand::Map) == 2
+                  && uint32_t(VoteCommand::Restart) == 3 && uint32_t(VoteCommand::Next) == 4
+                  && uint32_t(VoteCommand::Yes) == 5 && uint32_t(VoteCommand::No) == 6
+                  && uint32_t(VoteCommand::QueryStatus) == 7 && uint32_t(VoteCommand::Shuffle) == 8,
+                  "Team shuffle appends to existing vote commands");
     VoteRequestPayload request;
     for (VoteCommand command : {VoteCommand::List, VoteCommand::Map, VoteCommand::Restart,
-                               VoteCommand::Next, VoteCommand::Yes, VoteCommand::No, VoteCommand::QueryStatus}) {
+                               VoteCommand::Next, VoteCommand::Yes, VoteCommand::No, VoteCommand::QueryStatus,
+                               VoteCommand::Shuffle}) {
         request.command = command;
         request.id = command == VoteCommand::Yes || command == VoteCommand::No ? 0x78563412 : 0;
         request.map = command == VoteCommand::Map ? "E1M2.MAP" : "";
@@ -207,16 +213,26 @@ void mapVotes()
     request.id = 1; voteInvalid(request, writeVoteRequest);
     request.map.clear(); request.command = VoteCommand::Yes; request.id = 0;
     voteInvalid(request, writeVoteRequest);
-    for (uint32_t command : {0u, 8u, UINT32_MAX}) {
+    for (uint32_t command : {0u, 9u, UINT32_MAX}) {
         request.command = VoteCommand(command); voteInvalid(request, writeVoteRequest);
     }
-    const std::pair<unsigned, uint32_t> invalidRequest[] = {{0,0}, {0,8}, {4,1}};
+    const std::pair<unsigned, uint32_t> invalidRequest[] = {{0,0}, {0,9}, {4,1}, {0,8}};
     for (const auto& mutation : invalidRequest) {
         auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
         Reader reader(bytes.data(), bytes.size());
         request.command = VoteCommand::QueryStatus;
         CHECK(!readVoteRequest(reader, request) && request.command == VoteCommand::QueryStatus);
     }
+    request.command = VoteCommand::Shuffle; request.id = 0; request.map.clear();
+    Writer shuffle; CHECK(writeVoteRequest(shuffle, request));
+    CHECK(shuffle.data == std::vector<uint8_t>({8,0,0,0, 0,0,0,0, 0,0}));
+    request.id = 1; voteInvalid(request, writeVoteRequest);
+    request.id = 0; request.map = "E1M2"; voteInvalid(request, writeVoteRequest);
+    field(shuffle.data, 4, 1);
+    Reader invalidShuffle(shuffle.data.data(), shuffle.data.size());
+    request.command = VoteCommand::QueryStatus; request.map = "unchanged";
+    CHECK(!readVoteRequest(invalidShuffle, request) && request.command == VoteCommand::QueryStatus
+          && request.map == "unchanged");
 
     VoteStatusPayload status;
     voteRoundtrip(status, writeVoteStatus, readVoteStatus);
@@ -225,9 +241,14 @@ void mapVotes()
     status.caller = 2; status.canVote = 1; status.cooldownMs = 120000; status.rejected = 1;
     status.target = "E1M2"; status.notice = "Another map vote is already active.";
     voteRoundtrip(status, writeVoteStatus, readVoteStatus);
+    for (uint32_t action : {2u, 3u, 4u}) {
+        auto other = status; other.action = action;
+        other.target = action == 4 ? "Shuffle teams" : "E1M2";
+        voteRoundtrip(other, writeVoteStatus, readVoteStatus);
+    }
     encoded.data.clear(); CHECK(writeVoteStatus(encoded, status));
     const std::pair<unsigned, uint32_t> invalidStatus[] = {
-        {0,0}, {4,5}, {8,0}, {8,4}, {12,30001}, {16,0}, {16,9}, {20,4}, {24,3},
+        {0,0}, {4,5}, {8,0}, {8,5}, {12,30001}, {16,0}, {16,9}, {20,4}, {24,3},
         {28,1}, {28,3}, {32,8}, {36,2}, {40,2}, {44,120001}, {48,2}};
     for (const auto& mutation : invalidStatus) {
         auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
@@ -251,9 +272,14 @@ void mapVotes()
     voteRoundtrip(options, writeVoteOptions, readVoteOptions);
     options.actions = 1; options.maps = {"E1M1", "E1M2.MAP"};
     voteRoundtrip(options, writeVoteOptions, readVoteOptions);
+    for (uint32_t actions : {8u, 9u, 14u, 15u}) {
+        auto other = options; other.actions = actions;
+        if (!(actions & 1)) other.maps.clear();
+        voteRoundtrip(other, writeVoteOptions, readVoteOptions);
+    }
     encoded.data.clear(); CHECK(writeVoteOptions(encoded, options));
     for (const auto& mutation : std::vector<std::pair<unsigned, uint32_t>>{
-            {0,0}, {0,2}, {4,0}, {4,8}, {8,2}, {12,257}, {12,UINT32_MAX}}) {
+            {0,0}, {0,2}, {4,0}, {4,8}, {4,16}, {4,17}, {8,2}, {12,257}, {12,UINT32_MAX}}) {
         auto bytes = encoded.data; field(bytes, mutation.first, mutation.second);
         Reader reader(bytes.data(), bytes.size());
         VoteOptionsPayload ignored; ignored.maps = {"unchanged"};
@@ -263,7 +289,7 @@ void mapVotes()
     options.maps = {"E1M1\nE1M2"}; voteInvalid(options, writeVoteOptions);
     options.maps.assign(257, "E1M1"); voteInvalid(options, writeVoteOptions);
     options.maps.assign(256, "E1M1"); voteRoundtrip(options, writeVoteOptions, readVoteOptions);
-    std::puts("PASS: map-vote requests, statuses and options; bounds, truncation, control characters and unchanged rejected output");
+    std::puts("PASS: map/team-shuffle vote requests, statuses and options; bounds, truncation, control characters and unchanged rejected output");
 }
 
 void commands()

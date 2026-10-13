@@ -1024,7 +1024,7 @@ netwire::ServerRules serverRules()
 }
 const char* voteActionName(uint32_t action)
 {
-    return action == 1 ? "map" : action == 2 ? "restart" : action == 3 ? "next" : "none";
+    return action == 1 ? "map" : action == 2 ? "restart" : action == 3 ? "next" : action == 4 ? "shuffle" : "none";
 }
 bool readyVoter(int p)
 {
@@ -1044,7 +1044,8 @@ netwire::VoteStatusPayload voteStatus(int recipient)
     if (voteState != netwire::VoteState::Idle)
     {
         status.id = voteId;
-        status.action = voteAction == NetServerVoteAction::Map ? 1 : voteAction == NetServerVoteAction::Restart ? 2 : 3;
+        status.action = voteAction == NetServerVoteAction::Map ? 1 : voteAction == NetServerVoteAction::Restart ? 2
+            : voteAction == NetServerVoteAction::Next ? 3 : 4;
         status.target = voteTarget;
         status.caller = voteCaller;
         status.remainingMs = mapVote.remaining(now);
@@ -1069,6 +1070,7 @@ netwire::VoteOptionsPayload voteOptions(bool requested)
     options.listRequested = requested;
     options.maps = netServerVoteMaps();
     if (!options.maps.empty()) options.actions |= 1;
+    if (options.enabled && gGameOptions.nGameType == kGameTypeTeams) options.actions |= 8;
     if (options.enabled && gGameOptions.nGameType == kGameTypeCoop)
     {
         options.actions |= 2;
@@ -1101,7 +1103,8 @@ void showVoteStatus(const netwire::VoteStatusPayload& status)
         if (status.notice.empty())
         {
             char message[128];
-            Bsnprintf(message, sizeof(message), "Map vote %s: %u yes, %u no (%u yes required)", result, status.yes, status.no, status.required);
+            Bsnprintf(message, sizeof(message), "%s vote %s: %u yes, %u no (%u yes required)",
+                      status.action == 4 ? "Team shuffle" : "Map", result, status.yes, status.no, status.required);
             viewSetMessage(message, 10);
         }
     }
@@ -1111,9 +1114,13 @@ void showVoteOptions(const netwire::VoteOptionsPayload& options)
     clientVoteOptions = options;
     if (!options.listRequested) return;
     LOG_F(INFO, "NET vote options enabled=%u actions=%u maps=%u", options.enabled, options.actions, unsigned(options.maps.size()));
-    if (!options.enabled) OSD_Printf("Map voting is disabled by the server.\n");
+    if (!options.enabled) OSD_Printf("Voting is disabled by the server.\n");
     else if (options.actions & 2) OSD_Printf("callvote restart%s\n", options.actions & 4 ? " or callvote next" : " (no next level available)");
-    else if (options.maps.empty()) OSD_Printf("Map voting requires a server map rotation.\n");
+    else
+    {
+        if (options.actions & 8) OSD_Printf("callvote shuffle: shuffle teams and restart the current map.\n");
+        if (options.maps.empty()) OSD_Printf("Map changes require a server map rotation.\n");
+    }
     for (size_t n = 0; n < options.maps.size(); ++n)
         LOG_F(INFO, "NET vote map index=%u name=%s", unsigned(n), options.maps[n].c_str());
 }
@@ -1187,12 +1194,12 @@ void updateVote()
     if (!netIsServer() || !mapVote.active()) return;
     if (netIntermissionActive())
     {
-        cancelVote("Map vote cancelled because the match has ended");
+        cancelVote("Vote cancelled because the match has ended");
         return;
     }
     if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
     {
-        cancelVote("Map vote cancelled because the server is changing levels");
+        cancelVote("Vote cancelled because the server is changing levels");
         return;
     }
     uint32_t const now = timerGetTicks();
@@ -1206,7 +1213,8 @@ void updateVote()
         const char* outcome = applied ? "passed" : passed ? "cancelled" : "failed";
         LOG_F(INFO, "NET vote result=%s id=%u eligible=%u yes=%u no=%u required=%u", outcome, voteId,
               mapVote.eligibleCount(), mapVote.yesCount(), mapVote.noCount(), mapVote.requiredCount());
-        std::string notice = "Map vote "; notice += outcome;
+        std::string notice = voteAction == NetServerVoteAction::Shuffle ? "Team shuffle vote " : "Map vote ";
+        notice += outcome;
         if (!error.empty()) notice += ": " + error;
         broadcastVote(notice);
     }
@@ -1217,15 +1225,15 @@ void handleVoteRequest(int p, const netwire::VoteRequestPayload& request)
     updateVote(); // Expire before accepting a ballot from this service batch.
     if (!readyVoter(p)) { rejectVote(p, "Join the current map before voting"); return; }
     if (request.command == netwire::VoteCommand::List) { sendVoteOptions(p, true); return; }
-    if (request.command == netwire::VoteCommand::QueryStatus) { sendVoteStatus(p, "Map vote status"); return; }
+    if (request.command == netwire::VoteCommand::QueryStatus) { sendVoteStatus(p, "Vote status"); return; }
     if (netIntermissionActive()) { rejectVote(p, "The match has ended; wait for the next map"); return; }
-    if (!netServerSettings().mapVoteEnabled) { rejectVote(p, "Map voting is disabled by the server"); return; }
+    if (!netServerSettings().mapVoteEnabled) { rejectVote(p, "Voting is disabled by the server"); return; }
     if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
     { rejectVote(p, "The server is changing levels"); return; }
     uint32_t const now = timerGetTicks();
     if (request.command == netwire::VoteCommand::Yes || request.command == netwire::VoteCommand::No)
     {
-        if (!mapVote.active() || request.id != voteId) { rejectVote(p, "No matching map vote is active"); return; }
+        if (!mapVote.active() || request.id != voteId) { rejectVote(p, "No matching vote is active"); return; }
         if (!mapVote.eligible(p, slots[p].generation)) { rejectVote(p, "You joined after this vote started and cannot vote in it"); return; }
         if (mapVote.hasVoted(p, slots[p].generation)) { rejectVote(p, "You have already voted"); return; }
         if (!mapVote.cast(now, p, slots[p].generation, request.command == netwire::VoteCommand::Yes))
@@ -1233,30 +1241,35 @@ void handleVoteRequest(int p, const netwire::VoteRequestPayload& request)
         broadcastVote();
         return;
     }
-    if (mapVote.active()) { rejectVote(p, "Another map vote is already in progress"); return; }
+    if (mapVote.active()) { rejectVote(p, "Another vote is already in progress"); return; }
     if (!slots[p].voteCooldown.ready(now))
     {
         char reason[128];
-        Bsnprintf(reason, sizeof(reason), "Wait %u seconds before calling another map vote", (slots[p].voteCooldown.remaining(now) + 999) / 1000);
+        Bsnprintf(reason, sizeof(reason), "Wait %u seconds before calling another vote", (slots[p].voteCooldown.remaining(now) + 999) / 1000);
         rejectVote(p, reason); return;
     }
     NetServerVoteAction action = request.command == netwire::VoteCommand::Map ? NetServerVoteAction::Map
-        : request.command == netwire::VoteCommand::Restart ? NetServerVoteAction::Restart : NetServerVoteAction::Next;
+        : request.command == netwire::VoteCommand::Restart ? NetServerVoteAction::Restart
+        : request.command == netwire::VoteCommand::Shuffle ? NetServerVoteAction::Shuffle : NetServerVoteAction::Next;
     size_t index = 0;
     std::string error;
     if (!netServerResolveVote(action, request.map, index, error)) { rejectVote(p, error); return; }
     netvote::Roster roster{};
     for (int n = 0; n < 8; ++n) if (readyVoter(n)) roster[n] = slots[n].generation;
-    if (!mapVote.start(now, roster, p, slots[p].generation)) { rejectVote(p, "Could not start map vote"); return; }
+    if (!mapVote.start(now, roster, p, slots[p].generation)) { rejectVote(p, "Could not start vote"); return; }
     voteAction = action;
     voteMapIndex = index;
     voteCaller = p;
     if (!++voteId) voteId = 1;
     voteState = netwire::VoteState::Active;
-    voteTarget = action == NetServerVoteAction::Map ? netServerVoteMaps()[index] : action == NetServerVoteAction::Restart ? "current level" : "next level";
+    voteTarget = action == NetServerVoteAction::Map ? netServerVoteMaps()[index]
+        : action == NetServerVoteAction::Restart ? "current level"
+        : action == NetServerVoteAction::Shuffle ? "shuffle teams and restart level" : "next level";
     slots[p].voteCooldown.accept(now);
     rememberVoteCooldown(p);
-    broadcastVote("Map vote started (30 seconds; use vote yes or vote no)");
+    broadcastVote(action == NetServerVoteAction::Shuffle
+        ? "Team shuffle vote started (30 seconds; use vote yes or vote no)"
+        : "Map vote started (30 seconds; use vote yes or vote no)");
 }
 bool recordVoteBaseline()
 {
@@ -2598,7 +2611,7 @@ void netBeginIntermission()
     intermissionReceived = timerGetTicks();
     scoreboard = intermission.scoreboard;
     scoreboardDirty = true;
-    cancelVote("Map vote cancelled because the match has ended");
+    cancelVote("Vote cancelled because the match has ended");
     gInput = gNetInput = {};
     lastSnapshotTick = 0; // Publish the winning tick's final authoritative world.
     publishIntermission(true);
@@ -3094,7 +3107,7 @@ void netOnLevelChanging()
     serverCinematic = clientCinematic = {};
     cinematicQueue.clear();
     cinematicBarrier.reset();
-    cancelVote("Map vote cancelled because the server is changing levels");
+    cancelVote("Vote cancelled because the server is changing levels");
     mapVote.cancel();
     voteState = netwire::VoteState::Idle;
     voteTarget.clear();
@@ -3113,6 +3126,47 @@ void netOnPlayerStarting(int p)
     // session assignment before playerStart chooses a team spawn/palette.
     if (slots[p].team >= 0) gPlayer[p].teamId = slots[p].team;
     else slots[p].team = gPlayer[p].teamId;
+}
+int netTeamShufflePlayerCount()
+{
+    int count = 0;
+    for (auto const& slot : slots) if (slot.active && !slot.pendingDrop) ++count;
+    return count;
+}
+bool netShuffleTeams(std::string& error)
+{
+    if (!netIsServer() || gGameOptions.nGameType != kGameTypeTeams)
+    {
+        error = "Team shuffling is only available in team games.";
+        return false;
+    }
+    int const count = netTeamShufflePlayerCount();
+    if (count < 2)
+    {
+        error = "Team shuffling requires at least two players.";
+        return false;
+    }
+    netteams::Roster roster{};
+    for (int p = 0; p < kMaxPlayers; ++p)
+    {
+        if (!slots[p].active || slots[p].pendingDrop) continue;
+        roster[p].active = true;
+        roster[p].team = unsigned(gPlayer[p].teamId);
+        roster[p].joinOrder = slots[p].joinOrder;
+    }
+    // Keep shuffle randomness separate from the deterministic simulation.
+    auto const teams = netteams::shuffleTeams(roster, session ^ timerGetTicks() ^ serverTick ^ voteId);
+    for (int p = 0; p < kMaxPlayers; ++p)
+    {
+        if (!roster[p].active) continue;
+        slots[p].team = teams[p];
+        LOG_F(INFO, "NET team shuffle slot=%d from=%d to=%d join_order=%llu", p, int(roster[p].team), teams[p],
+              (unsigned long long)slots[p].joinOrder);
+    }
+    // netServerApplyVote restarts the map immediately after this succeeds.
+    // netOnPlayerStarting applies these assignments before spawning players.
+    LOG_F(INFO, "NET team shuffle players=%d", count);
+    return true;
 }
 void netOnLevelStarted()
 {
@@ -3541,13 +3595,13 @@ void submitVoteRequest(const netwire::VoteRequestPayload& request)
 {
     if (demoPlayback || !netIsLive() || !gGameStarted || (netIsClient() && !clientSnapshotReady))
     {
-        OSD_Printf("Map voting requires an active multiplayer connection.\n");
+        OSD_Printf("Voting requires an active multiplayer connection.\n");
         return;
     }
     if (netIsServer())
     {
         if (gDedicated || myconnectindex < 0)
-            OSD_Printf("Only connected players can call or cast map votes.\n");
+            OSD_Printf("Only connected players can call or cast votes.\n");
         else
             handleVoteRequest(myconnectindex, request);
         return;
@@ -3556,7 +3610,7 @@ void submitVoteRequest(const netwire::VoteRequestPayload& request)
     netwire::Writer w;
     if (!netwire::writeVoteRequest(w, request))
     {
-        OSD_Printf("Invalid map vote request or map name.\n");
+        OSD_Printf("Invalid vote request or map name.\n");
         return;
     }
     sendTo(serverPeer, netwire::VoteRequest, w.data);
@@ -3569,9 +3623,10 @@ void netCallMapVote(const char* action, const char* mapName)
     if (action && !Bstrcasecmp(action, "map")) request.command = netwire::VoteCommand::Map;
     else if (action && !Bstrcasecmp(action, "restart")) request.command = netwire::VoteCommand::Restart;
     else if (action && !Bstrcasecmp(action, "next")) request.command = netwire::VoteCommand::Next;
-    else { OSD_Printf("Use callvote map <name>, callvote restart, or callvote next.\n"); return; }
+    else if (action && !Bstrcasecmp(action, "shuffle")) request.command = netwire::VoteCommand::Shuffle;
+    else { OSD_Printf("Use callvote map <name>, callvote restart, callvote next, or callvote shuffle.\n"); return; }
     request.map = mapName ? mapName : "";
-    if (!netwire::validVoteRequest(request)) { OSD_Printf("Invalid map vote request or map name.\n"); return; }
+    if (!netwire::validVoteRequest(request)) { OSD_Printf("Invalid vote request or map name.\n"); return; }
     submitVoteRequest(request);
 }
 void netCastMapVote(bool yes)
@@ -3579,7 +3634,7 @@ void netCastMapVote(bool yes)
     auto status = displayedVote();
     if (status.state != netwire::VoteState::Active)
     {
-        OSD_Printf("No map vote is active.\n");
+        OSD_Printf("No vote is active.\n");
         return;
     }
     netwire::VoteRequestPayload request;
@@ -3608,11 +3663,12 @@ void netDrawMapVote()
     auto status = displayedVote();
     if (status.state != netwire::VoteState::Active) return;
     char heading[128], tally[128], threshold[64];
-    Bsnprintf(heading, sizeof(heading), "MAP VOTE: %.100s", status.action == 1 ? status.target.c_str()
+    if (status.action == 4) Bsnprintf(heading, sizeof(heading), "VOTE: Shuffle teams + restart");
+    else Bsnprintf(heading, sizeof(heading), "MAP VOTE: %.100s", status.action == 1 ? status.target.c_str()
               : status.action == 2 ? "Restart level" : "Next level");
     Bsnprintf(tally, sizeof(tally), "%us left | YES %u  NO %u", (status.remainingMs + 999) / 1000, status.yes, status.no);
     Bsnprintf(threshold, sizeof(threshold), "%u of %u YES required", status.required, status.eligible);
-    const char* prompt = demoPlayback ? "Recorded map vote" : status.voted ? "Your vote has been counted"
+    const char* prompt = demoPlayback ? "Recorded vote" : status.voted ? "Your vote has been counted"
         : status.canVote ? "Console: vote yes / vote no" : "You joined after this vote started";
     auto drawLine = [](const char* text, int y)
     {

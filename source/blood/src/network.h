@@ -172,6 +172,8 @@ void netBroadcastEvent(const uint8_t *data, size_t size);
 bool netInServerTick();
 uint32_t netAppliedCommandSequence(int player);
 void netPrepareCurrentMapSettings();
+int netTeamShufflePlayerCount();
+bool netShuffleTeams(std::string& error);
 void netCallMapVote(const char* action, const char* mapName);
 void netCastMapVote(bool yes);
 void netListVoteMaps();

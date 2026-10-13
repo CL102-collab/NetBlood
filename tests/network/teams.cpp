@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <set>
 
 static unsigned checks = 0;
 #define CHECK(x) do { ++checks; if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -152,10 +153,128 @@ static void connectionChronology()
     CHECK(netteams::selectBalancePlayer(roster) == -1);
 }
 
+static void verifyShuffle(const netteams::Roster& roster, uint32_t seed)
+{
+    const auto before = roster;
+    const auto teams = netteams::shuffleTeams(roster, seed);
+    CHECK(teams == netteams::shuffleTeams(roster, seed));
+    unsigned counts[2] = {}, active = 0;
+    bool changed = false, sameGroups = true, validOldTeams = true;
+    for (size_t slot = 0; slot < roster.size(); ++slot)
+    {
+        CHECK(roster[slot].active == before[slot].active);
+        CHECK(roster[slot].team == before[slot].team);
+        CHECK(roster[slot].joinOrder == before[slot].joinOrder);
+        if (!roster[slot].active)
+        {
+            CHECK(teams[slot] == -1);
+            continue;
+        }
+        ++active;
+        CHECK(teams[slot] == 0 || teams[slot] == 1);
+        ++counts[teams[slot]];
+        changed = changed || unsigned(teams[slot]) != roster[slot].team;
+        validOldTeams = validOldTeams && roster[slot].team < 2;
+        for (size_t other = 0; other < slot; ++other)
+            if (roster[other].active &&
+                ((roster[slot].team == roster[other].team) != (teams[slot] == teams[other])))
+                sameGroups = false;
+    }
+    CHECK(counts[0] <= counts[1] + 1 && counts[1] <= counts[0] + 1);
+    CHECK(counts[0] + counts[1] == active);
+    if (active >= 2)
+        CHECK(changed);
+    if (active >= 3 && validOldTeams)
+        CHECK(!sameGroups);
+}
+
+static void exhaustiveShuffles()
+{
+    // Every absent/team-zero/team-one roster includes empty games, all eight
+    // population sizes, unbalanced teams and disconnected holes in the roster.
+    unsigned permutations = 1;
+    for (size_t slot = 0; slot < netteams::MaxPlayers; ++slot)
+        permutations *= 3;
+    const uint32_t seeds[] = {0, 1, UINT32_C(0x12345678), UINT32_MAX};
+    for (unsigned pattern = 0; pattern < permutations; ++pattern)
+    {
+        netteams::Roster roster{};
+        unsigned assignment = pattern;
+        for (size_t slot = 0; slot < roster.size(); ++slot)
+        {
+            const unsigned state = assignment % 3;
+            assignment /= 3;
+            roster[slot].active = state != 0;
+            roster[slot].team = state ? state - 1 : 0;
+            roster[slot].joinOrder = (uint64_t(1) << 40) + slot;
+        }
+        for (uint32_t seed : seeds)
+            verifyShuffle(roster, seed);
+    }
+
+    // Old team values cannot leak into an assignment, even if an active slot
+    // has invalid or uninitialized team metadata when the vote completes.
+    netteams::Roster roster{};
+    for (size_t slot = 0; slot < roster.size(); ++slot)
+    {
+        roster[slot].active = slot % 3 != 1;
+        roster[slot].team = slot % 2 ? UINT32_MAX : 2;
+    }
+    for (uint32_t seed : seeds)
+        verifyShuffle(roster, seed);
+
+    // A departure immediately before applying a passed vote is not assigned
+    // to either team; a reused slot participates independently of join order.
+    roster[2].active = false;
+    verifyShuffle(roster, 31);
+    roster[2].active = true;
+    roster[2].joinOrder = std::numeric_limits<uint64_t>::max();
+    verifyShuffle(roster, 31);
+}
+
+static void shuffleVariety()
+{
+    for (size_t count = 1; count <= netteams::MaxPlayers; ++count)
+    {
+        netteams::Roster roster{};
+        for (size_t index = 0; index < count; ++index)
+        {
+            // Permuted slots ensure variety is not tied to a compact roster.
+            const size_t slot = (index * 3) % roster.size();
+            roster[slot].active = true;
+            roster[slot].team = index % 2;
+            roster[slot].joinOrder = count - index;
+        }
+        std::set<std::array<int, netteams::MaxPlayers>> outcomes;
+        bool extraZero = false, extraOne = false;
+        for (uint32_t seed = 0; seed < 256; ++seed)
+        {
+            verifyShuffle(roster, seed);
+            const auto teams = netteams::shuffleTeams(roster, seed);
+            outcomes.insert(teams);
+            unsigned zero = 0, one = 0;
+            for (int team : teams)
+            {
+                zero += team == 0;
+                one += team == 1;
+            }
+            extraZero = extraZero || zero > one;
+            extraOne = extraOne || one > zero;
+        }
+        // Two players have just one changed, balanced assignment. Larger
+        // rosters must produce multiple outcomes instead of a fixed rotation.
+        CHECK(outcomes.size() >= (count == 2 ? 1 : count == 1 ? 2 : count));
+        if (count % 2)
+            CHECK(extraZero && extraOne);
+    }
+}
+
 int main()
 {
     exhaustiveRosters();
     connectionChronology();
-    std::printf("Team balancing passed: %u checks\n", checks);
+    exhaustiveShuffles();
+    shuffleVariety();
+    std::printf("Team balancing and shuffling passed: %u checks\n", checks);
     return 0;
 }

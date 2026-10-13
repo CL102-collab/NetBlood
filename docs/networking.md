@@ -60,13 +60,35 @@ same results and the time remaining.
 At the deadline, the server advances once to the next map in its rotation,
 wrapping after the last entry. Without a rotation, Bloodbath and team games
 reload the current map; co-op retains its episode progression. The next match
-starts with a fresh scoreboard. Active map votes are canceled, and new votes
+starts with a fresh scoreboard. Active player votes are canceled, and new votes
 cannot interrupt the pause. The operator can still change maps explicitly.
 Vote- and operator-triggered map changes outside this pause remain immediate;
 the pause applies to automatic score/time limit endings. Packet demos preserve
 the final results and the countdown; legacy input demos remain unchanged.
 `net_status` reports `NET intermission`
 with its active state, remaining milliseconds and frozen level time.
+
+In team games, players can propose **`callvote shuffle`** in the console.
+Players answer with **`vote yes`** or **`vote no`**; **`vote_status`** shows the
+current ballot. Team shuffling is available without a map rotation. Bloodbath
+and co-op reject shuffle requests, and `-mapvote off` disables both map and
+shuffle votes.
+
+If the shuffle passes, the server randomly divides all currently connected
+players into two teams whose sizes differ by at most one, then restarts the
+**current map with fresh scores and starting equipment**. Players respawn with
+their new team's color and spawn points. The map rotation position and all
+server settings stay the same; the new teams persist into subsequent maps.
+Connection ages and vote cooldowns are retained. Packet demos record the vote,
+restart and resulting team assignments.
+
+Map and shuffle votes share the same rules: a vote runs for **30 seconds**, the
+caller automatically votes yes, and at least **51% of the players eligible at
+the start** must vote yes. Late joiners can watch but cannot vote in that ballot;
+departures do not lower its threshold. Only one vote can run at once, and each
+player has a shared **two-minute cooldown** between accepted calls of either
+kind. Neither kind can interrupt the end-of-match pause. Server rules, including
+the game type, remain under the server operator's control.
 
 In dedicated Bloodbath games, holstering weapons and chase view are disabled by
 default. Enable either with `-holsterweapon on` or `-chaseview on`; both options

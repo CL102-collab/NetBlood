@@ -275,7 +275,7 @@ inline bool readServerRules(Reader& r, ServerRules& rules)
     rules = candidate;
     return true;
 }
-enum class VoteCommand : uint32_t { List = 1, Map, Restart, Next, Yes, No, QueryStatus };
+enum class VoteCommand : uint32_t { List = 1, Map, Restart, Next, Yes, No, QueryStatus, Shuffle = 8 };
 enum class VoteState : uint32_t { Idle, Active, Passed, Failed, Cancelled };
 constexpr size_t VoteNameBytes = 255;
 inline bool voteText(const std::string& text, size_t maximum)
@@ -294,7 +294,7 @@ inline bool validVoteRequest(const VoteRequestPayload& request)
 {
     uint32_t const command = uint32_t(request.command);
     bool const ballot = request.command == VoteCommand::Yes || request.command == VoteCommand::No;
-    return command >= 1 && command <= 7 && (ballot ? request.id != 0 : request.id == 0)
+    return command >= 1 && command <= 8 && (ballot ? request.id != 0 : request.id == 0)
         && voteText(request.map, VoteNameBytes)
         && (request.command == VoteCommand::Map ? !request.map.empty() : request.map.empty());
 }
@@ -316,13 +316,13 @@ struct VoteStatusPayload
 {
     uint32_t id = 0;
     VoteState state = VoteState::Idle;
-    uint32_t action = 0, remainingMs = 0, eligible = 0, yes = 0, no = 0, required = 0;
+    uint32_t action = 0, remainingMs = 0, eligible = 0, yes = 0, no = 0, required = 0; // map=1, restart=2, next=3, shuffle=4
     uint32_t caller = 0, canVote = 0, voted = 0, cooldownMs = 0, rejected = 0;
     std::string target, notice;
 };
 inline bool validVoteStatus(const VoteStatusPayload& s)
 {
-    if (uint32_t(s.state) > 4 || s.action > 3 || s.remainingMs > 30000 || s.eligible > 8
+    if (uint32_t(s.state) > 4 || s.action > 4 || s.remainingMs > 30000 || s.eligible > 8
         || s.yes > s.eligible || s.no > s.eligible - s.yes || s.required != (s.eligible * 51 + 99) / 100
         || s.caller >= 8 || s.canVote > 1 || s.voted > 1 || s.cooldownMs > 120000 || s.rejected > 1
         || !voteText(s.target, VoteNameBytes) || !voteText(s.notice, 160)) return false;
@@ -353,12 +353,12 @@ inline bool readVoteStatus(Reader& r, VoteStatusPayload& s)
 }
 struct VoteOptionsPayload
 {
-    uint32_t enabled = 0, actions = 0, listRequested = 0; // action bits: map=1, restart=2, next=4
+    uint32_t enabled = 0, actions = 0, listRequested = 0; // action bits: map=1, restart=2, next=4, shuffle=8
     std::vector<std::string> maps;
 };
 inline bool validVoteOptions(const VoteOptionsPayload& options)
 {
-    if (options.enabled > 1 || options.actions > 7 || options.listRequested > 1 || options.maps.size() > 256
+    if (options.enabled > 1 || options.actions > 15 || options.listRequested > 1 || options.maps.size() > 256
         || (!options.enabled && (options.actions || !options.maps.empty()))
         || (bool(options.actions & 1) != !options.maps.empty())) return false;
     for (const auto& map : options.maps) if (map.empty() || !voteText(map, VoteNameBytes)) return false;
