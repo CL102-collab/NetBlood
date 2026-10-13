@@ -77,6 +77,7 @@ char        gNetAddress[254]; // Full DNS hostname (253 bytes) plus terminator.
 // PORT-TODO: Use different port?
 int gNetPort = kNetDefaultPort;
 char gNetStunServer[300] = "auto";
+char gNetPassword[129] = {};
 
 
 PKT_STARTGAME gPacketStartGame;
@@ -92,6 +93,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netevents.h"
 #include "netlag.h"
 #include "netmap.h"
+#include "netpassword.h"
 #include "netpredict.h"
 #include "netprotocol.h"
 #include "netcinematic.h"
@@ -124,11 +126,14 @@ int gNetSnapshotRate = 20;
 static_assert(kWeaponMax == netwire::WeaponCount, "Update the wire weapon range when adding weapons");
 static_assert(netmap::MaxBytes == netwire::MaxMapBytes, "Map storage and wire limits must agree");
 static_assert(MAXPLAYERNAME - 1 == netscoreboard::MaxName, "Scoreboard names must fit the player profile");
+static_assert(sizeof(gNetPassword) == netpassword::MaxBytes + 1, "Password storage must fit the wire limit");
 namespace
 {
 using Bytes = std::vector<uint8_t>;
 std::string stunOption, clientPublicEndpoint, connectionError;
 bool hasStunOption = false, clientTransportConnected = false;
+std::string passwordOption, serverPassword, clientPasswordError;
+bool hasPasswordOption = false;
 uint32_t clientConnectStarted = 0;
 
 bool stunEndpoint(const char* value, neturi::Endpoint& endpoint, std::string& error)
@@ -162,6 +167,7 @@ struct ClientSlot
     bool                  mapDownloadStarted = false;
     bool                  mapRequestPending = false;
     bool                  contentOffered = false;
+    bool                  authenticated = false, rejected = false;
     uint32_t              contentFingerprint = 0;
     std::shared_ptr<MapWindow> mapWindow;
     bool                  admitted = false, active = false, ready = false, pendingReady = false, pendingDrop = false, pendingLoops = false;
@@ -604,6 +610,10 @@ bool sendTo(ENetPeer *peer, uint32_t type, const Bytes &body, bool reliable = tr
 }
 void sendReject(ENetPeer *peer, const char *why)
 {
+    // disconnect_later still permits queued incoming traffic. Once rejected,
+    // a peer cannot retry Hello or finish admission on this connection.
+    for (auto& client : slots)
+        if (client.peer == peer) client.rejected = true;
     netwire::Writer w;
     w.text(why, 160);
     sendTo(peer, netwire::Reject, w.data);
@@ -1670,6 +1680,14 @@ void failClientVersion(uint32_t required, const std::string &build)
         build.c_str(), clientVersionError.back().c_str());
     viewSetErrorMessage(clientVersionError.front().c_str());
 }
+void failClientPassword(const std::string& reason)
+{
+    netDisconnect();
+    gStartNewGame = false;
+    clientPasswordError = reason;
+    viewSetErrorMessage(reason.c_str());
+    NetworkPromptPassword(reason.c_str());
+}
 bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
 {
     if (!replay && netcompat::isServerInfo(data, size))
@@ -1876,7 +1894,9 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         if (r.end())
         {
             LOG_F(ERROR, "NET rejected: %s", reason.c_str());
-            if (!replay && !clientContentChecked && reason == "Invalid client profile")
+            if (!replay && netpassword::isRejection(reason))
+                failClientPassword(reason);
+            else if (!replay && !clientContentChecked && reason == "Invalid client profile")
                 failContentCheck({}, "The server rejected the join format. Update the server and client to compatible versions with mod asset checking.");
             else if (clientDownloadingMap)
                 failMapDownload(reason);
@@ -2162,6 +2182,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
     if (slot < 0)
         return;
     ClientSlot     &c = slots[slot];
+    if (c.rejected) return;
     netwire::Header h;
     netwire::Reader r(nullptr, 0);
     if (!netwire::decode(data, size, h, r))
@@ -2177,11 +2198,25 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         std::string name = r.text(MAXPLAYERNAME - 1);
         int         aim = r.u8(), weapon = r.u8(), skill = r.u8();
         uint32_t capability = r.pos < r.size ? r.u32() : 0;
-        if (!r.end() || aim > 3 || weapon > 3 || skill > 4)
+        if (!r.ok || aim > 3 || weapon > 3 || skill > 4)
         {
             sendReject(peer, "Invalid client profile");
             return;
         }
+        std::string password;
+        if (!netpassword::readExtension(r, password))
+        {
+            sendReject(peer, netpassword::InvalidReason);
+            return;
+        }
+        auto const passwordCheck = netpassword::check(serverPassword, password);
+        if (passwordCheck != netpassword::CheckResult::Accepted)
+        {
+            sendReject(peer, passwordCheck == netpassword::CheckResult::Missing
+                ? netpassword::MissingReason : netpassword::IncorrectReason);
+            return;
+        }
+        c.authenticated = true;
         Bstrncpyz(gProfile[slot].name, name.c_str(), MAXPLAYERNAME);
         ensureServerPlayerName(slot);
         // A profile is not an authority to override server gameplay rules.
@@ -2239,7 +2274,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
     {
         // The server can change maps while the client checks files. Admission
         // is session-scoped; sendWelcome describes the current map generation.
-        if (!c.contentOffered || c.admitted || h.session != session)
+        if (!c.authenticated || !c.contentOffered || c.admitted || h.session != session)
             return;
         uint32_t fingerprint = r.u32();
         if (!r.end() || fingerprint != contentCRC || c.contentFingerprint != contentCRC)
@@ -2254,7 +2289,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         sendWelcome(slot);
         return;
     }
-    if (!c.admitted || h.session != session || h.generation != mapGeneration)
+    if (!c.authenticated || !c.admitted || h.session != session || h.generation != mapGeneration)
         return;
     if (h.type != netwire::Commands && c.received[h.type] && !netwire::newer(h.sequence, c.received[h.type]))
     {
@@ -2441,6 +2476,30 @@ bool netIsServer()
 { return gNetMode == NETWORK_SERVER; }
 bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
+bool netValidatePassword(const char* value, std::string& error)
+{
+    if (!value)
+    {
+        error = "Password value is missing.";
+        return false;
+    }
+    return netpassword::validate(value, error);
+}
+void netParsePasswordOption(const char* value)
+{
+    std::string error;
+    if (!netValidatePassword(value, error)) ThrowError("-password: %s", error.c_str());
+    passwordOption = value;
+    hasPasswordOption = true;
+}
+void netApplyPasswordOption()
+{
+    // Dedicated hosting never inherits the remembered client credential.
+    // Keep explicit empty arguments distinct from an absent option.
+    serverPassword = gDedicated && hasPasswordOption ? passwordOption : std::string();
+    if (!gDedicated && hasPasswordOption)
+        Bstrncpyz(gNetPassword, passwordOption.c_str(), sizeof(gNetPassword));
+}
 bool netValidateStunSetting(const char* value, std::string& error)
 {
     if (!*value || !Bstrcasecmp(value, "auto") || !Bstrcasecmp(value, "off")) return true;
@@ -2812,6 +2871,7 @@ void netDeinitialize(void)
     clientContentChecked = false;
     clientVersionReceived = false;
     clientVersionError.clear();
+    clientPasswordError.clear();
     clientServerRules = {};
     mapVote.cancel();
     voteState = netwire::VoteState::Idle;
@@ -2938,7 +2998,16 @@ void netUpdate(void)
                 w.u8(ClipRange(gWeaponSwitch, 0, 3));
                 w.u8(ClipRange(gSkill, 0, 4));
                 w.u32(netassets::ManifestVersion);
-                sendTo(serverPeer, netwire::Hello, w.data);
+                if (netpassword::writeExtension(w, gNetPassword))
+                    sendTo(serverPeer, netwire::Hello, w.data);
+                else
+                {
+                    clientPasswordError = netpassword::InvalidReason;
+                    LOG_F(ERROR, "NET password must contain at most 128 bytes and no control characters");
+                    viewSetErrorMessage(clientPasswordError.c_str());
+                    enet_peer_disconnect_now(serverPeer, 1);
+                    serverPeer = nullptr;
+                }
             }
         }
         else if (event.type == ENET_EVENT_TYPE_RECEIVE)
@@ -3056,6 +3125,15 @@ void netDrawConnectionStatus()
 {
     if (gDedicated)
         return;
+    if (!clientPasswordError.empty())
+    {
+        if (gGameMenuMgr.m_bActive) return;
+        viewDrawText(3, clientPasswordError.c_str(), 160, 76, -128, 0, 1, 1);
+        viewDrawText(3, "Set password in the console", 160, 92, -128, 0, 1, 1);
+        viewDrawText(3, "or Password in the Join Game menu,", 160, 104, -128, 0, 1, 1);
+        viewDrawText(3, "then reconnect.", 160, 116, -128, 0, 1, 1);
+        return;
+    }
     if (!clientVersionError.empty())
     {
         if (gGameMenuMgr.m_bActive) return;
@@ -3145,6 +3223,7 @@ void netDrawCinematic()
 void netOnLevelChanging()
 {
     clientVersionError.clear();
+    clientPasswordError.clear();
     if (!netIsServer()) return;
     netServerCancelIntermission();
     intermission = {};

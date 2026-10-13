@@ -1365,6 +1365,7 @@ SWITCH switches[] = {
     { "chaseview", 60, 1 },
     { "lives", 61, 1 },
     { "stunserver", 62, 1 },
+    { "password", 63, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1403,6 +1404,7 @@ void PrintHelp(void)
         "-dedicated\tRun a server without a window or audio device\n"
         "-gametype [type]\tServer mode: coop (default), bloodbath, or teams\n"
         "-port [port]\tUDP listen/connect port; Range:1..65535; Default:23513\n"
+        "-password [text]\tDedicated server password or client join password; default empty, max 128 bytes\n"
         "Dedicated server rules:\n"
         "-maxplayers [n]\tPlayer limit; Range:1..8; Default:8\n"
         "-timelimit [min]\tMinutes per map; 0 means unlimited (default)\n"
@@ -1769,6 +1771,10 @@ void ParseOptions(void)
             if (OptArgc < 1) ThrowError("Missing argument for -stunserver");
             netParseStunOption(OptArgv[0]);
             break;
+        case 63:
+            if (OptArgc < 1) ThrowError("Missing argument for -password");
+            netParsePasswordOption(OptArgv[0]);
+            break;
         }
     }
     netServerValidateOptions(gRequestedGameType, bAddUserMap);
@@ -1914,6 +1920,7 @@ static int RunDedicatedServer()
     gViewIndex = -1;
     gChoke.Init(518, playerHandChoke);
     OSD_Exec("autoexec.cfg");
+    netApplyPasswordOption();
     SoundToggle = MusicToggle = 0;
     StartLevel(&gGameOptions);
     LOG_F(INFO, "Dedicated server running: port=%d players=%d (stdin accepts console commands)", gNetPort, numplayers);
@@ -1970,9 +1977,10 @@ static int HandleUriCommandLine(int& argc, char const * const * argv)
     bool registration = false, connection = false, discordLaunch = false;
     for (int i = 1; i < argc; ++i)
     {
-        if (IsUriSwitch(argv[i], "stunserver") && !Bstrchr(argv[i], '=') && i + 1 < argc)
+        if ((IsUriSwitch(argv[i], "stunserver") || IsUriSwitch(argv[i], "password"))
+            && !Bstrchr(argv[i], '=') && i + 1 < argc)
         {
-            ++i; // A service address belongs to the explicit option, not URI launching.
+            ++i; // Option values are not URI-launch commands or links.
             continue;
         }
         registration |= IsUriSwitch(argv[i], "register-uri");
@@ -2302,6 +2310,7 @@ int app_main(int argc, char const * const * argv)
         Bstrncpyz(gPacketStartGame.userMapName, gUserMapFilename, sizeof(gPacketStartGame.userMapName));
     }
     netServerInitializeSettings();
+    netApplyPasswordOption();
     if (gDedicated)
         SoundToggle = MusicToggle = 0;
     LOG_F(INFO, "Initializing network users");
@@ -2329,6 +2338,10 @@ int app_main(int argc, char const * const * argv)
 
     if (!gDemoRunValidation)
         OSD_Exec("autoexec.cfg");
+
+    // Explicit startup credentials take precedence over saved/autoexec values.
+    // Do not reapply them on later joins: the menu/console may correct a password.
+    netApplyPasswordOption();
 
     CONFIG_SetScoreboardDefaultKey();
     discordPresenceInitialize();

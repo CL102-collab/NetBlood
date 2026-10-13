@@ -240,6 +240,66 @@ uint32_t manifest(const Message &message) {
     check(!assets.empty(), "stock server manifest empty");
     return fingerprint;
 }
+void passwordProbe(unsigned port, const std::string &mode, const std::string &password) {
+    Endpoint client(port, false);
+    Bytes request = hello(0);
+    netwire::Writer extension;
+    // Encode independently of the production password parser. Empty passwords
+    // normally omit the extension, but an explicit zero-length field is valid.
+    if (mode != "missing" && mode != "open-missing" && mode != "bypass") {
+        if (mode == "truncated") {
+            extension.u16(10); extension.u8('x');
+        } else if (mode == "oversized") {
+            extension.text(std::string(129, 'x'), 129);
+        } else if (mode == "nul") {
+            extension.text(std::string("open\0sesame", 11), 128);
+        } else if (mode == "control") {
+            extension.text("open\nsesame", 128);
+        } else {
+            extension.text(mode == "empty" ? "" : password, 128);
+            if (mode == "trailing") extension.u8('x');
+        }
+        request.insert(request.end(), extension.data.begin(), extension.data.end());
+    }
+    if (mode == "bypass") {
+        netwire::Writer ready; ready.u32(0); ready.u32(0);
+        client.send(netwire::ContentReady, ready.data);
+        client.send(netwire::Ready, ready.data);
+        client.send(netwire::RequestMap, ready.data);
+        client.silence(500);
+        extension.text(password, 128);
+        request.insert(request.end(), extension.data.begin(), extension.data.end());
+    }
+    client.send(netwire::Hello, request);
+    if (mode == "rejected-bypass") {
+        // All packets are queued before servicing the rejection: later Hello
+        // and readiness messages must not revive a rejected ENet peer.
+        Bytes correct = hello(0);
+        extension.data.clear(); extension.text("open sesame", 128);
+        correct.insert(correct.end(), extension.data.begin(), extension.data.end());
+        client.send(netwire::Hello, correct);
+        netwire::Writer ready; ready.u32(0); ready.u32(0);
+        client.send(netwire::ContentReady, ready.data);
+        client.send(netwire::Ready, ready.data);
+        client.send(netwire::RequestMap, ready.data);
+    }
+    const Message response = client.receive();
+    if (mode == "accepted" || mode == "bypass" || mode == "open-empty" || mode == "open-missing") {
+        manifest(response);
+        std::printf("password_accepted=1 content_manifest=1 preauth_bypass=%u\n", mode == "bypass");
+        return;
+    }
+    check(response.header.type == netwire::Reject, "password fault received content or gameplay instead of rejection");
+    netwire::Reader reasonReader(response.body.data(), response.body.size());
+    const std::string reason = reasonReader.text(160);
+    check(reasonReader.end() && reason.find("password") != std::string::npos, "password rejection is unclear");
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    Message later;
+    while (!client.disconnected && Clock::now() < deadline)
+        check(!client.poll(later), "rejected password peer received another message");
+    check(client.disconnected, "rejected password peer remained connected");
+    std::printf("password_rejected=1 disconnected=1 content_manifest=0 gameplay_messages=0 reason=\"%s\"\n", reason.c_str());
+}
 void probe(unsigned port, const std::string &mode, uint32_t fingerprint, const char *trigger) {
     Endpoint client(port, false);
     client.send(netwire::Hello, hello(fingerprint, mode != "legacy", mode == "profile-hold" ? 3 : 1,
@@ -369,7 +429,7 @@ void fakeServer(unsigned port, const std::string &mode) {
 }
 int main(int argc, char **argv) {
     try {
-        check(argc >= 4, "usage: peer probe|server|version-server PORT MODE [CRC [TRIGGER]], or version-probe PORT VERSION");
+        check(argc >= 4, "usage: peer probe|server|version-server PORT MODE [CRC [TRIGGER]], version-probe PORT VERSION, or password-probe PORT MODE [PASSWORD]");
         check(enet_initialize() == 0, "ENet init");
         const unsigned port = unsigned(std::strtoul(argv[2], nullptr, 10));
         check(port && port <= 65535, "invalid port");
@@ -379,6 +439,7 @@ int main(int argc, char **argv) {
         else if (std::string(argv[1]) == "version-probe")
             versionProbe(port, uint32_t(std::strtoul(argv[3], nullptr, 10)));
         else if (std::string(argv[1]) == "version-server") versionServer(port, argv[3]);
+        else if (std::string(argv[1]) == "password-probe") passwordProbe(port, argv[3], argc > 4 ? argv[4] : "");
         else throw std::runtime_error("unknown peer mode");
         enet_deinitialize();
         return 0;

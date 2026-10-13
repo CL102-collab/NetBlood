@@ -82,7 +82,9 @@ int GetOptions(SWITCH *switches)
             if (OptIndex >= margc)
                 break;
             pChar = margv[OptIndex++];
-            if (strchr(SwitchChars, *pChar) != 0)
+            // A quoted empty value is an argument, not a switch: strchr also
+            // matches the terminating NUL (for example, -password "").
+            if (*pChar && strchr(SwitchChars, *pChar) != 0)
                 break;
         }
         OptArgv[OptArgc++] = pChar;

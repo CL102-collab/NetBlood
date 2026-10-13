@@ -34,6 +34,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "menu.h"
 #include "messages.h"
 #include "network.h"
+#include "osd.h"
 #include "osdcmds.h"
 #include "sfx.h"
 #include "screen.h"
@@ -212,6 +213,7 @@ CGameMenu menuSorry2;
 CGameMenu menuNetwork;
 CGameMenu menuNetworkHost;
 CGameMenu menuNetworkJoin;
+static CGameMenu menuNetworkPassword;
 
 CGameMenuItemQAV itemBloodQAV("", 3, 160, 100, "BDRIP", true);
 CGameMenuItemQAV itemCreditsQAV("", 3, 160, 100, "CREDITS", false, true);
@@ -768,9 +770,52 @@ void SetupNetworkHostMenu(CGameMenuItemChain *pItem);
 void SetupNetworkJoinMenu(CGameMenuItemChain *pItem);
 void NetworkHostGame(CGameMenuItemChain *pItem);
 void NetworkJoinGame(CGameMenuItemChain *pItem);
+static void NetworkRetryPassword(CGameMenuItemChain *pItem);
+static void NetworkCancelPassword(CGameMenuItemChain *pItem);
+static void NetworkPasswordEntered(CGameMenuItemZEdit *pItem, CGameMenuEvent *pEvent);
 
-char zNetAddressBuffer[16] = "localhost";
+char zNetAddressBuffer[sizeof(gNetAddress)] = "localhost";
 char zNetPortBuffer[6] = "23513";
+
+// Keep long connection values inside their row while editing the full string.
+// The cursor is at the end, so show the suffix when the value needs to scroll.
+class CGameMenuItemNetworkEdit : public CGameMenuItemZEdit
+{
+    char* const m_value;
+
+public:
+    CGameMenuItemNetworkEdit(const char* label, int y, char* value, int capacity,
+        void (*callback)(CGameMenuItemZEdit *, CGameMenuEvent *) = NULL)
+        : CGameMenuItemZEdit(label, 3, 66, y, 180, value, capacity, 0, callback, 0), m_value(value)
+    {}
+
+    void Draw(void) override
+    {
+        int labelWidth = 0, textWidth = 0, ellipsisWidth = 0;
+        gMenuTextMgr.GetFontInfo(m_nFont, m_pzText, &labelWidth, NULL);
+        gMenuTextMgr.GetFontInfo(m_nFont, m_value, &textWidth, NULL);
+        gMenuTextMgr.GetFontInfo(m_nFont, "...", &ellipsisWidth, NULL);
+        int const available = ClipLow(m_nWidth - labelWidth - 8, 0);
+        char const* visible = m_value;
+        bool const scrolled = textWidth > available;
+        while (*visible && textWidth + (scrolled ? ellipsisWidth : 0) > available)
+            gMenuTextMgr.GetFontInfo(m_nFont, ++visible, &textWidth, NULL);
+
+        char display[sizeof(gNetAddress) + 4];
+        Bsnprintf(display, sizeof(display), "%s%s", scrolled ? "..." : "", visible);
+        at20 = display;
+        CGameMenuItemZEdit::Draw();
+        at20 = m_value;
+    }
+
+    bool Event(CGameMenuEvent& event) override
+    {
+        // Draw can dispatch a mouse click: edits and Escape's backup must still
+        // use the complete value, never the temporary visible suffix.
+        at20 = m_value;
+        return CGameMenuItemZEdit::Event(event);
+    }
+};
 
 CGameMenuItemTitle itemNetworkTitle("MULTIPLAYER", 1, 160, 20, 2038);
 CGameMenuItemChain itemNetworkHost("HOST A GAME", 1, 0, 80, 320, 1, &menuNetworkHost, -1, SetupNetworkHostMenu, 0);
@@ -782,9 +827,17 @@ CGameMenuItemZEdit itemNetworkHostPort("NETWORK PORT:", 3, 66, 80, 180, zNetPort
 CGameMenuItemChain itemNetworkHostHost("HOST A GAME", 3, 66, 100, 180, 1, NULL, -1, NetworkHostGame, 0);
 
 CGameMenuItemTitle itemNetworkJoinTitle("JOIN A GAME", 1, 160, 20, 2038);
-CGameMenuItemZEdit itemNetworkJoinAddress("NETWORK ADDRESS:", 3, 66, 70, 180, zNetAddressBuffer, 16, 0, NULL, 0);
+CGameMenuItemNetworkEdit itemNetworkJoinAddress("NETWORK ADDRESS:", 70, zNetAddressBuffer, sizeof(zNetAddressBuffer));
 CGameMenuItemZEdit itemNetworkJoinPort("NETWORK PORT:", 3, 66, 80, 180, zNetPortBuffer, 6, 0, NULL, 0);
-CGameMenuItemChain itemNetworkJoinJoin("JOIN A GAME", 3, 66, 100, 180, 1, NULL, -1, NetworkJoinGame, 0);
+CGameMenuItemNetworkEdit itemNetworkJoinPassword("PASSWORD:", 90, gNetPassword, sizeof(gNetPassword));
+CGameMenuItemChain itemNetworkJoinJoin("JOIN A GAME", 3, 66, 110, 180, 1, NULL, -1, NetworkJoinGame, 0);
+
+static char zNetworkPasswordReason[64];
+static CGameMenuItemTitle itemNetworkPasswordTitle("SERVER PASSWORD", 1, 160, 20, 2038);
+static CGameMenuItemText itemNetworkPasswordReason(zNetworkPasswordReason, 3, 160, 65, 1);
+static CGameMenuItemNetworkEdit itemNetworkPasswordEdit("PASSWORD:", 90, gNetPassword, sizeof(gNetPassword), NetworkPasswordEntered);
+static CGameMenuItemChain itemNetworkPasswordConnect("CONNECT", 3, 66, 115, 180, 1, NULL, -1, NetworkRetryPassword, 0);
+static CGameMenuItemChain itemNetworkPasswordCancel("CANCEL", 3, 66, 135, 180, 1, NULL, -1, NetworkCancelPassword, 0);
 
 // There is no better way to do this than manually.
 
@@ -2711,7 +2764,10 @@ void SetupMouseButtonMenu(CGameMenuItemChain *pItem)
 void SetupNetworkMenu(void)
 {
     if (strlen(gNetAddress) > 0)
-        strncpy(zNetAddressBuffer, gNetAddress, sizeof(zNetAddressBuffer)-1);
+    {
+        Bstrncpyz(zNetAddressBuffer, gNetAddress, sizeof(zNetAddressBuffer));
+        Bsnprintf(zNetPortBuffer, sizeof(zNetPortBuffer), "%u", unsigned(gNetPort ? gNetPort : kNetDefaultPort));
+    }
 
     menuNetwork.Add(&itemNetworkTitle, false);
     menuNetwork.Add(&itemNetworkHost, true);
@@ -2727,8 +2783,16 @@ void SetupNetworkMenu(void)
     menuNetworkJoin.Add(&itemNetworkJoinTitle, false);
     menuNetworkJoin.Add(&itemNetworkJoinAddress, true);
     menuNetworkJoin.Add(&itemNetworkJoinPort, false);
+    menuNetworkJoin.Add(&itemNetworkJoinPassword, false);
     menuNetworkJoin.Add(&itemNetworkJoinJoin, false);
     menuNetworkJoin.Add(&itemBloodQAV, false);
+
+    menuNetworkPassword.Add(&itemNetworkPasswordTitle, false);
+    menuNetworkPassword.Add(&itemNetworkPasswordReason, false);
+    menuNetworkPassword.Add(&itemNetworkPasswordEdit, true);
+    menuNetworkPassword.Add(&itemNetworkPasswordConnect, false);
+    menuNetworkPassword.Add(&itemNetworkPasswordCancel, false);
+    menuNetworkPassword.Add(&itemBloodQAV, false);
 }
 
 void SetupNetworkHostMenu(CGameMenuItemChain *pItem)
@@ -2785,8 +2849,7 @@ void NetworkJoinGame(CGameMenuItemChain *pItem)
 
 void NetworkJoinEndpoint(const char* host, uint16_t port)
 {
-    // Copy first: callers can supply the current address, which remains separate
-    // from the much shorter legacy join-menu edit buffer.
+    // Copy first: callers can supply either of the address buffers below.
     std::string const address = host;
     sndStopSong();
     FX_StopAllSounds();
@@ -2796,6 +2859,9 @@ void NetworkJoinEndpoint(const char* host, uint16_t port)
     netDisconnect();
     Bstrncpyz(gNetAddress, address.c_str(), sizeof(gNetAddress));
     gNetPort = port;
+    // Keep link/console connection targets available for a password retry.
+    Bstrncpyz(zNetAddressBuffer, address.c_str(), sizeof(zNetAddressBuffer));
+    Bsnprintf(zNetPortBuffer, sizeof(zNetPortBuffer), "%u", unsigned(port));
     gNetMode = NETWORK_CLIENT;
     netInitialize(false);
     gGameStarted = false;
@@ -2809,6 +2875,42 @@ void NetworkJoinEndpoint(const char* host, uint16_t port)
     UpdateNetworkMenus();
     gGameMenuMgr.Deactivate();
     viewSetMessage("Connecting to server...");
+}
+
+void NetworkPromptPassword(const char* reason)
+{
+    Bstrncpyz(zNetworkPasswordReason, reason, sizeof(zNetworkPasswordReason));
+    OSD_ShowDisplay(0);
+    KB_ClearKeysDown();
+    KB_FlushKeyboardQueue();
+    keyFlushScans();
+    // A rejection can replace any open menu, including an earlier prompt.
+    // Push clears the previous text editor before starting this one.
+    gGameMenuMgr.Deactivate();
+    gGameMenuMgr.Push(&menuNetworkPassword, 2);
+    CGameMenuEvent edit = { kMenuEventEnter, 0 };
+    itemNetworkPasswordEdit.Event(edit);
+}
+
+static void NetworkRetryPassword(CGameMenuItemChain *pItem)
+{
+    UNREFERENCED_PARAMETER(pItem);
+    NetworkJoinEndpoint(gNetAddress, gNetPort ? gNetPort : kNetDefaultPort);
+}
+
+static void NetworkPasswordEntered(CGameMenuItemZEdit *pItem, CGameMenuEvent *pEvent)
+{
+    UNREFERENCED_PARAMETER(pItem);
+    UNREFERENCED_PARAMETER(pEvent);
+    NetworkRetryPassword(NULL);
+}
+
+static void NetworkCancelPassword(CGameMenuItemChain *pItem)
+{
+    UNREFERENCED_PARAMETER(pItem);
+    netDisconnect();
+    gGameMenuMgr.Deactivate();
+    gGameMenuMgr.Push(&menuMain, -1);
 }
 
 void SaveGameProcess(CGameMenuItemChain *pItem)

@@ -168,6 +168,48 @@ the dedicated clients use Vulkan.
 
 ## Dedicated startup rules
 
+Dedicated servers are open by default. Add `-password "open sesame"` to require
+an exact, case-sensitive password; omit the parameter or pass `-password ""`
+to leave the server open. A saved client password does not protect a dedicated
+server implicitly. Clients can pass the same `-password` option, enter it in
+**Multiplayer → Join A Game → Password**, or set the remembered console cvar:
+
+```text
+password "open sesame"
+password
+password ""
+```
+
+The first command remembers a password, the second displays it, and the last
+clears it. Explicit startup credentials override saved client configuration.
+Passwords may contain spaces and are limited to 128 bytes. They are transmitted
+and stored as plaintext. Wrong or missing passwords are rejected before asset
+verification, map downloading, or player admission. The game opens a password
+prompt automatically, including URI/Discord joins: type a password and press
+Enter to retry the original server, or choose Cancel to remain disconnected.
+
+Run the real dedicated-server/client checks under X11/Xvfb:
+
+```sh
+python3 tests/network/password.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-password-evidence
+```
+
+This checks the default-open server even with a saved client credential,
+case-sensitive rejection, CLI precedence, spaces, the 128-byte boundary,
+remembering and clearing a password across restarts, quotes/backslashes and
+semicolons across configuration saves, and typing a password into the actual
+Join menu. It also retries an incorrect password in the automatic prompt,
+cancels without joining, and opens a URI-only invocation from a different
+working directory before entering a correct password. Independent ENet probes
+cover malformed/truncated/oversized password
+fields, embedded NUL/control bytes, trailing data, and readiness/map-download
+messages sent before authentication or after rejection. Rejected peers must
+receive no asset manifest or gameplay. Screenshots verify persistent diagnostics
+and show the Join menu; `--skip-screenshots` omits image checks. Graphical tests
+default to software, with `--renderer 3` or `--renderer 5` also available.
+
 For example, run a two-map Bloodbath rotation with a 15-minute or 30-frag limit:
 
 ```sh

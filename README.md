@@ -78,6 +78,18 @@ Put one map name per line in `rotation.txt` on the game's search path; the list
 repeats. For cooperative episode play, use `-gametype coop -episode 1
 -difficulty 2 -losekeys off` instead of the score limit and map list.
 Connected clients cannot change the server's rules or start another game.
+
+Add `-password "crypt key"` to require a password; omitting it leaves the
+server open. Clients can enter it under **Multiplayer → Join a Game → Password**
+or launch with `-client host -port 23513 -password "crypt key"`. The console
+command `password "crypt key"` also sets and remembers the client password;
+`password` displays it and `password ""` clears it. Passwords are case-sensitive,
+up to 128 bytes, and are sent and saved as plaintext. A saved client password
+does not enable a dedicated server password.
+Protected URI and Discord joins open a password entry screen automatically
+before downloading maps or checking assets. An incorrect password returns to
+the prompt so it can be corrected or the connection cancelled.
+
 See [dedicated startup rules](tests/network/README.md#dedicated-startup-rules)
 for all parameters, defaults, examples, and validation checks.
 

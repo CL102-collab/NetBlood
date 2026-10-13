@@ -2422,7 +2422,19 @@ void OSD_WriteCvars(buildvfs_FILE fp)
                 {
                     buildvfs_fputstrptr(fp, pData.name);
                     buildvfs_fputstr(fp, " \"");
-                    buildvfs_fputstrptr(fp, pData.string);
+                    // Match osd_strtoken's quoted-string escapes so passwords
+                    // and other string settings survive a save/load unchanged.
+                    for (char const* value = pData.string; *value; ++value)
+                    {
+                        if (*value == '\n') buildvfs_fputstr(fp, "\\n");
+                        else if (*value == '\r') buildvfs_fputstr(fp, "\\r");
+                        else
+                        {
+                            if (*value == '\\' || *value == '"') buildvfs_fputstr(fp, "\\");
+                            char const character[] = { *value, 0 };
+                            buildvfs_fputstrptr(fp, character);
+                        }
+                    }
                     buildvfs_fputstr(fp, "\"\n");
                 }
                 break;

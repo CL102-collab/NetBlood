@@ -1007,6 +1007,15 @@ static int osdcmd_inittimer(osdcmdptr_t parm)
 
 static int osdcmd_cvar_set_game(osdcmdptr_t parm)
 {
+    if (parm->numparms && !Bstrcasecmp(parm->name, "password"))
+    {
+        std::string error;
+        if (parm->numparms != 1 || !netValidatePassword(parm->parms[0], error))
+        {
+            OSD_Printf("password: %s\n", error.empty() ? "Expected one value; quote passwords containing spaces." : error.c_str());
+            return OSDCMD_OK;
+        }
+    }
     if (parm->numparms && !Bstrcasecmp(parm->name, "net_stun_server"))
     {
         std::string error;
@@ -1274,10 +1283,11 @@ int32_t registerosdcommands(void)
         { "net_snapshotrate", "server snapshots per second (simulation remains 30 Hz)", (void *)&gNetSnapshotRate, CVAR_INT, 1, 30 },
         { "net_lagometer", "show snapshot latency, interpolation and packet loss", (void *)&gNetLagometer, CVAR_BOOL, 0, 1 },
         { "net_stun_server", "next hosted game's STUN discovery: auto (Google), off, or host:port", (void *)gNetStunServer, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gNetStunServer) },
+        { "password", "remembered client join password (case-sensitive, max 128 bytes); password \"\" clears it", (void *)gNetPassword, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gNetPassword) },
         { "discord_enabled", "enable Discord Rich Presence and game invitations", (void *)&gDiscordEnabled, CVAR_BOOL, 0, 1 },
         { "discord_appid", "Discord application ID (empty until configured)", (void *)gDiscordApplicationId, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordApplicationId) },
         { "discord_server_address", "listen server's public invitation link, netblood://host:port", (void *)gDiscordServerAddress, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(gDiscordServerAddress) },
-        { "net_address","sets network address used for multiplayer", (void *)zNetAddressBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 16 },
+        { "net_address","sets network address used for multiplayer", (void *)zNetAddressBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, sizeof(zNetAddressBuffer) },
         { "net_port","sets network port used for multiplayer", (void *)zNetPortBuffer, CVAR_STRING|CVAR_FUNCPTR, 0, 6 },
 //
 //        { "osdhightile", "enable/disable hires art replacements for console text", (void *)&osdhightile, CVAR_BOOL, 0, 1 },
