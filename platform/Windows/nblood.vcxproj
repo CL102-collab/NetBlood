@@ -385,6 +385,7 @@
     <ClInclude Include="..\..\source\blood\src\misc.h" />
     <ClInclude Include="..\..\source\blood\src\netcinematic.h" />
     <ClInclude Include="..\..\source\blood\src\network.h" />
+    <ClInclude Include="..\..\source\blood\src\netintermission.h" />
     <ClInclude Include="..\..\source\blood\src\netstun.h" />
     <ClInclude Include="..\..\source\blood\src\netstun_client.h" />
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />

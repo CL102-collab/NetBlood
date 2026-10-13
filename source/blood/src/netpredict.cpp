@@ -99,7 +99,7 @@ void predict(Command const &command, bool replay)
 
 bool netPredictActive()
 {
-    return initialized && (netIsClient() || netDemoIsPlaying());
+    return initialized && !netIntermissionActive() && (netIsClient() || netDemoIsPlaying());
 }
 
 void netPredictReset()
@@ -146,6 +146,16 @@ void netPredictBeforeSnapshot()
 
 void netPredictSnapshot(uint32_t acknowledgedCommand, uint32_t serverTick, bool discontinuity)
 {
+    if (netIntermissionActive())
+    {
+        // Inputs sent before the match ended can remain ahead of the final
+        // server ACK. Discard them instead of moving/firing past that state.
+        commands.clear();
+        sounds.clear();
+        overflowed = haveCommand = false;
+        stats.pendingCommands = 0;
+        discontinuity = true;
+    }
     if (!localPlayerValid()) return;
     const bool first = !initialized;
     if (!first && (!beforeSnapshot || previousSectors.size() != size_t(numsectors) ||
@@ -212,6 +222,7 @@ bool netPredictSuppressSound(int spriteIndex, int soundId, uint32_t commandSeque
 
 int netPredictLocalFraction()
 {
+    if (netIntermissionActive()) return 65536;
     return int(std::min<uint64_t>(65536, uint64_t(timerGetTicks() - commandTime) * 30 * 65536 / 1000));
 }
 

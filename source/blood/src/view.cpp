@@ -1856,16 +1856,22 @@ void scoreboardFlag(const char *country, int x, int y, int scale)
 
 void viewDrawScoreboard()
 {
-    if (gGameOptions.nGameType == kGameTypeSinglePlayer || !BUTTON(gamefunc_Show_Scoreboard)
-        || gInputMode != INPUT_MODE_0 || gGameMenuMgr.m_bActive || OSD_GetRowsCur() > 0) return;
+    bool const intermission = netIntermissionActive();
+    if (gGameOptions.nGameType == kGameTypeSinglePlayer
+        || (!intermission && (!BUTTON(gamefunc_Show_Scoreboard) || gInputMode != INPUT_MODE_0))
+        || gGameMenuMgr.m_bActive || OSD_GetRowsCur() > 0) return;
     auto rows = netGetScoreboard().rows;
     bool const teams = gGameOptions.nGameType == kGameTypeTeams;
     bool const coopLives = netCoopLifeLimit() > 0;
-    std::sort(rows.begin(), rows.end(), [teams, coopLives](const netscoreboard::Row &left, const netscoreboard::Row &right)
+    std::sort(rows.begin(), rows.end(), [teams, coopLives, intermission](const netscoreboard::Row &left, const netscoreboard::Row &right)
     {
         if (teams && left.team != right.team) return left.team < right.team;
-        if (coopLives && netCoopLivesRemaining(left.slot) != netCoopLivesRemaining(right.slot))
-            return netCoopLivesRemaining(left.slot) > netCoopLivesRemaining(right.slot);
+        if (coopLives)
+        {
+            int const leftLives = intermission ? left.livesRemaining : netCoopLivesRemaining(left.slot);
+            int const rightLives = intermission ? right.livesRemaining : netCoopLivesRemaining(right.slot);
+            if (leftLives != rightLives) return leftLives > rightLives;
+        }
         if (left.score != right.score) return left.score > right.score;
         return left.slot < right.slot;
     });
@@ -1876,10 +1882,15 @@ void viewDrawScoreboard()
     int const groups = teamCounts[2] ? 3 : 2;
     int const scale = std::max(1, std::min(xdim / 320, ydim / 200));
     int const width = 304;
-    // Even eight players plus a joining section fit in the 320x200 HUD space.
-    int const height = (teams ? 38 + groups * 14 + (groups - 1) * 2 : 54)
+    // During intermission reserve space below the panel for the countdown.
+    // Compact team headers and omit the ordinary footer so eight players plus
+    // a joining section still fit at 320x200, without shrinking flags or names.
+    int const teamHeaderHeight = intermission ? 12 : 14;
+    int const height = (teams ? 38 + groups * teamHeaderHeight + (groups - 1) * 2 : 54)
+        - (intermission ? 12 : 0)
         + int(std::max(count, size_t(1))) * 14;
-    int const x = (xdim - width * scale) / 2, y = (ydim - height * scale) / 2;
+    int const footerHeight = intermission ? 20 * scale : 0;
+    int const x = (xdim - width * scale) / 2, y = (ydim - footerHeight - height * scale) / 2;
     auto rect = [&](int left, int top, int w, int h, uint32_t color)
     {
         scoreboardRect(x + left * scale, y + top * scale, w * scale, h * scale, color);
@@ -1891,7 +1902,7 @@ void viewDrawScoreboard()
     scoreboardCanvasBegin();
     rect(-1, -1, width + 2, height + 2, 0x716454);
     rect(0, 0, width, height, 0x141416);
-    text("SCOREBOARD", 8, 7, 0xf3e5c8, false);
+    text(intermission ? "FINAL SCOREBOARD" : "SCOREBOARD", 8, 7, 0xf3e5c8, false);
     text(teams ? "TEAMS" : gGameOptions.nGameType == kGameTypeCoop ? "CO-OP" : "BLOODBATH",
          width - 8, 8, 0xc0b6a2, true, true);
     rect(8, 20, width - 16, 1, 0x645848);
@@ -1903,7 +1914,7 @@ void viewDrawScoreboard()
     };
     auto drawRow = [&](netscoreboard::Row const &row, int top, size_t index)
     {
-        bool const local = row.slot == myconnectindex;
+        bool const local = netScoreboardRowIsLocal(row);
         uint32_t const color = teams && row.team < 2 ? (row.team ? 0xff8585 : 0x8ab7ff) : 0xededed;
         rect(4, top - 2, width - 8, 14, local ? 0x38332b : (index & 1) ? 0x202023 : 0x19191c);
         if (local) rect(4, top - 2, 1, 14, 0xf3cf82);
@@ -1918,8 +1929,8 @@ void viewDrawScoreboard()
         }
         text(name, 35, top + 1, color, false);
         char value[32];
-        int const lives = coopLives ? netCoopLivesRemaining(row.slot) : -1;
-        bool const downed = coopLives && netCoopPlayerIsDowned(row.slot);
+        int const lives = coopLives ? (intermission ? row.livesRemaining : netCoopLivesRemaining(row.slot)) : -1;
+        bool const downed = coopLives && (intermission ? row.downed : netCoopPlayerIsDowned(row.slot));
         // The widest life status ("255 DOWN") is 32 pixels, leaving clear
         // space after a maximum-length name and before the ping column.
         if (downed) Bsnprintf(value, sizeof(value), "%d DOWN", lives);
@@ -1947,7 +1958,7 @@ void viewDrawScoreboard()
                       team == 0 ? "BLUE TEAM" : team == 1 ? "RED TEAM" : "JOINING", teamCounts[team]);
             text(label, 10, top + 1, color, false);
             columns(top + 1);
-            top += 14;
+            top += teamHeaderHeight;
             size_t teamIndex = 0;
             for (size_t index = 0; index < count; ++index)
                 if ((rows[index].team < 2 ? rows[index].team : 2) == team)
@@ -1967,7 +1978,21 @@ void viewDrawScoreboard()
             drawRow(rows[index], 36 + int(index) * 14, index);
         if (!count) text("Waiting for server player information...", 12, 38, 0xb4b4b4);
     }
-    text("Ping: server RTT (ms)   Time: minutes connected", 8, height - 11, 0xaaa59b);
+    if (intermission)
+    {
+        char countdown[64];
+        int const seconds = std::max(0, netIntermissionSecondsRemaining());
+        Bsnprintf(countdown, sizeof(countdown), "Next map in %d second%s", seconds, seconds == 1 ? "" : "s");
+        int const countdownWidth = int(Bstrlen(countdown)) * 8 * scale;
+        int const countdownX = (xdim - countdownWidth) / 2, countdownY = ydim - 14 * scale;
+        scoreboardRect(countdownX - 7 * scale, countdownY - 4 * scale,
+                       countdownWidth + 14 * scale, 16 * scale, 0x716454);
+        scoreboardRect(countdownX - 6 * scale, countdownY - 3 * scale,
+                       countdownWidth + 12 * scale, 14 * scale, 0x141416);
+        scoreboardText(countdown, countdownX, countdownY, scale, 0xf3e5c8, false);
+    }
+    else
+        text("Ping: server RTT (ms)   Time: minutes connected", 8, height - 11, 0xaaa59b);
     scoreboardCanvasEnd();
 }
 
@@ -3079,6 +3104,7 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
 {
     UNREFERENCED_PARAMETER(smooth);
     dassert(spritesortcnt <= kMaxViewSprites);
+    bool const interpolateView = gViewInterpolate && !netIntermissionActive();
     gCameraAng = cA;
     int nViewSprites = spritesortcnt;
     for (int nTSprite = spritesortcnt-1; nTSprite >= 0; nTSprite--)
@@ -3105,7 +3131,7 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
 
         auto const tsprflags = pTSprite->clipdist;
 
-        if (gView && (gView->pSprite == &sprite[nSprite]) && IsPlayerSprite(pTSprite) && gViewInterpolate && !VanillaMode()) // improve network player prediction while in third person/co-op view
+        if (gView && (gView->pSprite == &sprite[nSprite]) && IsPlayerSprite(pTSprite) && interpolateView && !VanillaMode()) // improve network player prediction while in third person/co-op view
         {
             pTSprite->x = gViewSpritePredictLoc.x;
             pTSprite->y = gViewSpritePredictLoc.y;
@@ -3116,7 +3142,7 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
         {
             netPredictInterpolateSprite(nSprite, pTSprite);
         }
-        else if (gViewInterpolate && TestBitString(gInterpolateSprite, nSprite) && !(pTSprite->flags&512))
+        else if (interpolateView && TestBitString(gInterpolateSprite, nSprite) && !(pTSprite->flags&512))
         {
             LOCATION *pPrevLoc = &gPrevSpriteLoc[nSprite];
             pTSprite->x = interpolate(pPrevLoc->x, pTSprite->x, gInterpolate);
@@ -3943,6 +3969,7 @@ int32_t g_frameRate;
 void viewDrawScreen(void)
 {
     viewUpdateCoopSpectator();
+    bool const intermission = netIntermissionActive();
     int nPalette = 0;
     static ClockTicks lastUpdate;
     int defaultHoriz = gCenterHoriz ? 100 : 90;
@@ -3962,7 +3989,13 @@ void viewDrawScreen(void)
     {
         gInterpolate = ClipRange(gInterpolate, 0, 65536);
     }
-    if (netPredictActive())
+    if (intermission)
+    {
+        // Prediction is suspended for the final scoreboard. Render the final
+        // authoritative positions without falling back to old tick history.
+        gInterpolate = 65536;
+    }
+    else if (netPredictActive())
     {
         gInterpolate = netPredictLocalFraction();
         netPredictBeginRender();
@@ -4005,7 +4038,7 @@ void viewDrawScreen(void)
         int v4c = gView->swayWidth;
         int v48 = gView->swayHeight;
         int nSectnum = gView->pSprite->sectnum;
-        if (gViewInterpolate || netPredictActive())
+        if (!intermission && (gViewInterpolate || netPredictActive()))
         {
             if (netPredictActive() && !gViewInterpolate) gInterpolate = 65536;
             if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
@@ -4041,7 +4074,7 @@ void viewDrawScreen(void)
                 gViewSpritePredictLoc.z = interpolate(pView->at58, gViewSpritePredictLoc.z, gInterpolate);
             }
         }
-        if (gView == gMe && (numplayers <= 1 || gPrediction) && gView->pXSprite->health != 0 && !gDemo.at1 && !VanillaMode())
+        if (!intermission && gView == gMe && (numplayers <= 1 || gPrediction) && gView->pXSprite->health != 0 && !gDemo.at1 && !VanillaMode())
         {
             fix16_t q16look;
             cA = gViewAngle;
@@ -4049,7 +4082,8 @@ void viewDrawScreen(void)
             q16horiz = fix16_from_float(100.f * tanf(fix16_to_float(q16look) * fPI / 1024.f));
         }
         gViewSpritePredictLoc.x = cX, gViewSpritePredictLoc.y = cY, gViewSpritePredictLoc.ang = cA;
-        viewUpdateShake();
+        if (!intermission)
+            viewUpdateShake();
         q16horiz += fix16_from_int(shakeHoriz);
         cA += fix16_from_int(shakeAngle);
         cX += shakeX;
@@ -4467,7 +4501,7 @@ RORHACK:
             if (!VanillaMode()) // interpolate angle for 2d map view
             {
                 fix16_t cA = gView->q16ang;
-                if (gViewInterpolate)
+                if (gViewInterpolate && !intermission)
                 {
                     if ((netPredictActive() || (!netIsLive() && numplayers > 1)) && gView == gMe && gPrediction && gMe->pXSprite->health > 0)
                     {
@@ -4483,7 +4517,7 @@ RORHACK:
                         cA = interpolateangfix16(pView->at30, cA, gInterpolate);
                     }
                 }
-                if (gView == gMe && (numplayers <= 1 || gPrediction) && gView->pXSprite->health != 0)
+                if (!intermission && gView == gMe && (numplayers <= 1 || gPrediction) && gView->pXSprite->health != 0)
                     cA = gViewAngle;
                 nAng = fix16_to_int(cA);
             }
@@ -4557,11 +4591,12 @@ RORHACK:
     viewDrawScoreboard();
     if (netPredictActive())
         netPredictEndRender();
-    else if (gViewInterpolate)
+    else if (gViewInterpolate && !intermission)
     {
         RestoreInterpolations();
     }
-    UpdateDacs(nPalette);
+    // Frozen damage/blindness effects must not obscure the final results.
+    UpdateDacs(intermission ? 0 : nPalette, intermission);
 }
 
 int nLoadingScreenTile;

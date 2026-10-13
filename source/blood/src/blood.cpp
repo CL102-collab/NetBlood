@@ -1134,6 +1134,8 @@ bool gRestartGame = false;
 
 void ProcessFrame(void)
 {
+    // Keep network ticks and snapshots running while the final world is frozen.
+    if (netIntermissionActive()) return;
     char buffer[128];
     VanillaModeUpdate();
     for (int i = connecthead; i >= 0; i = connectpoint2[i])
@@ -1239,6 +1241,7 @@ void ProcessFrame(void)
     gFrame++;
     gFrameClock += kTicsPerFrame;
     netServerCheckLimits();
+    if (netIntermissionActive()) return;
     if ((gGameOptions.uGameFlags&kGameFlagContinuing) && !gStartNewGame)
     {
         ready2send = 0;

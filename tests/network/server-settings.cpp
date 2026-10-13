@@ -19,11 +19,23 @@ EPISODEINFO gEpisodeInfo[kMaxEpisodes] = {};
 int gEpisodeCount = kMaxEpisodes;
 static bool isServer = true;
 static bool cinematicActive = false;
+static bool intermissionActive = false;
+static uint32_t nowMilliseconds = 0, intermissionStarted = 0;
+static unsigned intermissions = 0;
 static int queuedOutros = 0, outroEpisode = -1, outroLevel = -1;
 static int preparedMaps = 0;
 static std::string readMapName;
 bool netIsServer() { return isServer; }
 bool netCinematicActive() { return cinematicActive; }
+bool netIntermissionActive() { return intermissionActive; }
+bool netIntermissionFinished() { return intermissionActive && nowMilliseconds - intermissionStarted >= 15000; }
+void netBeginIntermission()
+{
+    if (intermissionActive) return;
+    intermissionActive = true;
+    intermissionStarted = nowMilliseconds;
+    ++intermissions;
+}
 void netQueueEpisodeOutro(int episode, int level)
 {
     ++queuedOutros;
@@ -82,11 +94,16 @@ void reset()
     settings = NetServerSettings();
     settings.gameType = kGameTypeBloodBath;
     pendingAdvance = false;
+    pendingLimit = NetServerLimit::NotReached;
     rotation.clear();
     initialMaps.clear();
     gDedicated = gGameStarted = isServer = true;
     gStartNewGame = false;
     cinematicActive = false;
+    intermissionActive = false;
+    intermissions = 0;
+    nowMilliseconds = intermissionStarted = 0;
+    preparedMaps = 0;
     queuedOutros = 0;
     outroEpisode = outroLevel = -1;
     ready2send = 1;
@@ -144,9 +161,15 @@ void authoritativeScores()
     gPlayer[3].fragCount = 4;
     netServerCheckLimits(); CHECK(!pendingAdvance);
     gPlayer[3].fragCount = 5;
-    netServerCheckLimits(); CHECK(pendingAdvance);
-    CHECK((gGameOptions.uGameFlags & kGameFlagContinuing) != 0);
-    CHECK(nextEpisode == 1 && nextLevel == 0);
+    netServerCheckLimits(); CHECK(intermissionActive && pendingLimit == NetServerLimit::Score);
+    CHECK(!pendingAdvance && !gStartNewGame);
+    CHECK((gGameOptions.uGameFlags & kGameFlagContinuing) == 0);
+    CHECK(nextEpisode == -9 && nextLevel == -9);
+    nowMilliseconds = 14999;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 0 && !gStartNewGame);
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 1 && gStartNewGame);
+    CHECK(nextEpisode == 1 && nextLevel == 0 && pendingLimit == NetServerLimit::NotReached);
 
     // Teams use team counters; individual frags cannot prematurely end a map.
     reset(); settings.gameType = kGameTypeTeams; settings.scoreLimit = 20;
@@ -154,7 +177,8 @@ void authoritativeScores()
     gPlayerScores[0] = 19; gPlayerScores[1] = -1;
     netServerCheckLimits(); CHECK(!pendingAdvance);
     gPlayerScores[1] = 20;
-    netServerCheckLimits(); CHECK(pendingAdvance);
+    netServerCheckLimits(); CHECK(intermissionActive && pendingLimit == NetServerLimit::Score);
+    CHECK(!pendingAdvance && !gStartNewGame);
 
     reset(); settings.scoreLimit = 1; connecthead = -1;
     gPlayer[0].fragCount = 100;
@@ -194,18 +218,105 @@ void clockAndGuards()
     gLevelTime = 1799;
     netServerCheckLimits(); CHECK(!pendingAdvance);
     gLevelTime = 1800;
-    netServerCheckLimits(); CHECK(pendingAdvance); // Empty servers still rotate.
-    const int firstNextEpisode = nextEpisode;
-    gGameOptions.nEpisode = 5;
-    netServerCheckLimits(); CHECK(nextEpisode == firstNextEpisode); // Only once.
+    netServerCheckLimits(); CHECK(intermissionActive); // Empty servers still rotate after the pause.
+    netServerCheckLimits(); CHECK(intermissions == 1 && !pendingAdvance);
+    CHECK(pendingLimit == NetServerLimit::Time);
+    nowMilliseconds = 14999;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 0 && !gStartNewGame);
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 1 && gStartNewGame);
+    netServerUpdateIntermission(); CHECK(preparedMaps == 1); // Only once, even before the new map loads.
     for (int guard = 0; guard < 4; ++guard) {
         reset(); settings.timeLimitMinutes = 1; gLevelTime = 1800;
         if (guard == 0) gDedicated = false;
         if (guard == 1) isServer = false;
         if (guard == 2) gGameStarted = false;
         if (guard == 3) gStartNewGame = true;
-        netServerCheckLimits(); CHECK(!pendingAdvance);
+        netServerCheckLimits(); CHECK(!pendingAdvance && !intermissionActive);
     }
+}
+
+void intermissionRotation()
+{
+    for (bool timeLimit : {false, true})
+    {
+        reset();
+        rotation = {"E2M1", "E2M2"};
+        settings.rotationCount = rotation.size();
+        settings.rotationIndex = 1; // Verify wrapping to the first map after the pause.
+        for (int level = 0; level < 2; ++level)
+        {
+            MapEntry entry = {};
+            entry.episode = 1;
+            entry.level = level;
+            std::strcpy(entry.metadata.Filename, rotation[level].c_str());
+            initialMaps.push_back(entry);
+        }
+        gGameOptions.nLevel = 1;
+        std::strcpy(gGameOptions.zLevelName, "E2M2");
+        if (timeLimit) { settings.timeLimitMinutes = 1; gLevelTime = 1800; }
+        else { settings.scoreLimit = 5; gPlayer[0].fragCount = 5; }
+        nowMilliseconds = 20000;
+        netServerCheckLimits();
+        CHECK(intermissions == 1 && !pendingAdvance && !gStartNewGame);
+        CHECK(settings.rotationIndex == 1 && gGameOptions.nLevel == 1);
+        CHECK(!(gGameOptions.uGameFlags & kGameFlagContinuing));
+
+        // Exits, resolved votes, and an already-passed vote must not skip the pause.
+        std::string error;
+        size_t index = 99;
+        CHECK(netServerHandleLevelExit(kLevelExitNormal) && !pendingAdvance);
+        CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E2M1", index, error));
+        CHECK(!netServerApplyVote(NetServerVoteAction::Map, 0, error));
+        CHECK(index == 99 && !error.empty());
+        netServerAdvanceMap();
+        CHECK(settings.rotationIndex == 1 && preparedMaps == 0 && !gStartNewGame);
+
+        for (uint32_t elapsed : {0u, 1000u, 14999u})
+        {
+            nowMilliseconds = 20000 + elapsed;
+            netServerCheckLimits();
+            netServerUpdateIntermission();
+            CHECK(intermissions == 1 && !gStartNewGame && preparedMaps == 0);
+            CHECK(settings.rotationIndex == 1 && gGameOptions.nLevel == 1);
+            CHECK(gLevelTime == (timeLimit ? 1800 : 0));
+        }
+        nowMilliseconds = 35000;
+        netServerUpdateIntermission();
+        CHECK(gStartNewGame && preparedMaps == 1);
+        CHECK(settings.rotationIndex == 0 && gGameOptions.nLevel == 0);
+        CHECK(!pendingAdvance && pendingLimit == NetServerLimit::NotReached);
+        nowMilliseconds = 50000;
+        netServerUpdateIntermission();
+        CHECK(preparedMaps == 1 && settings.rotationIndex == 0);
+    }
+
+    // An explicit administrator restart cancels the pending limit transition.
+    reset(); settings.scoreLimit = 1; gPlayer[0].fragCount = 1;
+    netServerCheckLimits(); CHECK(intermissionActive);
+    netServerRestartLevel();
+    CHECK(gStartNewGame && pendingLimit == NetServerLimit::NotReached);
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 1);
+
+    // Console map/changelevel and disconnection use the network lifecycle reset,
+    // bypassing AdvanceMap/RestartLevel. Their old deferred limit must not stop
+    // the next match from recognizing a newly reached limit.
+    reset(); settings.scoreLimit = 1; gPlayer[0].fragCount = 1;
+    netServerCheckLimits(); CHECK(intermissionActive && intermissions == 1);
+    netServerCancelIntermission();
+    CHECK(pendingLimit == NetServerLimit::NotReached);
+    intermissionActive = false; // The network lifecycle also clears its presentation state.
+    gPlayer[0].fragCount = 0;
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 0 && !gStartNewGame);
+    netServerCheckLimits(); CHECK(!intermissionActive);
+    gPlayer[0].fragCount = 1;
+    netServerCheckLimits(); CHECK(intermissionActive && intermissions == 2);
+    nowMilliseconds = 29999;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 0 && !gStartNewGame);
+    nowMilliseconds = 30000;
+    netServerUpdateIntermission(); CHECK(preparedMaps == 1 && gStartNewGame);
 }
 
 void coopRoutes()
@@ -236,12 +347,18 @@ void coopRoutes()
     gEpisodeInfo[1].levelsInfo[0].EndingA = 1;
     gLevelTime = 1800;
     netServerCheckLimits();
-    CHECK(pendingAdvance && nextLevel == 0 && !preserveInventory); // Single-map timer restarts.
+    CHECK(intermissionActive && !pendingAdvance && !gStartNewGame);
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission();
+    CHECK(gStartNewGame && nextLevel == 0 && !preserveInventory); // Single-map timer restarts.
     CHECK(queuedOutros == 0);
     reset(); settings.gameType = kGameTypeCoop; settings.timeLimitMinutes = 1; settings.episode = 2;
     gLevelTime = 1800;
     netServerCheckLimits();
-    CHECK(pendingAdvance && nextLevel == 1 && preserveInventory); // Episode timer advances.
+    CHECK(intermissionActive && !pendingAdvance && !gStartNewGame);
+    nowMilliseconds = 15000;
+    netServerUpdateIntermission();
+    CHECK(gStartNewGame && nextLevel == 1 && preserveInventory); // Episode timer advances.
     CHECK(queuedOutros == 0);
     reset(); settings.gameType = kGameTypeCoop; settings.episode = 2;
     gGameOptions.nLevel = 2;
@@ -294,7 +411,7 @@ void mapVotePolicy()
     CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
     CHECK(error.find("disabled") != std::string::npos);
 
-    for (int guard = 0; guard < 7; ++guard) {
+    for (int guard = 0; guard < 8; ++guard) {
         reset(); rotation = {"E1M1"};
         if (guard == 0) isServer = false;
         if (guard == 1) gGameStarted = false;
@@ -303,6 +420,7 @@ void mapVotePolicy()
         if (guard == 4) gGameOptions.uGameFlags = kGameFlagContinuing;
         if (guard == 5) ready2send = 0;
         if (guard == 6) cinematicActive = true;
+        if (guard == 7) intermissionActive = true;
         CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
         CHECK(!error.empty());
     }
@@ -405,6 +523,6 @@ void listenCoopNextCinematic()
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); listenCoopNextCinematic();
-    std::printf("PASS: dedicated limits, hot-join scores, map vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
+    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); listenCoopNextCinematic();
+    std::printf("PASS: dedicated limits, timed intermissions, hot-join scores, map vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
 }

@@ -94,6 +94,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netpredict.h"
 #include "netprotocol.h"
 #include "netcinematic.h"
+#include "netintermission.h"
 #include "netcountry.h"
 #include "netteams.h"
 #include "netvote.h"
@@ -182,6 +183,8 @@ struct CoopReconnect { std::string identity; netcoop::LifeState lives; bool down
 std::deque<CoopReconnect>     coopReconnects;
 uint64_t                     nextJoinOrder = 0;
 netscoreboard::State          scoreboard;
+netintermission::State        intermission;
+uint32_t                     intermissionReceived = 0, intermissionHeartbeat = 0;
 uint32_t                     scoreboardHeartbeat = 0;
 bool                         scoreboardDirty = true;
 netcinematic::Barrier         cinematicBarrier;
@@ -658,6 +661,7 @@ void rejectClientVersion(ENetPeer *peer, uint32_t clientVersion)
 #endif
 netscoreboard::State collectScoreboard()
 {
+    if (intermission.active) return intermission.scoreboard;
     netscoreboard::State state;
     uint64_t const now = static_cast<uint64_t>(timerGetFractionalTicks());
     for (int p = 0; p < 8; ++p)
@@ -728,6 +732,52 @@ bool recordScoreboardBaseline()
     header.session = session;
     header.generation = mapGeneration;
     // Sequence zero provides the current board when recording starts mid-map.
+    return netDemoRecordPacket(serverTick, netwire::encode(header, writer.data));
+}
+netintermission::State currentIntermission()
+{
+    auto state = intermission;
+    uint32_t const elapsed = timerGetTicks() - intermissionReceived;
+    state.remainingMs = elapsed >= state.remainingMs ? 0 : state.remainingMs - elapsed;
+    return state;
+}
+void sendIntermission(int p)
+{
+#ifndef NETCODE_DISABLE
+    if (p >= 0 && p < 8 && slots[p].peer)
+    {
+        netwire::Writer writer;
+        if (netintermission::writeState(writer, currentIntermission()))
+            sendTo(slots[p].peer, netwire::Intermission, writer.data);
+    }
+#else
+    UNREFERENCED_PARAMETER(p);
+#endif
+}
+void publishIntermission(bool force = false)
+{
+    if (!netIsServer() || !intermission.active || gStartNewGame || !mapGeneration) return;
+    uint32_t const now = timerGetTicks();
+    if (!force && uint32_t(now - intermissionHeartbeat) < 1000) return;
+    for (int p = 0; p < 8; ++p)
+        if (slots[p].admitted && !slots[p].pendingDrop) sendIntermission(p);
+    if (netDemoIsRecording() && !recordNeedsWelcome && recordSlot >= 0 && slots[recordSlot].active)
+    {
+        netwire::Writer writer;
+        if (netintermission::writeState(writer, currentIntermission()))
+            netDemoRecordPacket(serverTick, envelope(netwire::Intermission, writer.data));
+    }
+    intermissionHeartbeat = now;
+}
+bool recordIntermissionBaseline()
+{
+    if (!intermission.active) return true;
+    netwire::Writer writer;
+    if (!netintermission::writeState(writer, currentIntermission())) return false;
+    netwire::Header header;
+    header.type = netwire::Intermission;
+    header.session = session;
+    header.generation = mapGeneration;
     return netDemoRecordPacket(serverTick, netwire::encode(header, writer.data));
 }
 const char* cinematicKind(netcinematic::Kind kind)
@@ -1135,6 +1185,11 @@ void cancelVote(const char* reason)
 void updateVote()
 {
     if (!netIsServer() || !mapVote.active()) return;
+    if (netIntermissionActive())
+    {
+        cancelVote("Map vote cancelled because the match has ended");
+        return;
+    }
     if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
     {
         cancelVote("Map vote cancelled because the server is changing levels");
@@ -1163,6 +1218,7 @@ void handleVoteRequest(int p, const netwire::VoteRequestPayload& request)
     if (!readyVoter(p)) { rejectVote(p, "Join the current map before voting"); return; }
     if (request.command == netwire::VoteCommand::List) { sendVoteOptions(p, true); return; }
     if (request.command == netwire::VoteCommand::QueryStatus) { sendVoteStatus(p, "Map vote status"); return; }
+    if (netIntermissionActive()) { rejectVote(p, "The match has ended; wait for the next map"); return; }
     if (!netServerSettings().mapVoteEnabled) { rejectVote(p, "Map voting is disabled by the server"); return; }
     if (gStartNewGame || (gGameOptions.uGameFlags & kGameFlagContinuing))
     { rejectVote(p, "The server is changing levels"); return; }
@@ -1407,6 +1463,7 @@ void sendWelcome(int p)
     sendVoteStatus(p);
     sendCinematicState(p);
     sendScoreboard(p);
+    sendIntermission(p);
     slots[p].snapshotAck = 0;
     slots[p].mapDownloadNext = 0;
     slots[p].mapDownloadStarted = false;
@@ -1515,7 +1572,7 @@ bool recordServerSnapshot(const Bytes &state, uint32_t id)
     if (recordNeedsWelcome)
     {
         recordNeedsWelcome = false;
-        return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline();
+        return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline() && recordIntermissionBaseline();
     }
     return true;
 }
@@ -1692,6 +1749,7 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         clientVote = {};
         clientVoteOptions = {};
         scoreboard = {};
+        intermission = {};
         clientVoteReceived = timerGetTicks();
         std::fill(std::begin(clientReceived), std::end(clientReceived), 0);
         clientReceived[h.type] = h.sequence;
@@ -1902,10 +1960,28 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         return true;
     }
     bool syntheticBaseline = replay && (h.type == netwire::Event || h.type == netwire::VoteStatus || h.type == netwire::VoteOptions
-        || h.type == netwire::Scoreboard) && h.sequence == 0;
+        || h.type == netwire::Scoreboard || h.type == netwire::Intermission) && h.sequence == 0;
     if (!syntheticBaseline && clientReceived[h.type] && !netwire::newer(h.sequence, clientReceived[h.type]))
     {
         duplicateMessages++;
+        return true;
+    }
+    if (h.type == netwire::Intermission)
+    {
+        netintermission::State state;
+        if (!netintermission::readState(r, state)) { malformedMessages++; return false; }
+        bool const starting = state.active && !intermission.active;
+        intermission = std::move(state);
+        intermissionReceived = timerGetTicks();
+        if (starting)
+        {
+            commandHistory.clear();
+            netPredictReset();
+            gInput = gNetInput = {};
+        }
+        if (!syntheticBaseline) clientReceived[h.type] = h.sequence;
+        if (netDemoIsRecording() && !replay) netDemoRecordPacket(serverTick, Bytes(data, data + size));
+        if (starting) LOG_F(INFO, "NET intermission received remaining_ms=%u", intermission.remainingMs);
         return true;
     }
     if (h.type == netwire::Scoreboard)
@@ -2500,7 +2576,35 @@ void netOnPlayerSpawned(int p)
 bool netClientHasSnapshot()
 { return clientSnapshotReady; }
 const netscoreboard::State& netGetScoreboard()
-{ return scoreboard; }
+{ return intermission.active ? intermission.scoreboard : scoreboard; }
+bool netScoreboardRowIsLocal(const netscoreboard::Row& row)
+{
+    if (myconnectindex < 0 || myconnectindex >= 8 || row.slot != myconnectindex) return false;
+    return row.generation == (netIsServer() ? slots[myconnectindex].generation : clientSlotGeneration);
+}
+bool netIntermissionActive()
+{ return netIsLive() && intermission.active; }
+bool netIntermissionFinished()
+{ return netIsServer() && intermission.active && timerGetTicks() - intermissionReceived >= netintermission::DurationMs; }
+int netIntermissionSecondsRemaining()
+{ return netintermission::secondsRemaining(intermission, timerGetTicks() - intermissionReceived); }
+void netBeginIntermission()
+{
+    if (!netIsServer() || intermission.active) return;
+    auto finalScores = collectScoreboard();
+    intermission.active = true;
+    intermission.remainingMs = netintermission::DurationMs;
+    intermission.scoreboard = std::move(finalScores);
+    intermissionReceived = timerGetTicks();
+    scoreboard = intermission.scoreboard;
+    scoreboardDirty = true;
+    cancelVote("Map vote cancelled because the match has ended");
+    gInput = gNetInput = {};
+    lastSnapshotTick = 0; // Publish the winning tick's final authoritative world.
+    publishIntermission(true);
+    LOG_F(INFO, "NET intermission started duration_ms=%u map=%s tick=%u", netintermission::DurationMs,
+          gGameOptions.zLevelName, serverTick);
+}
 
 void netResetToSinglePlayer(void)
 {
@@ -2614,6 +2718,7 @@ void netInitialize(bool bConsole)
 }
 void netDeinitialize(void)
 {
+    netServerCancelIntermission();
     stopLocalCinematic();
     serverCinematic = clientCinematic = {};
     cinematicQueue.clear();
@@ -2626,6 +2731,8 @@ void netDeinitialize(void)
     serverInTick = false;
     nextJoinOrder = 0;
     scoreboard = {};
+    intermission = {};
+    intermissionReceived = intermissionHeartbeat = 0;
     scoreboardHeartbeat = 0;
     scoreboardDirty = true;
     restoreClientLevels();
@@ -2676,6 +2783,7 @@ void netDeinitialize(void)
 #endif
     initialized  = false;
     clientPublicEndpoint.clear();
+    intermission = {};
     connectionError.clear();
     clientTransportConnected = false;
     clientLoaded = clientSnapshotReady = false;
@@ -2802,6 +2910,7 @@ void netUpdate(void)
                 stopLocalCinematic();
                 clientCinematic = {};
                 scoreboard = {};
+                intermission = {};
                 clientSnapshotReady = false;
                 mapDownloadDisconnected = clientDownloadingMap;
                 netLagometerDisconnect(true);
@@ -2810,6 +2919,8 @@ void netUpdate(void)
         }
     }
     pumpMapDownloads();
+    netServerUpdateIntermission();
+    publishIntermission();
     updatePublicEndpoint();
     updateVote();
     updateServerCinematic();
@@ -2969,6 +3080,8 @@ void netOnLevelChanging()
 {
     clientVersionError.clear();
     if (!netIsServer()) return;
+    netServerCancelIntermission();
+    intermission = {};
     coopReconnects.clear();
     unsigned const lives = gDedicated && netServerSettings().gameType == kGameTypeCoop ? netServerSettings().coopLives : 0;
     for (auto& slot : slots)
@@ -3120,7 +3233,7 @@ bool netServerBeginTick()
         }
         if (!c.active)
             continue;
-        if (serverCinematic.active)
+        if (serverCinematic.active || netIntermissionActive())
         {
             c.commands = {};
             c.lastInput = {};
@@ -3155,7 +3268,7 @@ bool netServerBeginTick()
     // player still receives the queued intro before gameplay begins.
     if (serverCinematic.active && serverCinematic.participants) return false;
     serverInTick = true;
-    balanceTeams();
+    if (!netIntermissionActive()) balanceTeams();
     return true;
 }
 void netServerEndTick()
@@ -3164,7 +3277,7 @@ void netServerEndTick()
     if (!netIsServer())
         return;
     serverTick++;
-    if (netCoopLifeLimit() && !gStartNewGame && !(gGameOptions.uGameFlags & kGameFlagContinuing))
+    if (netCoopLifeLimit() && !netIntermissionActive() && !gStartNewGame && !(gGameOptions.uGameFlags & kGameFlagContinuing))
     {
         bool anyActive = false, exhausted = true;
         for (auto const& client : slots)
@@ -3238,7 +3351,7 @@ void netServerEndTick()
 }
 void netGetInput(void)
 {
-    if (netCinematicActive())
+    if (netCinematicActive() || netIntermissionActive())
     {
         gInput = gNetInput = {};
         return;
@@ -3565,7 +3678,10 @@ void netPrintStatus()
                   netCoopLivesRemaining(p), int(netCoopPlayerIsSpectator(p)), int(netCoopPlayerIsDowned(p)), netCoopGiveUpProgress(p));
         }
     if (netIsServer()) scoreboard = collectScoreboard();
-    for (auto const& row : scoreboard.rows)
+    auto const pause = currentIntermission();
+    LOG_F(INFO, "NET intermission active=%d remaining_ms=%u seconds=%d level_ticks=%d", int(pause.active),
+          pause.remainingMs, netIntermissionSecondsRemaining(), gLevelTime);
+    for (auto const& row : netGetScoreboard().rows)
         LOG_F(INFO, "NET scoreboard slot=%u generation=%u score=%d ping_ms=%u minutes=%u country=%s team=%u lives=%d downed=%d giveup=%u name=\"%s\"",
               unsigned(row.slot), row.generation, row.score, row.pingMs, row.elapsedMinutes,
               row.country.empty() ? "--" : row.country.c_str(), unsigned(row.team), row.livesRemaining,
@@ -3634,7 +3750,7 @@ bool netStartPacketRecording(const char *path)
     }
     if (!netDemoRecordPacket(serverTick, lastWelcome) || !netDemoRecordPacket(serverTick, lastRecordedSnapshot))
         return false;
-    return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline();
+    return recordLoopBaseline() && recordVoteBaseline() && recordScoreboardBaseline() && recordIntermissionBaseline();
 }
 
 void netStopPacketRecording()
@@ -3683,7 +3799,7 @@ bool netDemoReplayPacket(const uint8_t *data, size_t size)
     netwire::Reader body(nullptr, 0);
     if (!netwire::decode(data, size, h, body)
         || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::Taunt
-            && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions && h.type != netwire::Scoreboard))
+            && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions && h.type != netwire::Scoreboard && h.type != netwire::Intermission))
         return false;
     return acceptClientPacket(data, size, true);
 }

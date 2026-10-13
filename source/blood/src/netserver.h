@@ -49,6 +49,10 @@ void netServerApplySettings();
 void netServerPrepareUserMap(const char* name);
 bool netServerPrepareEpisodeLevel(int episode, int level);
 void netServerCheckLimits();
+// Called from the network pump while gameplay is frozen for the final scoreboard.
+void netServerUpdateIntermission();
+// Clear a deferred limit transition when an administrator changes maps or the session ends.
+void netServerCancelIntermission();
 bool netServerHandleLevelExit(int exitType);
 void netServerAdvanceMap();
 void netServerRestartLevel();

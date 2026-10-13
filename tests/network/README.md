@@ -386,6 +386,33 @@ standalone identity without registering its map slot a second time.
 Use `--listen-restart-only` to isolate the 30-second listen-server restart
 check without repeating the dedicated-server ballots and playback.
 
+## End-of-match intermission
+
+```sh
+SANITIZE=1 tests/network/intermission-test.sh
+python3 tests/network/intermission.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-intermission-evidence
+```
+
+The live test requires X11/Xvfb and the screenshot dependencies described below
+for cinematics. A generated legal Blood map and ordinary movement/pitchfork
+attacks produce a real winning frag. It checks the frozen final score, automatic
+scoreboard/countdown presentation, ignored movement/fire/respawn input,
+continued transport ticks with frozen level time, a late join and departure
+during the pause, and one map transition after the real 15-second deadline. A
+second round uses the real one-minute time limit and verifies the pause before
+rotation wrap.
+Packet-demo playback must retain the pause/results and reach the exact final
+recorded snapshot.
+
+The default clients use Polymost and Vulkan; `--renderer` and
+`--second-renderer` can select software (`0`), Polymost (`3`) or Vulkan (`5`).
+`--skip-screenshots` omits captures, and `--skip-time-limit` omits the real-minute
+case for focused reruns. All hosts disable public STUN. The evidence directory
+contains screenshots, logs, statuses, packet recordings and the tested binary
+digest in `result.json`.
+
 ## Automatic map downloads
 
 Run the focused download integration test under the same display and asset

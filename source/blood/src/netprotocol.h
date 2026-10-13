@@ -40,6 +40,7 @@ enum Type : uint32_t
     CinematicDone,
     Scoreboard,
     PublicEndpoint, // Optional live discovery metadata; never recorded in demos.
+    Intermission, // Final scoreboard and remaining match-end pause.
     TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.

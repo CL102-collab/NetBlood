@@ -28,6 +28,7 @@ std::vector<MapEntry> initialMaps;
 std::vector<std::string> rotation;
 int nextEpisode = 0, nextLevel = 0;
 bool pendingAdvance = false, preserveInventory = false;
+NetServerLimit pendingLimit = NetServerLimit::NotReached;
 
 int number(const char* option, const char* text, int minimum, int maximum)
 {
@@ -178,6 +179,7 @@ bool voteAllowed(std::string& error)
     else if (!settings.mapVoteEnabled)
         error = "Map voting is disabled on this server.";
     else if (!gGameStarted || !ready2send || pendingAdvance || gStartNewGame || netCinematicActive()
+             || netIntermissionActive()
              || (gGameOptions.uGameFlags & (kGameFlagContinuing | kGameFlagEnding)))
         error = "A map change is already in progress.";
     else
@@ -348,6 +350,8 @@ void netServerValidateOptions(int gameType, bool hasUserMap)
 void netServerInitializeSettings()
 {
     if (!gDedicated) return;
+    netServerCancelIntermission();
+    pendingAdvance = preserveInventory = false;
     for (int e = 0; e < gEpisodeCount; ++e)
         for (int l = 0; l < gEpisodeInfo[e].nLevels; ++l)
             initialMaps.push_back({e, l, gEpisodeInfo[e].levelsInfo[l]});
@@ -423,6 +427,7 @@ bool netServerPrepareEpisodeLevel(int episode, int level)
 void netServerCheckLimits()
 {
     if (!gDedicated || !netIsServer() || !gGameStarted || pendingAdvance || gStartNewGame
+        || pendingLimit != NetServerLimit::NotReached || netIntermissionActive()
         || (gGameOptions.uGameFlags & kGameFlagContinuing)) return;
     int scores[kMaxPlayers] = {};
     size_t count = 0;
@@ -435,18 +440,39 @@ void netServerCheckLimits()
         for (int p = connecthead; p >= 0; p = connectpoint2[p]) scores[count++] = gPlayer[p].fragCount;
     NetServerLimit const limit = netServerLimitReached(settings, uint64_t(gLevelTime), scores, count);
     if (limit != NetServerLimit::NotReached)
-        queueAdvance(kLevelExitNormal, limit == NetServerLimit::Time ? "timelimit" : "scorelimit", true);
+    {
+        pendingLimit = limit;
+        netBeginIntermission();
+    }
+}
+
+void netServerUpdateIntermission()
+{
+    if (!gDedicated || !netIsServer() || pendingLimit == NetServerLimit::NotReached
+        || gStartNewGame || !netIntermissionFinished()) return;
+    queueAdvance(kLevelExitNormal, pendingLimit == NetServerLimit::Time ? "timelimit" : "scorelimit", true);
+    netServerAdvanceMap();
+    gStartNewGame = true;
+}
+
+void netServerCancelIntermission()
+{
+    pendingLimit = NetServerLimit::NotReached;
 }
 
 bool netServerHandleLevelExit(int exitType)
 {
     if (!gDedicated || !netIsServer()) return false;
+    // Consume exits during the scoreboard pause without advancing the map.
+    if (netIntermissionActive()) return true;
     queueAdvance(exitType, exitType == kLevelExitSecret ? "secret-exit" : "normal-exit");
     return true;
 }
 
 void netServerAdvanceMap()
 {
+    if (netIntermissionActive() && !netIntermissionFinished()) return;
+    netServerCancelIntermission();
     if (!pendingAdvance)
     {
         // Modern maps can supply gNextLevel directly, bypassing levelEndLevel.
@@ -491,6 +517,7 @@ void netServerAdvanceMap()
 void netServerRestartLevel()
 {
     if (!gDedicated || !netIsServer()) return;
+    netServerCancelIntermission();
     pendingAdvance = preserveInventory = false;
     gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
     netPrepareCurrentMapSettings();

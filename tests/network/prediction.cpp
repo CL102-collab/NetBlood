@@ -26,13 +26,14 @@ XSPRITE localXSprite;
 int connecthead = 0, connectpoint2[MAXMULTIPLAYERS];
 int32_t gViewInterpolate = 1;
 bool gPrediction = true;
-static bool client = true, playback = false;
+static bool client = true, playback = false, intermission = false;
 static uint32_t clockMs = 0, generations[MAXSPRITES];
 static vec3_t predicted;
 static unsigned liveWeaponCalls = 0, replayWeaponCalls = 0;
 
 bool netIsClient() { return client; }
 bool netDemoIsPlaying() { return playback; }
+bool netIntermissionActive() { return intermission; }
 uint32_t timerGetTicks() { return clockMs; }
 uint32_t netSnapshotSpriteGeneration(int n) { return generations[n]; }
 void netLagFrame(int) {}
@@ -61,7 +62,7 @@ static GINPUT input(int forward)
 static void reset(uint32_t ack = 0)
 {
     netPredictReset();
-    client = true; playback = false; clockMs = 0;
+    client = true; playback = false; intermission = false; clockMs = 0;
     for (auto &player : gPlayer) player = {};
     std::memset(sprite, 0, sizeof(sprite));
     std::memset(generations, 0, sizeof(generations));
@@ -123,6 +124,27 @@ int main()
     snapshot(1, 2, 10);
     check(predicted.x == 2570 && netPredictGetStats().pendingCommands == 256, "prediction recovers once ACK closes history gap");
     reset();
+    netPredictCommand(1, input(10)); netPredictCommand(2, input(10));
+    intermission = true;
+    check(!netPredictActive(), "intermission disables predicted movement and weapon presentation");
+    netPredictCommand(3, input(100));
+    netPredictLocalSound(124);
+    check(predicted.x == 20 && liveWeaponCalls == 2 && netPredictGetStats().predictedSounds == 2,
+          "held movement/fire and direct sound feedback cannot predict during intermission");
+    snapshot(1, 2, 10);
+    check(predicted.x == 10 && replayWeaponCalls == 0 && netPredictGetStats().pendingCommands == 0,
+          "final snapshot discards unacknowledged commands instead of replaying past match end");
+    netPredictCommand(4, input(100));
+    snapshot(1, 3, 10);
+    check(predicted.x == 10 && replayWeaponCalls == 0 && liveWeaponCalls == 2 && netPredictLocalFraction() == 65536,
+          "repeated intermission snapshots remain at final authoritative position");
+    intermission = false;
+    check(!netPredictSuppressSound(0, 123, 2), "intermission discards predicted sound suppression history");
+    reset();
+    netPredictCommand(1, input(10));
+    check(netPredictActive() && predicted.x == 10 && liveWeaponCalls == 1,
+          "new map reset resumes prediction with fresh command sequence");
+    reset();
     sprite[1].x = 100; wall[0].x = 100; sector[0].floorz = 1000;
     netPredictBeforeSnapshot();
     sprite[1].x = 200; wall[0].x = 200; sector[0].floorz = 2000;
@@ -134,6 +156,11 @@ int main()
           "remote entity/world render at interpolated time without mutating authoritative entity");
     netPredictEndRender();
     check(wall[0].x == 200 && sector[0].floorz == 2000, "world geometry restored after render");
+    intermission = true; render.x = 200;
+    netPredictBeginRender(); netPredictInterpolateSprite(1, &render); netPredictEndRender();
+    check(render.x == 200 && wall[0].x == 200 && sector[0].floorz == 2000,
+          "intermission renders final authoritative entities and geometry without interpolation");
+    intermission = false;
     ++generations[1]; render.x = 200;
     netPredictBeginRender(); netPredictInterpolateSprite(1, &render); netPredictEndRender();
     check(render.x == 200, "reused entity slot snaps across generation change");
@@ -145,5 +172,5 @@ int main()
     playback = false;
     check(!netPredictActive(), "offline and legacy demo paths stay independent");
     netPredictReset(); check(!netPredictActive() && netPredictGetStats().commands == 0, "session reset clears prediction history");
-    std::puts("prediction: ACK/replay, wrap, correction, overflow recovery, feedback dedup, interpolation, generation, teleport passed");
+    std::puts("prediction: ACK/replay, wrap, correction, overflow recovery, feedback dedup, intermission freeze, interpolation, generation, teleport passed");
 }

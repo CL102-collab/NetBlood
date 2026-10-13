@@ -319,6 +319,9 @@
     <ClInclude Include="..\..\source\blood\src\network.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\source\blood\src\netintermission.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\source\blood\src\netstun.h">
       <Filter>Header Files</Filter>
     </ClInclude>

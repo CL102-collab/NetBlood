@@ -49,6 +49,25 @@ damage between teammates in team games and between players in co-op; self-damage
 is unaffected. The setting persists across map changes and cannot be changed by
 connected clients. `net_status` reports the effective value as `friendly_fire`.
 
+When a dedicated server's score or time limit is reached, the match ends with a
+**15-second pause** before the next map loads. All clients automatically see the
+final scoreboard and a countdown at the bottom of the screen. Movement, combat,
+AI and level timers stop during this pause; network traffic and joining remain
+available. The results include the winning frag and stay fixed if players join
+or leave while the countdown runs. A player joining during the pause sees the
+same results and the time remaining.
+
+At the deadline, the server advances once to the next map in its rotation,
+wrapping after the last entry. Without a rotation, Bloodbath and team games
+reload the current map; co-op retains its episode progression. The next match
+starts with a fresh scoreboard. Active map votes are canceled, and new votes
+cannot interrupt the pause. The operator can still change maps explicitly.
+Vote- and operator-triggered map changes outside this pause remain immediate;
+the pause applies to automatic score/time limit endings. Packet demos preserve
+the final results and the countdown; legacy input demos remain unchanged.
+`net_status` reports `NET intermission`
+with its active state, remaining milliseconds and frozen level time.
+
 In dedicated Bloodbath games, holstering weapons and chase view are disabled by
 default. Enable either with `-holsterweapon on` or `-chaseview on`; both options
 accept `on|off`. These restrictions do not affect co-op, team games, graphical
