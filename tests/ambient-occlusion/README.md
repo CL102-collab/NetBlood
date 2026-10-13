@@ -73,6 +73,12 @@ source /workspace/netblood-env/activate-vulkan.sh
     --assets /workspace/netblood-game-data/blood121 --validation
 ```
 
+CI adds `--wait-ready`, which waits for the current executable's level-ready
+diagnostic before sending input, including after restarting. This avoids losing
+keypresses while textures are still loading on a busy machine. The ordinary
+process timeout still applies. The option is separate so older executables
+without that diagnostic can still use the default timed input sequence.
+
 These are correctness checks, not performance measurements or broad GPU-driver
 coverage. Game screenshots complement the synthetic geometry checks by covering
 the actual pass placement, user setting, HUD, and renderer integration.

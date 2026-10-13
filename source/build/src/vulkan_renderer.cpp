@@ -5,7 +5,9 @@
 #ifdef USE_VULKAN
 #include <SDL.h>
 #include <SDL_vulkan.h>
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#include "vulkan_dispatch.h"
 #include "glad/glad.h" // Enumerants only; this backend never calls OpenGL.
 #include "vulkan_polymost_spv.h"
 #include "ambient_occlusion_vk_spv.h"
@@ -27,7 +29,19 @@
 #include <sched.h>
 #endif
 
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
+// Tests intercept resolved calls; production builds have no injection hook.
+extern PFN_vkVoidFunction vulkanTestResolveProc(char const *, PFN_vkVoidFunction);
+#endif
+
 namespace {
+PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
+#define DECLARE_VULKAN_PROC(name) PFN_##name name = nullptr;
+NBLOOD_VULKAN_GLOBAL_COMMANDS(DECLARE_VULKAN_PROC)
+NBLOOD_VULKAN_INSTANCE_COMMANDS(DECLARE_VULKAN_PROC)
+NBLOOD_VULKAN_DEVICE_COMMANDS(DECLARE_VULKAN_PROC)
+#undef DECLARE_VULKAN_PROC
+
 struct Buffer
 {
     VkBuffer handle = VK_NULL_HANDLE;
@@ -152,6 +166,7 @@ struct AmbientOcclusionUniforms
 struct Backend
 {
     SDL_Window *window = nullptr;
+    bool loaderOwned = false, deviceDispatchReady = false;
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -229,6 +244,46 @@ bool fail(char const *message)
     std::fprintf(stderr, "Vulkan: %s\n", message);
     g.failed = true;
     return false;
+}
+
+template<typename Proc> bool resolveProc(Proc &destination, PFN_vkVoidFunction address, char const *name)
+{
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
+    address = vulkanTestResolveProc(name, address);
+#endif
+    destination = reinterpret_cast<Proc>(address);
+    if (destination) return true;
+    std::fprintf(stderr, "Vulkan: required entry point %s is unavailable\n", name);
+    return fail("The installed Vulkan runtime is incomplete; update the graphics driver.");
+}
+
+bool loadGlobalDispatch()
+{
+    if (SDL_Vulkan_LoadLibrary(nullptr) < 0) return fail(SDL_GetError());
+    g.loaderOwned = true;
+    vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+    if (!vkGetInstanceProcAddr) return fail(SDL_GetError());
+#define LOAD_GLOBAL_PROC(name) if (!resolveProc(name, vkGetInstanceProcAddr(VK_NULL_HANDLE, #name), #name)) return false;
+    NBLOOD_VULKAN_GLOBAL_COMMANDS(LOAD_GLOBAL_PROC)
+#undef LOAD_GLOBAL_PROC
+    return true;
+}
+
+bool loadInstanceDispatch()
+{
+#define LOAD_INSTANCE_PROC(name) if (!resolveProc(name, vkGetInstanceProcAddr(g.instance, #name), #name)) return false;
+    NBLOOD_VULKAN_INSTANCE_COMMANDS(LOAD_INSTANCE_PROC)
+#undef LOAD_INSTANCE_PROC
+    return true;
+}
+
+bool loadDeviceDispatch()
+{
+#define LOAD_DEVICE_PROC(name) if (!resolveProc(name, vkGetDeviceProcAddr(g.device, #name), #name)) return false;
+    NBLOOD_VULKAN_DEVICE_COMMANDS(LOAD_DEVICE_PROC)
+#undef LOAD_DEVICE_PROC
+    g.deviceDispatchReady = true;
+    return true;
 }
 
 uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags)
@@ -1543,6 +1598,7 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
 {
     g.window = window;
     g.vsync = vsync;
+    if (!loadGlobalDispatch()) return false;
     unsigned extensionCount = 0;
     if (!SDL_Vulkan_GetInstanceExtensions(window, &extensionCount, nullptr)) return fail(SDL_GetError());
     std::vector<char const *> extensions(extensionCount);
@@ -1583,6 +1639,7 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
     instance.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     instance.ppEnabledExtensionNames = extensions.data();
     if (!check(vkCreateInstance(&instance, nullptr, &g.instance), "create instance")) return false;
+    if (!loadInstanceDispatch()) return false;
     if (!SDL_Vulkan_CreateSurface(window, g.instance, &g.surface)) return fail(SDL_GetError());
     uint32_t count = 0;
     if (!check(vkEnumeratePhysicalDevices(g.instance, &count, nullptr), "enumerate physical devices")) return false;
@@ -1678,6 +1735,7 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
     if (g.depthClipControl) device.pNext = &depthClipFeatures;
 #endif
     if (!check(vkCreateDevice(g.physical, &device, nullptr, &g.device), "create logical device")) return false;
+    if (!loadDeviceDispatch()) return false;
     vkGetDeviceQueue(g.device, g.queueFamily, 0, &g.queue);
     VkFormatProperties colorProperties;
     vkGetPhysicalDeviceFormatProperties(g.physical, VK_FORMAT_R8G8B8A8_UNORM, &colorProperties);
@@ -1768,6 +1826,13 @@ bool vulkanCreate(SDL_Window *window, int width, int height, int vsync)
 
 void vulkanDestroy()
 {
+    // No work can have been submitted before the full device dispatch table
+    // loads. A partial initialization must not call an unresolved wait function.
+    if (g.device && !g.deviceDispatchReady)
+    {
+        if (vkDestroyDevice) vkDestroyDevice(g.device, nullptr);
+        g.device = VK_NULL_HANDLE;
+    }
     if (g.device)
     {
         if (g.ready && !g.failed) submit();
@@ -1845,7 +1910,14 @@ void vulkanDestroy()
         vkDestroyDevice(g.device, nullptr);
     }
     if (g.surface) vkDestroySurfaceKHR(g.instance, g.surface, nullptr);
-    if (g.instance) vkDestroyInstance(g.instance, nullptr);
+    if (g.instance && vkDestroyInstance) vkDestroyInstance(g.instance, nullptr);
+    if (g.loaderOwned) SDL_Vulkan_UnloadLibrary();
+    vkGetInstanceProcAddr = nullptr;
+#define CLEAR_VULKAN_PROC(name) name = nullptr;
+    NBLOOD_VULKAN_GLOBAL_COMMANDS(CLEAR_VULKAN_PROC)
+    NBLOOD_VULKAN_INSTANCE_COMMANDS(CLEAR_VULKAN_PROC)
+    NBLOOD_VULKAN_DEVICE_COMMANDS(CLEAR_VULKAN_PROC)
+#undef CLEAR_VULKAN_PROC
     g = Backend();
 }
 
@@ -1855,8 +1927,15 @@ bool vulkanActive() { return g.ready; }
 
 bool vulkanSupported()
 {
+    if (g.ready) return true;
+    if (SDL_Vulkan_LoadLibrary(nullptr) < 0) return false;
+    auto getProc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+    auto enumerate = getProc ? reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+        getProc(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties")) : nullptr;
     uint32_t count = 0;
-    return vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) == VK_SUCCESS && count != 0;
+    bool const supported = enumerate && enumerate(nullptr, &count, nullptr) == VK_SUCCESS && count != 0;
+    SDL_Vulkan_UnloadLibrary();
+    return supported;
 }
 
 static bool resizeTargets(int width, int height, bool force)

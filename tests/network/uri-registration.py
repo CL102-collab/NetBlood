@@ -86,6 +86,8 @@ def main():
                    PATH=str(tools) + os.pathsep + os.environ.get("PATH", ""),
                    NETBLOOD_XDG_TEST_LOG=str(base / "xdg.json"),
                    NETBLOOD_URI_TEST_LOG=str(base / "launched"))
+        env.pop("APPIMAGE", None)
+        env.pop("APPDIR", None)
         expected = ["default", "netblood.desktop", "x-scheme-handler/netblood"]
         uri = "netblood://example.com:23513"
         application_id = "1234567890123456789"
@@ -146,6 +148,46 @@ def main():
                         break
                 time.sleep(0.02)
             assert actual == expected_launch, (name, actual)
+        # An AppImage's mounted engine is temporary. Both URL handlers must
+        # launch its persistent outer executable, including paths with spaces.
+        appimage_dir = base / "AppImage install"
+        appimage_dir.mkdir()
+        appimage = appimage_dir / "NetBlood.AppImage"
+        shutil.copyfile(executable, appimage)
+        appimage.chmod(0o755)
+        appimage_env = dict(env, APPIMAGE=str(appimage), APPDIR=str(base / "mount"))
+        for arguments, desktop_name, launch_arguments in (
+            ([], "netblood.desktop", ["-connect-uri", uri]),
+            (["--register-discord", application_id], discord_desktop,
+             ["-discord-launch", application_id, "discord-" + application_id + "://"]),
+        ):
+            result = run([str(executable), *arguments], appimage_env, cwd="/")
+            assert result.returncode == 0, result.stderr
+            desktop = Path(env["XDG_DATA_HOME"]) / "applications" / desktop_name
+            assert str(appimage).replace(" ", "\\s") in desktop.read_text(), desktop.read_text()
+            result = run(["desktop-file-validate", str(desktop)], appimage_env)
+            assert result.returncode == 0, result.stderr
+            launch_log = Path(env["NETBLOOD_URI_TEST_LOG"])
+            launch_log.unlink(missing_ok=True)
+            result = run(["gio", "launch", str(desktop), launch_arguments[-1]], appimage_env, cwd="/")
+            assert result.returncode == 0, result.stderr
+            deadline = time.monotonic() + 5
+            expected_launch = [str(appimage_dir), str(appimage), *launch_arguments, ""]
+            actual = None
+            while time.monotonic() < deadline:
+                if launch_log.exists():
+                    actual = launch_log.read_bytes().decode().split("\0")
+                    if actual == expected_launch:
+                        break
+                time.sleep(0.02)
+            assert actual == expected_launch, actual
+        for invalid_image in ("relative.AppImage", str(base / "missing.AppImage"),
+                              str(appimage_dir), str(base / "invalid\nname")):
+            result = run([str(executable)], dict(appimage_env, APPIMAGE=invalid_image))
+            assert result.returncode == 1 and result.stderr.strip(), result
+        appimage.chmod(0o644)
+        result = run([str(executable)], appimage_env)
+        assert result.returncode == 1 and "executable file" in result.stderr, result
         desktop = Path(env["XDG_DATA_HOME"]) / "applications" / discord_desktop
         original_contents = desktop.read_bytes()
         for invalid_id in ("", "0", "000", "18446744073709551616", "123456789012345678901",

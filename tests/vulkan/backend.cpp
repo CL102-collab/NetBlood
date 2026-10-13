@@ -12,11 +12,23 @@
 #ifdef __linux__
 #include <sched.h>
 #endif
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
 #include <atomic>
 #include <map>
 #include <set>
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+
+static PFN_vkBeginCommandBuffer __real_vkBeginCommandBuffer = nullptr;
+static PFN_vkAllocateDescriptorSets __real_vkAllocateDescriptorSets = nullptr;
+static PFN_vkQueueSubmit __real_vkQueueSubmit = nullptr;
+static PFN_vkResetFences __real_vkResetFences = nullptr;
+static PFN_vkWaitForFences __real_vkWaitForFences = nullptr;
+static PFN_vkGetFenceStatus __real_vkGetFenceStatus = nullptr;
+static PFN_vkQueueWaitIdle __real_vkQueueWaitIdle = nullptr;
+static PFN_vkDeviceWaitIdle __real_vkDeviceWaitIdle = nullptr;
+static PFN_vkAcquireNextImageKHR __real_vkAcquireNextImageKHR = nullptr;
+static PFN_vkQueuePresentKHR __real_vkQueuePresentKHR = nullptr;
 
 namespace {
 std::atomic<unsigned> injectedFailure(0);
@@ -27,6 +39,9 @@ std::atomic<unsigned> backgroundGateHeld(0);
 std::atomic<bool> releaseBackgroundGate(false);
 std::atomic<unsigned> injectedSubmissionFailure(0);
 std::atomic<bool> submissionFailureObserved(false);
+char const *missingEntryPoint = nullptr;
+std::atomic<unsigned> recordingGateExpected(0), recordingGateArrived(0);
+std::atomic<bool> recordingGateTimedOut(false);
 
 struct FenceAudit
 {
@@ -68,15 +83,31 @@ bool injectWorkerFailure(unsigned kind)
 }
 }
 
-// Linux test-linker wrappers inject real worker error returns without adding
-// failure controls to the renderer. All other calls reach the Vulkan loader.
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkBeginCommandBuffer(
-    VkCommandBuffer command, VkCommandBufferBeginInfo const *info);
+// Test-only dispatch wrappers inject real worker error returns. Production
+// builds have no injection controls; all other calls reach the driver.
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkBeginCommandBuffer(
     VkCommandBuffer command, VkCommandBufferBeginInfo const *info)
 {
     if (info->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)
     {
+        // Device-level dispatch can record the small CPU-policy test batch in
+        // less than a scheduler timeslice. Rendezvous in the actual command
+        // recording call so overlap checks do not depend on host timing. A
+        // backend that dispatches the workers serially still fails the bound.
+        unsigned const expected = recordingGateExpected.load();
+        if (expected > 1 && recordingGateArrived.fetch_add(1) < expected)
+        {
+            uint32_t const start = SDL_GetTicks();
+            while (recordingGateArrived.load() < expected)
+            {
+                if (SDL_GetTicks() - start > 5000)
+                {
+                    recordingGateTimedOut.store(true);
+                    break;
+                }
+                SDL_Delay(1);
+            }
+        }
         if (injectedFailure.load() == 3)
         {
             if (static_cast<uint64_t>(SDL_ThreadID()) == failureCaller.load())
@@ -104,8 +135,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkBeginCommandBuffer(
     return __real_vkBeginCommandBuffer(command, info);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkAllocateDescriptorSets(
-    VkDevice device, VkDescriptorSetAllocateInfo const *info, VkDescriptorSet *sets);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAllocateDescriptorSets(
     VkDevice device, VkDescriptorSetAllocateInfo const *info, VkDescriptorSet *sets)
 {
@@ -113,8 +142,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAllocateDescriptorSets(
     return __real_vkAllocateDescriptorSets(device, info, sets);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueueSubmit(
-    VkQueue queue, uint32_t count, VkSubmitInfo const *submits, VkFence fence);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueSubmit(
     VkQueue queue, uint32_t count, VkSubmitInfo const *submits, VkFence fence)
 {
@@ -136,8 +163,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueSubmit(
     return result;
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkResetFences(
-    VkDevice device, uint32_t count, VkFence const *fences);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkResetFences(
     VkDevice device, uint32_t count, VkFence const *fences)
 {
@@ -145,7 +170,7 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkResetFences(
     {
         fenceAudit.resets += count;
         for (uint32_t i = 0; i < count; ++i)
-            if (fenceAudit.submitted[fences[i]] && vkGetFenceStatus(device, fences[i]) == VK_NOT_READY)
+            if (fenceAudit.submitted[fences[i]] && __real_vkGetFenceStatus(device, fences[i]) == VK_NOT_READY)
                 ++fenceAudit.unsafeResets;
     }
     VkResult const result = __real_vkResetFences(device, count, fences);
@@ -154,8 +179,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkResetFences(
     return result;
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkWaitForFences(
-    VkDevice device, uint32_t count, VkFence const *fences, VkBool32 all, uint64_t timeout);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkWaitForFences(
     VkDevice device, uint32_t count, VkFence const *fences, VkBool32 all, uint64_t timeout)
 {
@@ -163,7 +186,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkWaitForFences(
     return __real_vkWaitForFences(device, count, fences, all, timeout);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkGetFenceStatus(VkDevice device, VkFence fence);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkGetFenceStatus(VkDevice device, VkFence fence)
 {
     VkResult const result = __real_vkGetFenceStatus(device, fence);
@@ -178,14 +200,12 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkGetFenceStatus(VkDevice devic
     return result;
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueueWaitIdle(VkQueue queue);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueWaitIdle(VkQueue queue)
 {
     if (fenceAudit.enabled) ++fenceAudit.queueIdles;
     return __real_vkQueueWaitIdle(queue);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkDeviceWaitIdle(VkDevice device);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkDeviceWaitIdle(VkDevice device)
 {
     if (fenceAudit.enabled) ++fenceAudit.deviceIdles;
@@ -193,8 +213,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkDeviceWaitIdle(VkDevice devic
     return __real_vkDeviceWaitIdle(device);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkAcquireNextImageKHR(
-    VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *index);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAcquireNextImageKHR(
     VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t *index)
 {
@@ -203,7 +221,6 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkAcquireNextImageKHR(
     return __real_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, index);
 }
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueuePresentKHR(VkQueue queue, VkPresentInfoKHR const *info);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueuePresentKHR(VkQueue queue, VkPresentInfoKHR const *info)
 {
     VkResult const result = __real_vkQueuePresentKHR(queue, info);
@@ -211,6 +228,30 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueuePresentKHR(VkQueue queue
         return VK_SUBOPTIMAL_KHR;
     return result;
 }
+// Used only by the test build's dispatcher; the executable never links Vulkan.
+// Retain the actual driver function for each existing failure/fence wrapper.
+PFN_vkVoidFunction vulkanTestResolveProc(char const *name, PFN_vkVoidFunction address)
+{
+    if (missingEntryPoint && std::strcmp(name, missingEntryPoint) == 0) return nullptr;
+#define WRAP_PROC(command) \
+    if (std::strcmp(name, #command) == 0) { \
+        __real_##command = reinterpret_cast<PFN_##command>(address); \
+        return address ? reinterpret_cast<PFN_vkVoidFunction>(__wrap_##command) : nullptr; \
+    }
+    WRAP_PROC(vkBeginCommandBuffer)
+    WRAP_PROC(vkAllocateDescriptorSets)
+    WRAP_PROC(vkQueueSubmit)
+    WRAP_PROC(vkResetFences)
+    WRAP_PROC(vkWaitForFences)
+    WRAP_PROC(vkGetFenceStatus)
+    WRAP_PROC(vkQueueWaitIdle)
+    WRAP_PROC(vkDeviceWaitIdle)
+    WRAP_PROC(vkAcquireNextImageKHR)
+    WRAP_PROC(vkQueuePresentKHR)
+#undef WRAP_PROC
+    return address;
+}
+
 #endif
 
 namespace {
@@ -228,6 +269,35 @@ unsigned expectedFramesInFlight = 1;
 unsigned recordingWorkerLimit(unsigned cores)
 {
     return cores > 5 ? 5 : (cores ? cores : 1);
+}
+
+void dispatchFailures(SDL_Window *window)
+{
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
+    // Fail at each dispatch stage, including after vkCreateDevice succeeds but
+    // before any GPU work exists. Teardown must not call unresolved functions.
+    char const *commands[] = { "vkCreateInstance", "vkEnumeratePhysicalDevices", "vkWaitForFences" };
+    for (auto command : commands)
+    {
+        missingEntryPoint = command;
+        if (vulkanCreate(window, 64, 64, 0) || vulkanActive())
+        {
+            std::fprintf(stderr, "FAIL: missing entry point accepted: %s\n", command);
+            std::exit(1);
+        }
+        vulkanDestroy();
+        missingEntryPoint = nullptr;
+        if (!vulkanCreate(window, 64, 64, 0))
+        {
+            std::fprintf(stderr, "FAIL: cannot recover after missing entry point: %s\n", command);
+            std::exit(1);
+        }
+        vulkanDestroy();
+    }
+    std::puts("PASS: missing global/instance/device entry points fail cleanly and recover");
+#else
+    (void)window;
+#endif
 }
 
 VulkanDrawState defaults(int width = 64, int height = 64)
@@ -447,7 +517,7 @@ void consecutivePresents()
     vulkanGetSubmissionStats(&before);
     require(before.framesInFlight == expectedFramesInFlight, "requested submission ring size is active");
     require(before.pendingSubmissions == 0, "Finish completes every previously queued submission");
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
     fenceAudit = FenceAudit();
     fenceAudit.enabled = true;
 #endif
@@ -469,7 +539,7 @@ void consecutivePresents()
     }
     VulkanSubmissionStats queued = {};
     vulkanGetSubmissionStats(&queued);
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
     fenceAudit.enabled = false;
     require(fenceAudit.queueIdles == 0 && fenceAudit.deviceIdles == 0,
             "steady presentation never idles the whole Vulkan queue or device");
@@ -1033,6 +1103,22 @@ void ambientOcclusion(SDL_Window *window)
 
 void automaticWorkers(SDL_Window *window)
 {
+    auto beginOverlapCheck = [](unsigned workers) {
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
+        recordingGateArrived.store(0);
+        recordingGateTimedOut.store(false);
+        recordingGateExpected.store(workers);
+#else
+        (void)workers;
+#endif
+    };
+    auto endOverlapCheck = [] {
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
+        unsigned const expected = recordingGateExpected.exchange(0);
+        require(!recordingGateTimedOut.load() && (expected < 2 || recordingGateArrived.load() >= expected),
+                "all requested recording threads enter command recording concurrently");
+#endif
+    };
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "0", 1) == 0, "configure automatic recording workers");
     unsigned const cores = vulkanAvailableRecordingCores();
     require(cores >= 1, "automatic CPU detection always provides at least one core");
@@ -1056,8 +1142,10 @@ void automaticWorkers(SDL_Window *window)
             "a small batch neither creates nor dispatches background recording threads");
     std::printf("PASS: %u available cores select %u total recorders; small batches use only the caller\n",
                 cores, stats.workerCount);
+    beginOverlapCheck(expectedWorkers);
     for (unsigned draw = 0; draw < 512; ++draw) triangle(state, 0.f, 1.f, 0.f);
     pixel("automatic caller and background recording", 0, 255, 0);
+    endOverlapCheck();
     checkRecordingWorkers(expectedWorkers);
     vulkanDestroy();
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "999", 1) == 0, "request worker count above allowed limit");
@@ -1101,8 +1189,10 @@ void automaticWorkers(SDL_Window *window)
         }
         require(vulkanAvailableRecordingCores() == available, "automatic CPU detection respects test affinity");
         require(vulkanCreate(window, 96, 96, 0), "create automatic renderer on restricted available cores");
+        beginOverlapCheck(available);
         for (unsigned draw = 0; draw < 512; ++draw) triangle(state, 1.f, 0.f, 0.f);
         pixel("restricted-core automatic recording", 255, 0, 0);
+        endOverlapCheck();
         checkRecordingWorkers(available);
         vulkanDestroy();
         require(sched_setaffinity(0, sizeof(original), &original) == 0, "restore affinity after CPU policy test");
@@ -1113,7 +1203,7 @@ void automaticWorkers(SDL_Window *window)
 
 void workerFailures(SDL_Window *window)
 {
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
     if (recordingWorkerLimit(vulkanAvailableRecordingCores()) < 2)
     {
         std::puts("SKIP: concurrent recording error injection needs at least two available CPU cores");
@@ -1163,13 +1253,13 @@ void workerFailures(SDL_Window *window)
     }
 #else
     (void)window;
-    std::puts("SKIP: worker Vulkan failure injection requires the Linux test linker wrappers");
+    std::puts("SKIP: worker Vulkan failure injection requires the test dispatch wrappers");
 #endif
 }
 
 void submissionFailures(SDL_Window *window)
 {
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
     for (unsigned failure = 1; failure <= 4; ++failure)
     {
         require(vulkanCreate(window, 96, 96, 0), "create renderer before injected submission/acquire/present result");
@@ -1205,13 +1295,13 @@ void submissionFailures(SDL_Window *window)
     }
 #else
     (void)window;
-    std::puts("SKIP: submission/acquire/present result injection requires Linux test linker wrappers");
+    std::puts("SKIP: submission/acquire/present result injection requires test dispatch wrappers");
 #endif
 }
 
 void teardownIdleFailure(SDL_Window *window)
 {
-#ifdef VULKAN_BACKEND_TEST_WRAP
+#ifdef VULKAN_BACKEND_TEST_DISPATCH
     require(vulkanCreate(window, 96, 96, 0), "create renderer before injected teardown idle failure");
     VulkanDrawState const state = defaults(96, 96);
     for (unsigned frame = 0; frame < 4; ++frame)
@@ -1237,24 +1327,39 @@ void teardownIdleFailure(SDL_Window *window)
     vulkanDestroy();
 #else
     (void)window;
-    std::puts("SKIP: teardown idle failure injection requires Linux test linker wrappers");
+    std::puts("SKIP: teardown idle failure injection requires test dispatch wrappers");
 #endif
 }
 } // namespace
 
 int main(int argc, char **argv)
 {
+    bool const missingLoader = argc == 2 && std::strcmp(argv[1], "--missing-loader") == 0;
     bool const teardownOnly = argc == 2 && std::strcmp(argv[1], "--teardown-idle-only") == 0;
     bool const ambientOnly = argc == 2 && std::strcmp(argv[1], "--ambient-occlusion-only") == 0;
-    if (argc > 1 && !teardownOnly && !ambientOnly)
+    if (argc > 1 && !teardownOnly && !ambientOnly && !missingLoader)
     {
-        std::fprintf(stderr, "Usage: %s [--teardown-idle-only|--ambient-occlusion-only]\n", argv[0]);
+        std::fprintf(stderr, "Usage: %s [--teardown-idle-only|--ambient-occlusion-only|--missing-loader]\n", argv[0]);
         return 2;
     }
     if (SDL_Init(SDL_INIT_VIDEO))
     {
         std::fprintf(stderr, "SDL video initialization failed: %s\n", SDL_GetError());
         return 1;
+    }
+    if (missingLoader)
+    {
+        require(SDL_setenv("SDL_VULKAN_LIBRARY", "/netblood-test/nonexistent-vulkan-runtime", 1) == 0, "configure missing Vulkan loader");
+        require(!vulkanSupported(), "missing loader disables Vulkan without preventing startup");
+        SDL_Window *fallback = SDL_CreateWindow("Software renderer remains available", 0, 0, 64, 64, SDL_WINDOW_HIDDEN);
+        require(fallback != nullptr, "create software window without a Vulkan runtime");
+        require(!vulkanCreate(fallback, 64, 64, 0), "missing loader fails renderer initialization safely");
+        require(!vulkanActive(), "failed Vulkan initialization has no active renderer");
+        vulkanDestroy();
+        SDL_DestroyWindow(fallback);
+        SDL_Quit();
+        std::puts("PASS: missing Vulkan runtime, graceful renderer failure and software window availability");
+        return 0;
     }
     SDL_Window *window = SDL_CreateWindow("Native Vulkan regression tests", SDL_WINDOWPOS_UNDEFINED,
                                           SDL_WINDOWPOS_UNDEFINED, 64, 64,
@@ -1283,6 +1388,7 @@ int main(int argc, char **argv)
         std::puts("PASS: targeted native Vulkan ambient occlusion checks");
         return 0;
     }
+    dispatchFailures(window);
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "1", 1) == 0, "configure synchronous recording reference");
     require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", "1", 1) == 0, "configure one-slot submission reference");
     std::puts("Testing one synchronous recorder and one submission slot");

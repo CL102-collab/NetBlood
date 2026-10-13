@@ -30,9 +30,11 @@ def free_port():
 
 def tap(game, scan):
     game.key(scan, True)
-    time.sleep(0.07)
+    # Chat consumes one scan per rendered frame. Let it consume each key
+    # before queuing another, including text preceding a modifier shortcut.
+    game.input_barrier()
     game.key(scan, False)
-    time.sleep(0.07)
+    game.input_barrier()
 
 
 def type_text(game, text):

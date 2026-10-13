@@ -43,9 +43,9 @@ def quote(value):
 
 def tap(game, scan):
     game.key(scan, True)
-    time.sleep(0.1)
+    game.input_barrier()
     game.key(scan, False)
-    time.sleep(0.1)
+    game.input_barrier()
 
 
 def type_text(game, text):
@@ -176,8 +176,25 @@ def main():
     def rejected(game, reason, offset=0, name=None):
         name = name or game.name
         wait_rejection(game, reason, args.timeout, offset)
+        def text_mask(image):
+            pixels = image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata()
+            return bytes(min(pixel) > 160 and max(pixel) - min(pixel) < 12 for pixel in pixels)
         if not args.skip_screenshots:
-            result["screenshots"][name] = capture_window(game, root / f"{name}.png")
+            from PIL import Image
+            deadline = time.monotonic() + args.timeout
+            # Network rejection is logged before the first menu frame. Slow
+            # software Vulkan startup can still have a completely black window
+            # here; establish the visible diagnostic before testing persistence.
+            while True:
+                result["screenshots"][name] = capture_window(game, root / f"{name}.png")
+                first = Image.open(root / f"{name}.png").convert("RGB")
+                bounds = (0, int(first.height * 0.30), first.width, int(first.height * 0.40))
+                before_mask = text_mask(first.crop(bounds))
+                if sum(before_mask) > 100:
+                    break
+                require(game.process.poll() is None, f"{game.name}: exited before drawing the rejection")
+                require(time.monotonic() < deadline, f"{game.name}: rejection screen has no visible diagnostic text")
+                time.sleep(0.1)
         time.sleep(2)
         require(game.process.poll() is None, f"{game.name}: error closed the game")
         text = game.text()
@@ -189,8 +206,6 @@ def main():
         if not args.skip_screenshots:
             later = capture_window(game, root / f"{name}-persistent.png")
             result["screenshots"][name + "-persistent"] = later
-            from PIL import Image
-            first = Image.open(root / f"{name}.png").convert("RGB")
             second = Image.open(later["path"]).convert("RGB")
             # The rejection reason is an unselected row at nominal y=65.
             # Exclude the blinking password cursor and animated menu footer.
@@ -199,12 +214,9 @@ def main():
             pixels = region.get_flattened_data() if hasattr(region, "get_flattened_data") else region.getdata()
             require(sum(min(pixel) > 160 and max(pixel) - min(pixel) < 12 for pixel in pixels) > 100,
                     f"{game.name}: rejection screen has no visible diagnostic text")
-            def text_mask(image):
-                pixels = image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata()
-                return bytes(min(pixel) > 160 and max(pixel) - min(pixel) < 12 for pixel in pixels)
             # Blood droplets can also cross in front of a few text pixels.
             # Require the same glyph positions with at most 5% occlusion.
-            before_mask, after_mask = text_mask(first.crop(bounds)), text_mask(region)
+            after_mask = text_mask(region)
             retained = sum(before and after for before, after in zip(before_mask, after_mask))
             require(retained >= 0.95 * max(sum(before_mask), sum(after_mask)),
                     f"{game.name}: diagnostic disappeared after disconnect")

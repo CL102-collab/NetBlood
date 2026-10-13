@@ -366,6 +366,17 @@ void G_AddSearchPaths(void)
     addsearchpath("/usr/share/games/" APPBASENAME);
     addsearchpath("/usr/local/share/games/" APPBASENAME);
     addsearchpath("/app/extensions/extra");
+#if defined __linux__
+    // AppRun passes URI arguments unchanged. Locate bundled engine resources
+    // here rather than injecting -j into the strict URI launch command line.
+    char const* const appDir = getenv("APPDIR");
+    if (appDir && appDir[0] == '/')
+    {
+        int const length = Bsnprintf(buf, sizeof(buf), "%s/usr/share/games/" APPBASENAME, appDir);
+        if (length > 0 && static_cast<size_t>(length) < sizeof(buf))
+            addsearchpath(buf);
+    }
+#endif
 #elif defined EDUKE32_OSX
     char buf[BMAX_PATH];
     int32_t i;

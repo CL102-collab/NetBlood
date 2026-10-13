@@ -1,5 +1,10 @@
 
 obj/
+/.ci-build/
+/.ci-windows/
+/dist/
+/test-results/
+__pycache__/
 
 /eduke32
 /mapster32

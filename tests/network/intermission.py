@@ -19,7 +19,8 @@ import tempfile
 import time
 import zlib
 
-from cinematics import capture_window, focus_window, free_port
+from cinematics import focus_window, free_port
+from relay import Relay
 from run import Failure, Game as BaseGame, build_driver, inspect_demo, records, require
 from scoreboard import wire_rows
 
@@ -106,9 +107,13 @@ def press(game, scan, seconds=0.2):
     focus_window(game)
     game.key(scan, True)
     try:
+        # A cold or slow rendering frame can outlast the requested hold and
+        # otherwise drain key-down and key-up in the same event-loop iteration.
+        game.input_barrier()
         time.sleep(seconds)
     finally:
         game.key(scan, False)
+        game.input_barrier()
     time.sleep(0.15)
 
 
@@ -165,24 +170,47 @@ def main():
     result = {"passed": False, "source_binary": str(source_binary),
               "binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
               "phases": {}, "screenshots": {}, "failures": []}
-    games = []
+    games, relays, pictures = [], [], []
 
-    def client(name, port, player_name, renderer):
+    def client(name, port, player_name, renderer, wait=True):
         game = Game(name, args, root, library, port, renderer=renderer, initial_files=fixtures,
                     launch_arguments=["-client", "127.0.0.1", "-port", str(port), "-pname", player_name])
         games.append(game)
+        return joined(game) if wait else game
+
+    def joined(game, configure_controls=True):
         game.wait(lambda text: "NET client map loaded " in text and "NET client slot=" in text,
                   "first authoritative snapshot", args.timeout)
-        game.command_text('bind S "gamefunc_Move_Backward"\nbind X "gamefunc_Turn_Around"\n'
-                          'bind H "gamefunc_Open"')
+        if configure_controls:
+            game.command_text('bind S "gamefunc_Move_Backward"\nbind X norepeat "gamefunc_Turn_Around"\n'
+                              'bind H "gamefunc_Open"')
         return game, records(game.text(), "NET welcome ")[-1]["slot"]
 
     def picture(game, name):
         if not args.skip_screenshots:
-            from PIL import Image
             path = root / (name + ".png")
-            captured = capture_window(game, path)
+            window = focus_window(game)
+            # Wait for ordinary event/render iterations after exposing this
+            # window; otherwise a slow frame can still show the previous
+            # overlapping client's pixels on an uncomposited Xvfb display.
+            game.input_barrier()
+            subprocess.run(["import", "-window", hex(window), str(path)], check=True)
+            pictures.append((game.name, name, path))
+            result["screenshots"][name] = {"path": str(path)}
+
+    def check_pictures():
+        # Image analysis is deliberately outside the real 15-second deadline.
+        # The captured pixels and all readability assertions remain identical.
+        if not pictures:
+            return
+        from PIL import Image
+        for game_name, name, path in pictures:
             image = Image.open(path).convert("RGB")
+            pixels = list(image.get_flattened_data() if hasattr(image, "get_flattened_data") else image.getdata())
+            captured = {"path": str(path), "width": image.width, "height": image.height,
+                        "black_fraction": sum(max(pixel) < 12 for pixel in pixels) / len(pixels),
+                        "white_pixels": sum(min(pixel) > 200 and max(pixel)-min(pixel) < 12 for pixel in pixels),
+                        "colored_pixels": sum(max(pixel)-min(pixel) > 40 for pixel in pixels)}
             # Fatal damage must not leave the whole results display washed in
             # a frozen red flash. Both the central board and bottom countdown
             # should retain their light, readable lettering.
@@ -194,7 +222,7 @@ def main():
                 pixels = region.get_flattened_data() if hasattr(region, "get_flattened_data") else region.getdata()
                 captured[label + "_light_pixels"] = sum(min(pixel) > 130 and max(pixel) - min(pixel) < 65 for pixel in pixels)
                 require(captured[label + "_light_pixels"] > 100,
-                        f"{game.name}: {label} has no readable light text (stale damage tint?)")
+                        f"{game_name}: {label} has no readable light text (stale damage tint?)")
             result["screenshots"][name] = captured
 
     def complete_pause(server, clients, initial, observed_at, expected_index):
@@ -264,6 +292,19 @@ def main():
         finally:
             first.key(26, False)
         time.sleep(0.4)
+        # Initialize the late client's engine/renderer before the real 15-second
+        # pause. Delay ContentReady (including retransmits), leaving Hello,
+        # content verification and transport acknowledgements unmodified. Its
+        # actual admission and first authoritative snapshot still happen during
+        # intermission, without cold startup consuming the observation window.
+        late_relay = Relay(("127.0.0.1", port)).start()
+        relays.append(late_relay)
+        late_relay.block_client_payload = struct.pack("<III", 0x314e424e, int(initial["session"]["protocol"]), 15)
+        late = client("late-client", late_relay.port, "LateJoin", args.renderer, wait=False)
+        late.wait(lambda text: "NET content verified" in text
+                  and late_relay.counters["client_to_server_filtered"] > 0,
+                  "verified content awaiting intermission admission", args.timeout)
+        require("NET welcome " not in late.text(), "late client was admitted before the intermission")
         first.command_text("net_record intermission.nbpd")
         focus_window(first)
         # Hits push the victim away; continue ordinary forward movement so
@@ -283,6 +324,11 @@ def main():
         final_rows = ended["scoreboard"]
         require(len(final_rows) == 2 and any(row["slot"] == first_slot and row["score"] == "1" for row in final_rows),
                 "final scoreboard omitted the actual winning score")
+        require("NET welcome " not in late.text(), "late client bypassed its admission hold")
+        # Release admission at the beginning of the pause, so the reliable
+        # ContentReady retransmission cannot time out while screenshots and
+        # input checks run. Joining remains asynchronous until checked below.
+        late_relay.block_client_payload = None
         for game in (first, second):
             installed = expect(game, lambda state: state["intermission"]["active"] == "1", "automatic final results", 5)
             require(installed["scoreboard"] == final_rows, "client final scoreboard differs from server's frozen results")
@@ -303,19 +349,30 @@ def main():
                 denied["intermission"]["level_ticks"] == before["intermission"]["level_ticks"],
                 "transport/demo clock must advance while world time is frozen")
         require(denied["scoreboard"] == final_rows, "final metadata changed during the pause")
-        late, late_slot = client("late-client", port, "LateJoin", args.renderer)
+        late, late_slot = joined(late, configure_controls=False)
         late_state = status(late)
         require(late_state["intermission"]["active"] == "1" and 0 < int(late_state["intermission"]["remaining_ms"]) <
                 int(ended["intermission"]["remaining_ms"]), "late join restarted or omitted the intermission countdown")
         require(late_state["scoreboard"] == final_rows, "late join did not receive the original final scoreboard")
         require(late_slot not in [row["slot"] for row in final_rows], "late join appeared in historical match results")
-        second.stop()
+        # Observe the disconnect before waiting for renderer/process shutdown;
+        # that cleanup can otherwise consume the final part of the real pause.
+        second.command_text("net_disconnect")
         departed = expect(server, lambda state: second_slot not in state["players"], "losing player departure", 5)
+        require(departed["intermission"]["active"] == "1" and
+                departed["session"]["map_generation"] == ended["session"]["map_generation"],
+                "test could not observe the departure before the real intermission deadline")
         require(departed["scoreboard"] == final_rows, "departure removed a player from historical final results")
         result["phases"]["winning-frag"] = {"initial": initial, "ready": ready, "ended": ended,
                                               "denied_input": denied, "late_join": late_state, "departure": departed}
         result["phases"]["score-limit-rotation"] = complete_pause(server, (first, late), ended, ended_at, 1)
         first.command_text("net_stoprecord")
+        # Gameplay console binds are disabled on the disconnected screen. Use
+        # the ordinary F10/Y quit dialog, outside the intermission deadline.
+        press(second, 67)
+        second.key(28, True)
+        second.process.wait(timeout=10)
+        second.stop()
         demo = inspect_demo(first.path / "intermission.nbpd")
         demo_states = demo_intermissions(first.path / "intermission.nbpd")
         active = [row for row in demo_states if row["active"]]
@@ -340,7 +397,7 @@ def main():
             game.stop()
         replay = Game("replay", args, root, library, playback=True, initial_files=fixtures)
         games.append(replay)
-        replay.wait(lambda text: "> This map" in text, "offline replay setup", args.timeout)
+        replay.wait(lambda text: "Level ready: map=" in text, "offline replay setup", args.timeout)
         time.sleep(0.5)
         replay.command_text(f'net_playback "{demo["path"]}"')
         replay_pause = expect(replay, lambda state: state["intermission"]["active"] == "1", "recorded intermission", args.timeout)
@@ -351,14 +408,20 @@ def main():
                        state["session"].get("snapshot_hash") == last_snapshot["hash"], "exact final packet-demo snapshot", 25)
         require(final["intermission"]["active"] == "0", "replay retained results after its map transition")
         result["phases"]["replay"] = {"pause": replay_pause, "final": final, "expected": last_snapshot}
+        check_pictures()
         print("PASS: offline packet demo preserves final results/countdown and exact final world snapshot", flush=True)
         result["passed"] = True
     except (Failure, OSError, subprocess.SubprocessError) as error:
         result["failures"].append(str(error))
         print(f"FAIL: {error}", flush=True)
     finally:
+        for relay in relays:
+            relay.block_client_payload = None
         for game in reversed(games):
             game.stop()
+        for relay in relays:
+            relay.close()
+        result["relays"] = [relay.report() for relay in relays]
         result["games"] = {game.name: game.result() for game in games}
         for game in games:
             if game.process.returncode != 0 or game.forced:

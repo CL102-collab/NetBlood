@@ -108,6 +108,24 @@ bool safePath(std::string const& path, std::string& error)
 
 bool executablePath(std::string& path, std::string& error)
 {
+    // /proc/self/exe points into the temporary mount when running an AppImage.
+    // Persist the outer executable so desktop and Discord links survive exit.
+    char const* const appImage = std::getenv("APPIMAGE");
+    if (appImage && *appImage)
+    {
+        path = appImage;
+        if (!safePath(path, error))
+            return false;
+        struct stat info;
+        if (stat(path.c_str(), &info) != 0)
+            return posixError(error, "Cannot access the NetBlood AppImage " + path);
+        if (!S_ISREG(info.st_mode) || access(path.c_str(), X_OK) != 0)
+        {
+            error = "The NetBlood AppImage must be an executable file: " + path + ".";
+            return false;
+        }
+        return true;
+    }
     std::vector<char> buffer(256);
     for (;;)
     {

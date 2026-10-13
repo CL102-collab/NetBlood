@@ -7,6 +7,10 @@
 
 #pragma once
 
+#ifndef _USE_MATH_DEFINES
+# define _USE_MATH_DEFINES
+#endif
+
 #ifndef __APPLE__
 #include <malloc.h>
 #endif
@@ -14,8 +18,8 @@
 #include <string.h>
 
 #ifdef USE_MIMALLOC
-# if defined __cplusplus && defined __APPLE__
-// avoid compilation failure due to use of std::realloc in this header
+# if defined __cplusplus && (defined __APPLE__ || defined _LIBCPP_VERSION)
+// Include libc++ locale before realloc is redirected, including LLVM-MinGW.
 #  include <locale>
 # endif
 # include "mimalloc.h"
@@ -463,10 +467,6 @@ defined __x86_64__ || defined __amd64__ || defined _M_X64 || defined _M_IA64 || 
 #endif
 #ifndef __STDC_LIMIT_MACROS
 # define __STDC_LIMIT_MACROS
-#endif
-
-#ifndef _USE_MATH_DEFINES
-# define _USE_MATH_DEFINES
 #endif
 
 #include <inttypes.h>

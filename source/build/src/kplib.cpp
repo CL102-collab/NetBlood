@@ -40,7 +40,7 @@ credits.
 static FORCE_INLINE CONSTEXPR int32_t klrotl(int32_t i, int sh) { return (i >> (-sh)) | (i << sh); }
 #else
 # define klrotl(i, sh) _lrotl(i, sh)
-# ifdef __clang__
+# if defined(__clang__) && (defined(__i386__) || defined(__x86_64__))
 #  include <emmintrin.h>
 # else
 #  include <intrin.h>

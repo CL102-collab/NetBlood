@@ -16,21 +16,21 @@ build_dir=$(mktemp -d "${TMPDIR:-/tmp}/netblood-vulkan-test.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
 pkg-config --exists sdl2 vulkan
-test_cppflags=
-test_ldflags=
-if [ "$(uname -s)" = Linux ]; then
-    test_cppflags=-DVULKAN_BACKEND_TEST_WRAP
-    test_ldflags='-Wl,--wrap=vkBeginCommandBuffer -Wl,--wrap=vkAllocateDescriptorSets
-        -Wl,--wrap=vkQueueSubmit -Wl,--wrap=vkResetFences -Wl,--wrap=vkWaitForFences
-        -Wl,--wrap=vkGetFenceStatus -Wl,--wrap=vkQueueWaitIdle -Wl,--wrap=vkDeviceWaitIdle
-        -Wl,--wrap=vkAcquireNextImageKHR -Wl,--wrap=vkQueuePresentKHR'
-fi
-"${CXX:-c++}" -std=c++11 -DUSE_VULKAN -Wall -Wextra -Werror \
+"${CXX:-c++}" -std=c++11 -DUSE_VULKAN -DVULKAN_BACKEND_TEST_DISPATCH -Wall -Wextra -Werror \
     -I"$repo/source/build/include" -I"$repo/source/glad/include" \
-    $test_cppflags ${CPPFLAGS:-} ${CFLAGS:-} ${CXXFLAGS:-} $(pkg-config --cflags sdl2 vulkan) \
+    ${CPPFLAGS:-} ${CFLAGS:-} ${CXXFLAGS:-} $(pkg-config --cflags sdl2 vulkan) \
     "$repo/tests/vulkan/backend.cpp" "$repo/source/build/src/vulkan_renderer.cpp" \
-    $test_ldflags ${LDFLAGS:-} $(pkg-config --libs sdl2 vulkan) -o "$build_dir/backend-test"
+    ${LDFLAGS:-} $(pkg-config --libs sdl2) -o "$build_dir/backend-test"
 
+# A loader dependency here would break software/OpenGL on machines without
+# Vulkan. The backend must resolve every Vulkan entry point through SDL.
+if command -v readelf >/dev/null 2>&1; then
+    if readelf -d "$build_dir/backend-test" | grep -E 'NEEDED.*(libvulkan|MoltenVK)' >/dev/null; then
+        echo "FAIL: backend has a hard-linked Vulkan runtime dependency" >&2
+        exit 1
+    fi
+fi
+"$build_dir/backend-test" --missing-loader
 result=0
 # Include cross-command-buffer GPU synchronization checks whenever the caller
 # enables Khronos validation; ordinary host threading checks remain enabled too.

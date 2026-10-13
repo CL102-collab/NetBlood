@@ -72,6 +72,7 @@ class Game:
         os.mkfifo(self.fifo)
         self.events = os.open(self.fifo, os.O_RDWR | os.O_NONBLOCK)
         self.command_serial = 0
+        self.input_serial = 0
         if renderer is None and not dedicated:
             renderer = getattr(args, "renderer", 0) or None
         (self.path / "network.cfg").write_text(
@@ -144,6 +145,19 @@ class Game:
     def key(self, scan, down):
         os.write(self.events, f"{scan} {int(down)}\n".encode())
 
+    def input_barrier(self, timeout=10):
+        """Let queued SDL events and deferred input-mode changes finish."""
+        self.input_serial = getattr(self, "input_serial", 0) + 1
+        marker = f"NETWORK_TEST_INPUT_BARRIER_{self.input_serial}"
+        os.write(self.events, f"-1 {self.input_serial}\n".encode())
+        deadline = time.monotonic() + timeout
+        while marker not in self.console():
+            if self.process.poll() is not None:
+                require(self.process.returncode == 0, f"{self.name}: exited before input barrier")
+                return
+            require(time.monotonic() < deadline, f"{self.name}: input barrier timed out")
+            time.sleep(0.01)
+
     def command_text(self, commands, timeout=10):
         self.command_serial += 1
         marker = f"NETWORK_TEST_COMMAND_{self.command_serial}"
@@ -160,7 +174,7 @@ class Game:
                 self.wait(lambda text: marker in text, marker, timeout)
             finally:
                 self.key(12, False)
-            time.sleep(0.1)
+            self.input_barrier(timeout)
             return
         self.wait(lambda text: marker in text, marker, timeout)
 
@@ -359,6 +373,13 @@ def main():
         second.key(13, False)
         time.sleep(2)
         second.command_text("net_status\nscreenshot")
+        # Headless software Vulkan can render below the input tick rate. Wait
+        # for actual command coverage instead of assuming a fixed sleep has
+        # advanced more than thirty input frames on every CI machine.
+        deadline = time.monotonic() + args.timeout
+        while int(records(second.text(), "NET prediction ")[-1]["commands"]) <= 30 and time.monotonic() < deadline:
+            time.sleep(0.5)
+            second.command_text("net_status")
         first.command_text("net_status\nscreenshot")
         server.command_text("net_status")
         prediction = records(second.text(), "NET prediction ")[-1]
@@ -372,17 +393,30 @@ def main():
         before_outage = int(records(second.text(), "NET client slot=")[-1]["ack"])
         # Suppress command-bearing datagrams without intentionally interrupting
         # connection liveness traffic for longer than ENet's timeout threshold.
-        relay2.block_client_payload = struct.pack("<III", 0x314e424e, 1, 4)
-        time.sleep(10)
+        protocol = int(records(second.text(), "NET status ")[-1]["protocol"])
+        relay2.block_client_payload = struct.pack("<III", 0x314e424e, protocol, 4)
+        outage_start = time.monotonic()
+        outage_commands = int(prediction["commands"])
+        deadline = outage_start + args.timeout
+        # Exercise the same bounded 256-command history on slow renderers:
+        # ten wall-clock seconds alone may contain fewer than 256 inputs.
+        while True:
+            time.sleep(1)
+            second.command_text("net_status")
+            blocked = records(second.text(), "NET prediction ")[-1]
+            if time.monotonic() - outage_start >= 10 and int(blocked["commands"]) - outage_commands > 256:
+                break
+            require(time.monotonic() < deadline, "client did not produce 257 commands during the bounded input outage")
+        outage_seconds = time.monotonic() - outage_start
         relay2.block_client_payload = None
         second.wait(lambda text: any(int(row["ack"]) > before_outage+256
-                                    for row in records(text, "NET client slot=")), "input recovery after ten-second outage", args.timeout)
+                                    for row in records(text, "NET client slot=")), "input recovery after command outage", args.timeout)
         time.sleep(1)
         second.command_text("net_status")
         recovered = records(second.text(), "NET prediction ")[-1]
         require(int(recovered.get("history_overflows", 0)) > 0 and int(recovered["pending"]) < 32,
                 "prediction did not bound and recover its history after the outage")
-        result["outage_recovery"] = {"command_loss_seconds": 10, "before_ack": before_outage, "prediction": recovered}
+        result["outage_recovery"] = {"command_loss_seconds": outage_seconds, "before_ack": before_outage, "prediction": recovered}
         if not args.skip_map_change:
             previous = len(records(first.text(), "NET welcome "))
             server.command_text("map E1M2")

@@ -304,15 +304,16 @@ def main():
     def tap(game, scan, seconds=0.12):
         focus_window(game)
         game.key(scan, True)
+        game.input_barrier(args.timeout)
         time.sleep(seconds)
         game.key(scan, False)
-        time.sleep(0.12)
+        game.input_barrier(args.timeout)
 
     def started(game):
-        game.wait(lambda text: "> This map" in text, "offline map", args.timeout)
-        # The map log precedes texture precaching. Hold a normal console
-        # command until an actual game iteration consumes it before menu input.
-        game.command_text("echo SAVE_PREVIEW_WORLD_READY")
+        game.wait(lambda text: "Level ready: map=" in text, "loaded offline map", args.timeout)
+        # Ensure the first ordinary game iteration has consumed input before
+        # opening a menu; texture precaching also pumps SDL events.
+        game.command_text("echo SAVE_PREVIEW_WORLD_READY", args.timeout)
         time.sleep(0.6)
 
     def position(game):

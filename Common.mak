@@ -285,6 +285,9 @@ ifeq ($(PLATFORM),WINDOWS)
     ifeq ($(findstring x86_64,$(COMPILERTARGET)),x86_64)
         IMPLICIT_ARCH := x86_64
         BITS := 64
+    else ifneq (,$(filter aarch64% arm64%,$(COMPILERTARGET)))
+        IMPLICIT_ARCH := arm64
+        BITS := 64
     endif
 else ifeq ($(PLATFORM),WII)
     IMPLICIT_ARCH := ppc
@@ -293,9 +296,9 @@ else ifeq ($(PLATFORM),$(filter $(PLATFORM),DINGOO GCW))
 else
     ifneq ($(ARCH),)
         override ARCH := $(subst i486,i386,$(subst i586,i386,$(subst i686,i386,$(strip $(ARCH)))))
-        IMPLICIT_ARCH := $(ARCH)
+        IMPLICIT_ARCH := $(subst aarch64,arm64,$(ARCH))
     else
-        IMPLICIT_ARCH := $(subst i486,i386,$(subst i586,i386,$(subst i686,i386,$(strip $(shell uname -m)))))
+        IMPLICIT_ARCH := $(subst aarch64,arm64,$(subst i486,i386,$(subst i586,i386,$(subst i686,i386,$(strip $(shell uname -m))))))
     endif
 
     ifeq ($(findstring x86_64,$(IMPLICIT_ARCH)),x86_64)
@@ -860,17 +863,9 @@ ifneq (0,$(USE_OPENGL))
 endif
 ifneq (0,$(USE_VULKAN))
     VULKAN_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags vulkan 2>/dev/null)
-    VULKAN_LIBS ?= $(shell $(PKG_CONFIG) --libs vulkan 2>/dev/null)
+    # SDL loads the graphics driver's Vulkan runtime on demand. Only the
+    # headers are needed at build time; software/OpenGL must work without it.
     COMPILERFLAGS += -DUSE_VULKAN $(VULKAN_CFLAGS)
-    ifneq (,$(strip $(VULKAN_LIBS)))
-        LIBS += $(VULKAN_LIBS)
-    else
-    ifeq ($(PLATFORM),WINDOWS)
-        LIBS += -lvulkan-1
-    else
-        LIBS += -lvulkan
-    endif
-    endif
 endif
 ifneq (0,$(POLYMER))
     COMPILERFLAGS += -DPOLYMER
@@ -882,9 +877,18 @@ endif
 
 ##### External library paths
 
-ifeq ($(PLATFORM),WINDOWS)
+# Cross builds supply one matching set of target headers and libraries, without
+# accidentally mixing in bundled or host-package-manager SDKs.
+ifneq (,$(DEPENDENCY_PREFIX))
+    COMPILERFLAGS += -I$(DEPENDENCY_PREFIX)/include -I$(DEPENDENCY_PREFIX)/include/SDL2
+    LIBDIRS += -L$(DEPENDENCY_PREFIX)/lib
+else ifeq ($(PLATFORM),WINDOWS)
     COMPILERFLAGS += -Iplatform/Windows/include -Iplatform/Windows/include/SDL2
-    LIBDIRS += -Lplatform/Windows/lib/$(BITS)
+    ifeq ($(IMPLICIT_ARCH),arm64)
+        LIBDIRS += -Lplatform/Windows/lib/ARM64
+    else
+        LIBDIRS += -Lplatform/Windows/lib/$(BITS)
+    endif
 else ifeq ($(PLATFORM),DARWIN)
     ifneq ($(shell port --version &>/dev/null; echo $$?),127)
         LIBDIRS += -L/opt/local/lib

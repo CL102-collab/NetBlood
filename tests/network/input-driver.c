@@ -48,10 +48,16 @@ int SDL_PollEvent(SDL_Event *event)
     static int descriptor = -1;
     static char line[64];
     static size_t length;
+    static int barrier_serial, barrier_polls;
     if (!original) *(void **)(&original) = dlsym(RTLD_NEXT, "SDL_PollEvent");
     if (!original) return 0;
     int found = original(event);
     if (found || !event || headless()) return found;
+    if (barrier_polls) {
+        if (!--barrier_polls)
+            fprintf(stderr, "NETWORK_TEST_INPUT_BARRIER_%d\n", barrier_serial);
+        return 0;
+    }
     const char *path = getenv("NETWORK_TEST_EVENTS");
     if (!path) return 0;
     if (descriptor < 0) descriptor = open(path, O_RDONLY | O_NONBLOCK);
@@ -66,6 +72,14 @@ int SDL_PollEvent(SDL_Event *event)
         int scan = -1, down = -1;
         int valid = sscanf(line, "%d %d", &scan, &down) == 2;
         length = 0;
+        if (valid && scan == -1 && down > 0) {
+            /* End this drain and allow two ordinary event-loop iterations
+             * before acknowledging. Deferred menu/bind actions can run before
+             * the test queues text intended for the newly opened input mode. */
+            barrier_serial = down;
+            barrier_polls = 2;
+            return 0;
+        }
         if (!valid || scan < 0 || scan >= SDL_NUM_SCANCODES || (down != 0 && down != 1)) continue;
         memset(event, 0, sizeof(*event));
         if (!scan) event->type = SDL_QUIT;

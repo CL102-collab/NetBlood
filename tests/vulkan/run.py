@@ -55,19 +55,52 @@ SDL_bool SDL_Vulkan_CreateSurface(SDL_Window *window, VkInstance instance, VkSur
 int SDL_PollEvent(SDL_Event *event)
 {
     static int (*original)(SDL_Event *);
-    static unsigned initialized, presses, down, limit;
+    static unsigned initialized, presses, down, limit, input_polls;
     static Uint32 next_press, release_at, interval;
+    static char const *ready_log;
+    static unsigned ready;
+    static Uint32 check_ready_at, ready_at;
     if (!original) *(void **)(&original) = dlsym(RTLD_NEXT, "SDL_PollEvent");
     if (!original) return 0;
     if (!initialized) {
         next_press = (Uint32)strtoul(getenv("RENDER_TEST_INITIAL_MS"), NULL, 10);
         interval = (Uint32)strtoul(getenv("RENDER_TEST_INTERVAL_MS"), NULL, 10);
         limit = (unsigned)strtoul(getenv("RENDER_TEST_PRESSES"), NULL, 10);
+        ready_log = getenv("RENDER_TEST_READY_LOG");
+        ready = !ready_log || !*ready_log;
         initialized = 1;
     }
     int result = original(event);
     if (result || !event) return result;
+    // A heavily loaded renderer can be descheduled past release_at while
+    // draining events. End the drain and give ordinary input processing a
+    // chance to consume the key before emitting its opposite transition.
+    if (input_polls) {
+        --input_polls;
+        return 0;
+    }
     Uint32 now = SDL_GetTicks();
+    // Startup/precache also pumps SDL events. Optional log synchronization keeps
+    // the first key out of those loading loops, where it would be discarded.
+    // The game creates this ordinary diagnostic after completing StartLevel;
+    // callers remove the previous process's log before launching a new one.
+    if (!ready && now >= check_ready_at) {
+        check_ready_at = now + 50;
+        FILE *log = fopen(ready_log, "r");
+        if (log) {
+            char line[1024];
+            while (fgets(line, sizeof(line), log)) {
+                if (strstr(line, "Level ready: map=")) {
+                    ready = 1;
+                    ready_at = now + 250;
+                    fprintf(stderr, "RENDER_TEST_READY: level finished loading at %u ms\n", now);
+                    break;
+                }
+            }
+            fclose(log);
+        }
+    }
+    if (!ready || now < ready_at) return 0;
     if ((!down && presses < limit && now >= next_press) || (down && now >= release_at)) {
         memset(event, 0, sizeof(*event));
         event->type = down ? SDL_KEYUP : SDL_KEYDOWN;
@@ -86,6 +119,7 @@ int SDL_PollEvent(SDL_Event *event)
             fprintf(stderr, "RENDER_TEST_KEY: %u at %u ms\n", presses, now);
         } else next_press = now + interval;
         down = !down;
+        input_polls = 2;
         return 1;
     }
     return 0;
@@ -121,6 +155,8 @@ def arguments():
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--initial-delay-ms', type=int, default=25000)
+    parser.add_argument('--wait-ready', action='store_true',
+                        help='wait for the current executable\'s level-ready diagnostic before input')
     parser.add_argument('--interval-ms', type=int, default=2000)
     parser.add_argument('--max-mean-error', type=float, default=2.0,
                         help='Maximum mean RGB difference in 0..255 units (default 2)')
@@ -361,6 +397,10 @@ def run_case(args, output, library, map_name, renderer, switching=False, bridge=
                RENDER_TEST_INITIAL_MS=str(args.initial_delay_ms),
                RENDER_TEST_INTERVAL_MS=str(args.interval_ms),
                RENDER_TEST_PRESSES=str(captures + 1))
+    if getattr(args, 'wait_ready', False):
+        # Every run_case has a newly created directory, so no prior process's
+        # diagnostic can accidentally satisfy this readiness condition.
+        env['RENDER_TEST_READY_LOG'] = str(runtime / 'nblood.log')
     requested_workers = getattr(args, 'vulkan_workers', None)
     require_parallel = getattr(args, 'require_parallel', False)
     requested_frames = getattr(args, 'frames_in_flight', None)

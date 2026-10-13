@@ -37,6 +37,8 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--map', default='E1M1')
     parser.add_argument('--validation', action='store_true')
+    parser.add_argument('--wait-ready', action='store_true',
+                        help='wait for the current executable\'s level-ready diagnostic before input')
     parser.add_argument('--initial-delay-ms', type=int, default=20000)
     parser.add_argument('--timeout', type=int, default=120)
     args = parser.parse_args()
@@ -72,11 +74,14 @@ def main():
         env.update(SDL_VIDEODRIVER='x11', SDL_AUDIODRIVER='dummy',
                    RENDER_TEST_INITIAL_MS=str(args.initial_delay_ms),
                    RENDER_TEST_INTERVAL_MS='1500', RENDER_TEST_PRESSES='4', MESA_DEBUG='context')
+        if args.wait_ready:
+            env['RENDER_TEST_READY_LOG'] = str(runtime / 'nblood.log')
         env['LD_PRELOAD'] = str(library) + (' ' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
         if args.validation:
             env['VK_INSTANCE_LAYERS'] = 'VK_LAYER_KHRONOS_validation'
         print(f'Checking {runtime.name}: off / on / off', flush=True)
         errors = []
+        (runtime / 'nblood.log').unlink(missing_ok=True)
         with (runtime / 'console.log').open('w') as log:
             try:
                 completed = subprocess.run(command, cwd=runtime, env=env, stdout=log,
@@ -119,6 +124,9 @@ def main():
         (runtime / 'autoexec.cfg').write_text('bind I norepeat "exec restart.cfg"\n')
         (runtime / 'restart.cfg').write_text('r_ambientocclusion\necho AO_RESTARTED\nquit\n')
         env['RENDER_TEST_PRESSES'] = '1'
+        # Never let the input driver mistake the previous process's readiness
+        # message for the restarted game's completed loading phase.
+        (runtime / 'nblood.log').unlink(missing_ok=True)
         with (runtime / 'restart.log').open('w') as log_file:
             try:
                 completed = subprocess.run(command, cwd=runtime, env=env, stdout=log_file,

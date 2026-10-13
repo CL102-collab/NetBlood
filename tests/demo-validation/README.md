@@ -27,6 +27,10 @@ It requires a zero exit status, the final success message, and distinct
 per-demo pass records matching the summary. A timeout or incomplete run fails.
 Use `--timeout SECONDS`, `--binary PATH`, or `--output-dir DIRECTORY` to change
 those defaults. `--archive PATH` selects an alternate validation fixture archive.
+CI additionally passes `--require-all`: every recording from `TEST000.DEM`
+through `TEST143.DEM` must have a distinct pass record, and the summary must
+report exactly 144 passes and zero skips. Use GCC 14 or earlier with LTO enabled
+for that strict gate. A compiler exclusion fails CI instead of reducing coverage.
 
 To invoke the built-in mode directly from the checkout, with a usable display:
 

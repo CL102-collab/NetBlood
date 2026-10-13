@@ -63,12 +63,16 @@ def alive(player):
 
 def press(game, scan, seconds=0.2):
     focus_window(game)
+    started = time.monotonic()
     game.key(scan, True)
     try:
-        time.sleep(seconds)
+        game.input_barrier()
+        # Waiting for the game to consume key-down is part of the hold. Adding
+        # that delay again makes small Aim_Down taps overshoot the fixture.
+        time.sleep(max(0, seconds - (time.monotonic() - started)))
     finally:
         game.key(scan, False)
-    time.sleep(0.2)
+    game.input_barrier()
 
 
 def approach_downed(host, rescuer, rescuer_slot, target_slot, timeout=20):
@@ -140,7 +144,7 @@ def main():
         slot = int(records(game.text(), "NET welcome ")[-1]["slot"])
         game.command_text('bind H "gamefunc_Open"\nbind S "gamefunc_Move_Backward"\n'
                           'bind A "gamefunc_Strafe_Left"\nbind D "gamefunc_Strafe_Right"\n'
-                          'bind X "gamefunc_Turn_Around"\nbind 3 "gamefunc_Weapon_3"\n'
+                          'bind X norepeat "gamefunc_Turn_Around"\nbind 3 "gamefunc_Weapon_3"\n'
                           'bind C "gamefunc_Aim_Down"\nbind Z "gamefunc_Aim_Center"\n'
                           'bind 6 "gamefunc_Weapon_6"\nbind F11 "gamefunc_Show_Scoreboard"')
         return game, slot

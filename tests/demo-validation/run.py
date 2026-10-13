@@ -20,6 +20,8 @@ def main():
                         default=Path(__file__).resolve().with_name("validation.pk3"))
     parser.add_argument("--timeout", type=float, default=600,
                         help="maximum run time in seconds (default: 600)")
+    parser.add_argument("--require-all", action="store_true",
+                        help="require all 144 demos to pass, with no compiler exclusions (CI gate)")
     parser.add_argument("--output-dir", type=Path,
                         help="parent directory for a fresh run directory (default: system temp)")
     args = parser.parse_args()
@@ -81,9 +83,14 @@ def main():
         passed, skipped = map(int, summaries[0])
         if passed + skipped != 144 or passed == 0:
             failures.append(f"incomplete suite: {passed} passed, {skipped} skipped (expected 144 total)")
+        if args.require_all and (passed != 144 or skipped != 0):
+            failures.append(f"strict validation requires 144 passes and zero skips; got {passed} passes, {skipped} skips")
         if len(synced) != passed or len(set(synced)) != passed:
             failures.append("per-demo pass records do not match the summary")
+        if args.require_all and set(synced) != {f"/validatedemos/TEST{i:03}.DEM" for i in range(144)}:
+            failures.append("strict validation requires a pass record for each TEST000.DEM through TEST143.DEM")
     result = {"passed": not failures, "command": command, "exit_code": returncode,
+              "require_all": args.require_all,
               "synced_demos": synced, "summary": summaries[0] if len(summaries) == 1 else None,
               "failures": failures, "log": str(log_path)}
     (runtime / "result.json").write_text(json.dumps(result, indent=2) + "\n")

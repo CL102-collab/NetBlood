@@ -611,7 +611,14 @@ static char const * windowsDecodeKeyboardLayoutName(char const * keyboardLayout)
     int const   localeID = Bstrtol(keyboardLayout, NULL, 16);
     static char localeName[16];
 
+#if _WIN32_WINNT >= 0x0600
     int const result = GetLocaleInfo(MAKELCID(localeID, SORT_DEFAULT), LOCALE_SNAME, localeName, ARRAY_SIZE(localeName));
+#else
+    // LOCALE_SNAME is unavailable on XP. The abbreviated language name is
+    // sufficient here: this string is used only to log keyboard layout changes.
+    int const result = GetLocaleInfo(MAKELCID(localeID, SORT_DEFAULT), LOCALE_SABBREVLANGNAME,
+                                     localeName, ARRAY_SIZE(localeName));
+#endif
 
     if (!result)
     {

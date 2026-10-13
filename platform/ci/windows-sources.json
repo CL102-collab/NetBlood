@@ -1,0 +1,7 @@
+{
+  "sdl2": {"url": "https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-2.30.11.tar.gz", "sha256": "8b8d4aef2038533da814965220f88f77d60dfa0f32685f80ead65e501337da7f"},
+  "flac": {"url": "https://github.com/xiph/flac/releases/download/1.4.3/flac-1.4.3.tar.xz", "sha256": "6c58e69cd22348f441b861092b825e591d0b822e106de6eb0ee4d05d27205b70"},
+  "vpx": {"url": "https://github.com/webmproject/libvpx/archive/refs/tags/v1.14.1.tar.gz", "sha256": "901747254d80a7937c933d03bd7c5d41e8e6c883e0665fadcb172542167c7977"},
+  "vulkan-headers": {"url": "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.3.290.tar.gz", "sha256": "f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5"},
+  "llvm-mingw": {"url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20240619/llvm-mingw-20240619-ucrt-ubuntu-20.04-x86_64.tar.xz", "sha256": "27d33157cc252c29ad6f777a96a0d94176fea1b534ff09b5071485def143b90e"}
+}

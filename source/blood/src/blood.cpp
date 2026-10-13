@@ -868,6 +868,8 @@ void StartLevel(GAMEOPTIONS *pOpt)
         netOnLevelStarted();
     if (gDedicated)
         LOG_F(INFO, "Dedicated level ready: map=%s players=%d tick_rate=30", pOpt->zLevelName, numplayers);
+    else
+        LOG_F(INFO, "Level ready: map=%s", pOpt->zLevelName);
 }
 
 void StartNetworkLevel(void)
@@ -1799,6 +1801,9 @@ void ParseOptions(void)
         bNoAutoLoad = true;
         gNoSetup = true;
         gCommandSetup = false;
+        // Headless validation has no display refresh rate. Do not throttle its
+        // event/clock updates through the refresh-rate-dependent frame limiter.
+        r_maxfps = -2;
         levelOverrideINI("TEST.INI");
         strcpy(g_modDir, "/validatedemos");
     }

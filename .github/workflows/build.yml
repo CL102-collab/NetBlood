@@ -3,10 +3,10 @@ name: Build
 
 'on':
   push:
-    branches: [master]
+    branches: [master, 'feat/**']
   pull_request: {}
   merge_group: {}
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -15,122 +15,305 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
+defaults:
+  run:
+    shell: bash
 
-  build:
+jobs:
+  validate-demos:
+    name: Validate all 144 demos and standalone tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/validation-environment
+      - name: Build the validation executable with GCC 13 and LTO
+        run: make -j2 blood CC=gcc-13 CXX=g++-13 LTO=2 USE_VULKAN=1 HAVE_GTK2=1
+      - name: Require 144 synced demos and zero skipped demos
+        run: >-
+          python3 platform/ci/validate.py --suite demos --binary ./nblood
+          --data-dir "$RUNNER_TEMP/blood121" --output test-results/demos
+      - name: Run all standalone regression tests
+        env:
+          SANITIZE: '1'
+        run: >-
+          python3 platform/ci/validate.py --suite unit --binary ./nblood
+          --data-dir "$RUNNER_TEMP/blood121" --output test-results/unit
+      - name: Save the exact validated executable for integration tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-executable
+          path: nblood
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-demos-unit
+          path: |
+            test-results/**/*.log
+            test-results/**/result*.json
+            test-results/**/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  tests:
+    name: Test ${{ matrix.suite }}
+    needs: validate-demos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - shaders
+          - windows-runtime
+          - backend
+          - render-game
+          - render-fixtures
+          - render-ror
+          - ambient-occlusion
+          - save-preview
+          - network
+          - server-settings
+          - map-download
+          - content-mismatch
+          - content-handshake
+          - client-version
+          - player-names
+          - password
+          - scoreboard
+          - cinematics
+          - team-balance
+          - team-shuffle
+          - team-chat
+          - coop-lives
+          - map-vote
+          - intermission
+          - uri-join
+          - discord-presence
+          - stun-live
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/validation-environment
+      - name: Install Windows test cross-compiler and Wine
+        if: matrix.suite == 'windows-runtime'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            g++-mingw-w64-x86-64-posix wine wine64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: validation-executable
+      - name: Restore executable permission
+        run: chmod +x nblood
+      - name: Run regression suite
+        env:
+          TEST_SUITE: ${{ matrix.suite }}
+        run: |
+          if [ "$TEST_SUITE" = shaders ]; then
+            bash platform/ci/validate-shaders.sh "$RUNNER_TEMP/shader-tools" \
+              --output "test-results/$TEST_SUITE"
+          else
+            python3 platform/ci/validate.py --suite "$TEST_SUITE" --binary ./nblood \
+              --data-dir "$RUNNER_TEMP/blood121" --output "test-results/$TEST_SUITE"
+          fi
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-${{ matrix.suite }}
+          path: |
+            test-results/**/*.log
+            test-results/**/result*.json
+            test-results/**/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows:
+    name: Package ${{ matrix.target }} on Linux
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [windows-x86_64, windows-i686, windows-xp-i686-nosse2, windows-arm64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux cross-build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake python3 curl xz-utils autoconf automake libtool pkg-config \
+            gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
+            gcc-mingw-w64-i686-posix g++-mingw-w64-i686-posix binutils-mingw-w64
+      - name: Build and package
+        env:
+          PACKAGE_TARGET: ${{ matrix.target }}
+        run: |
+          export NETBLOOD_REVISION="$(git rev-parse HEAD)"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          python3 platform/ci/windows-build.py --target "$PACKAGE_TARGET" \
+            --output dist --work-dir "$RUNNER_TEMP/windows-build" --jobs 2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/netblood-*.zip
+          if-no-files-found: error
+
+  linux:
+    name: Package ${{ matrix.target }}
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows MSYS2 x86_64 GCC
-            os: windows-latest
-            shell: 'msys2 {0}'
-            sys: mingw64
-            env: x86_64
-            make: make
-            opt: SDLCONFIG= LTO=0
-            publish-as: win64
-          - name: Windows MSYS2 i686 GCC
-            os: windows-latest
-            shell: 'msys2 {0}'
-            sys: mingw32
-            env: i686
-            make: make
-            opt: SDLCONFIG= LTO=0
-            pkg: nasm
-            publish-as: win32
-          - name: Windows MSYS2 x86_64 GCC without SDL
-            os: windows-latest
-            shell: 'msys2 {0}'
-            sys: mingw64
-            env: x86_64
-            make: make
-            opt: RENDERTYPE=WIN
-          - name: Linux GCC
-            os: ubuntu-latest
-            shell: bash
-            pkg: libsdl2-dev
-            make: make
-          - name: Linux GCC SDL 1.2
-            os: ubuntu-latest
-            shell: bash
-            pkg: libsdl1.2-dev
-            opt: SDL_TARGET=1
-            make: make
-          - name: Linux Clang
-            os: ubuntu-latest
-            shell: bash
-            pkg: libsdl2-dev clang
-            opt: CLANG=1
-            make: make
-          - name: Linux Clang without GL
-            os: ubuntu-latest
-            shell: bash
-            pkg: libsdl2-dev clang
-            opt: CLANG=1 USE_OPENGL=0
-            make: make
-          - name: Linux Clang without Polymer
-            os: ubuntu-latest
-            shell: bash
-            pkg: libsdl2-dev clang
-            opt: CLANG=1 POLYMER=0
-            make: make
-          - name: macOS Clang
-            os: macos-latest
-            shell: sh
-            make: gmake
-    name: ${{matrix.name}}
-    runs-on: ${{matrix.os}}
-    defaults:
-      run:
-        shell: ${{matrix.shell}}
+          - target: debian12-amd64
+            platform: linux/amd64
+            kind: deb
+            baseline: standard
+          - target: debian12-i386
+            platform: linux/386
+            kind: deb
+            baseline: standard
+          - target: debian12-i386-nosse2
+            platform: linux/386
+            kind: deb
+            baseline: nosse2
+          - target: debian12-armhf
+            platform: linux/arm/v7
+            kind: deb
+            baseline: standard
+          - target: debian12-arm64
+            platform: linux/arm64
+            kind: deb
+            baseline: standard
+          - target: linux-x86_64-appimage
+            platform: linux/amd64
+            kind: appimage
+            baseline: standard
     steps:
-      - uses: actions/checkout@v7
-
-      - name: install-prerequisites-windows-msys2
-        if: matrix.shell == 'msys2 {0}'
-        uses: >-
-          msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
-          msystem: ${{matrix.sys}}
-          update: true
-          cache: true
-          install: git mingw-w64-${{matrix.env}}-toolchain make ${{matrix.pkg}}
-
-      - name: install-prerequisites-linux
-        if: runner.os == 'Linux'
+          platforms: arm,arm64,386
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build inside Debian 12
+        env:
+          BUILD_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_KIND: ${{ matrix.kind }}
+          CPU_BASELINE: ${{ matrix.baseline }}
         run: |
-          sudo apt-get update
-          sudo apt-get -y install lib{flac,vpx,gtk2.0}-dev ${{matrix.pkg}}
-
-      - name: install-prerequisites-macos
-        if: runner.os == 'macOS'
-        run: |
-          brew install sdl2 flac libvpx make ${{matrix.pkg}}
-          brew unlink lz4
-
-      - name: fetch full history
-        if: github.ref == 'refs/heads/master' && matrix.publish-as != ''
-        run: git fetch --unshallow
-
-      - name: build
-        run: |
-          ${{matrix.make}} -j2 blood rr exhumed ${{matrix.opt}}
-          ${{matrix.make}} -j2 duke3d sw kenbuild tools ${{matrix.opt}}
-
-      - name: prepare artifacts
-        if: github.ref == 'refs/heads/master' && matrix.publish-as != ''
-        run: |
-          mkdir -p upload/nblood/
-          mkdir -p upload/rednukem/
-          mkdir -p upload/pcexhumed/
-          cp nblood.exe upload/nblood/
-          cp rednukem.exe upload/rednukem/
-          cp pcexhumed.exe upload/pcexhumed/
-
-      - uses: actions/upload-artifact@v7
-        if: github.ref == 'refs/heads/master' && matrix.publish-as != ''
+          docker buildx build --platform "$BUILD_PLATFORM" \
+            --file platform/ci/linux.Dockerfile \
+            --build-arg "PACKAGE_KIND=$PACKAGE_KIND" --build-arg "CPU_BASELINE=$CPU_BASELINE" \
+            --build-arg "NETBLOOD_REVISION=$(git rev-parse HEAD)" \
+            --build-arg "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" \
+            --build-arg BUILD_JOBS=2 --target artifact --output type=local,dest=dist .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{matrix.publish-as}}
-          path: upload/
+          name: package-${{ matrix.target }}
+          path: |
+            dist/netblood-*.deb
+            dist/netblood-*.AppImage
+          if-no-files-found: error
+
+  macos:
+    name: Package macOS universal
+    needs: tests
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install build tools
+        run: brew install cmake make pkg-config python
+      - name: Build both architectures and package the universal app
+        run: |
+          export NETBLOOD_REVISION="$(git rev-parse HEAD)"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bash platform/ci/macos.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-macos-universal
+          path: dist/netblood-macos-universal.zip
+          if-no-files-found: error
+
+  freebsd:
+    name: Package FreeBSD 14.5 amd64
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Record source revision
+        run: |
+          echo "NETBLOOD_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        with:
+          release: '14.5'
+          arch: x86_64
+          mem: 6144
+          cpu: 2
+          usesh: true
+          copyback: true
+          envs: NETBLOOD_REVISION SOURCE_DATE_EPOCH
+          prepare: pkg install -y bash cmake gmake python3 pkgconf curl git sdl2 flac libvpx vulkan-loader vulkan-headers
+          run: bash platform/ci/bsd-freebsd.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-freebsd-amd64
+          path: dist/netblood-freebsd-amd64.tar.xz
+          if-no-files-found: error
+
+  netbsd:
+    name: Package NetBSD 10.1 i386 without SSE2
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Record source revision
+        run: |
+          echo "NETBLOOD_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1
+        with:
+          release: '10.1'
+          arch: x86_64
+          mem: 6144
+          cpu: 2
+          usesh: true
+          copyback: true
+          envs: NETBLOOD_REVISION SOURCE_DATE_EPOCH
+          prepare: /usr/sbin/pkg_add -u bash cmake gmake python311 pkgconf curl git-base xz
+          run: |
+            export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
+            bash platform/ci/bsd-netbsd.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-netbsd-i386-nosse2
+          path: dist/netblood-netbsd-i386-nosse2.tar.xz
+          if-no-files-found: error
+
+  packages-complete:
+    name: Verify all 13 packages
+    needs: [windows, linux, macos, freebsd, netbsd]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Verify the complete matrix and calculate checksums
+        run: python3 platform/ci/package.py verify-release --directory dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-checksums
+          path: dist/SHA256SUMS
           if-no-files-found: error

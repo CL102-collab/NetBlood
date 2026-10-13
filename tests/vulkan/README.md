@@ -37,6 +37,11 @@ at tick zero before another simulation update. Later keys capture the rendered
 scene, optionally switch renderers, and exit through `quit`. Input delays allow
 shader compilation and window initialization; they do not select the game tick.
 Use `--initial-delay-ms` or `--timeout` when a slow machine needs more startup time.
+CI adds `--wait-ready --initial-delay-ms 1000`: the driver waits for the current
+executable's level-ready diagnostic and a short settling interval before sending
+the first key. This prevents texture loading from consuming that key, while
+avoiding a fixed long delay on fast machines. The process timeout still applies.
+The option is separate for older executables without the diagnostic.
 
 Checks require normal exit, each expected capture, nontrivial screenshots at the
 requested size, retained 32-bit renderer selection, and no logged renderer or
@@ -196,9 +201,15 @@ images must match between one recorder and parallel recording, including overlap
 transparent draws, mutable draw state, texture updates/deletion, clear/readback
 boundaries, and stream rollover. It also checks caller/background overlap, lazy
 thread creation, the automatic CPU policy, oversized request clamping, and recovery
-after injected worker failures on Linux. Affinity checks exercise one-core and
+after injected worker failures through test-only dispatch wrappers. Affinity checks exercise one-core and
 three-core configurations when available. These API checks complement the game
 screenshots and simulation tests.
+
+The executable links only SDL; Vulkan entry points are resolved at runtime.
+The suite checks startup without a Vulkan loader, continued software-window
+availability, and clean teardown/recovery when a global, instance, or device
+entry point is missing. Test-only recording rendezvous keep the small CPU-policy
+overlap checks independent of scheduler timing.
 
 Frame-slot checks compare exact images with a one-slot reference for parallel
 recording with one, two, and three slots. They present 48 consecutive partial

@@ -1,0 +1,29 @@
+name: Validation environment
+description: Install Linux test dependencies and verify the pinned Blood 1.21 fixtures.
+runs:
+  using: composite
+  steps:
+    - name: Install test dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential gcc-13 g++-13 cmake pkg-config nasm \
+          libsdl2-dev libflac-dev libvpx-dev libgtk2.0-dev libvulkan-dev \
+          python3-pil python3-pycdlib python3-yaml ffmpeg xvfb x11-utils imagemagick \
+          desktop-file-utils libglib2.0-bin xdg-utils spirv-tools \
+          mesa-vulkan-drivers vulkan-validationlayers
+    - name: Restore test data
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/blood121
+        key: blood121-${{ hashFiles('platform/ci/fetch-test-assets.sha256.json') }}
+    - name: Fetch and verify test data
+      shell: bash
+      env:
+        NETBLOOD_TEST_DISC_URL: ${{ vars.NETBLOOD_TEST_DISC_URL }}
+      run: |
+        # An unset repository variable selects the checksum-pinned public source.
+        if [ -z "$NETBLOOD_TEST_DISC_URL" ]; then unset NETBLOOD_TEST_DISC_URL; fi
+        python3 platform/ci/fetch-test-assets.py \
+          --output-dir "$RUNNER_TEMP/blood121" --cache-dir "$RUNNER_TEMP/blood-downloads"

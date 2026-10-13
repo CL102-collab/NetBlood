@@ -146,6 +146,13 @@ def main():
                     "NET map download started" not in text and "NET client slot=" not in text,
                     f"{mode}: client approved content or started gameplay")
             report = client.path / "net-content-mismatch.txt"
+            # The logger flushes the diagnostic before the report writer has
+            # finished creating the file. Observe completion rather than race
+            # the game's next instruction on busy CI hosts.
+            while "NET content mismatch report saved to" not in client.text():
+                require(client.process.poll() is None, f"{mode}: game exited before saving diagnostic")
+                require(time.monotonic() < deadline, f"{mode}: timed out saving diagnostic")
+                time.sleep(0.05)
             require(report.is_file() and expected in report.read_text(), f"{mode}: diagnostic was not saved")
             result["cases"][mode] = {"peer": fake_log.read_text().strip(), "report": str(report)}
             quit_before_map(client)

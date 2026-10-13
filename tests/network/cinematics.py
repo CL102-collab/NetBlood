@@ -198,9 +198,12 @@ def main():
     args.binary = root / "nblood-tested"
     shutil.copy2(source_binary, args.binary)
     library = build_driver(root)
-    long_ogv, short_ogv = root / "long.ogv", root / "short.ogv"
-    generate_ogv(long_ogv, 40)
+    long_ogv, short_ogv, intro_ogv = root / "long.ogv", root / "short.ogv", root / "intro.ogv"
+    # The personal-skip fixture must outlast screenshots, short-hold checks and
+    # a complete cold client startup; it is explicitly skipped/disconnected.
+    generate_ogv(long_ogv, 120)
     generate_ogv(short_ogv, 5)
+    generate_ogv(intro_ogv, 40)
     fixtures = {"NBCINE.INI": episode_ini(), "NBCSTART.MAP": exit_map(0),
                 "NBCINTRO.MAP": exit_map(1), "NBCEND.MAP": exit_map(2)}
     games = []
@@ -364,7 +367,10 @@ def main():
         time.sleep(1)
         require(not any(row.get("state") == "end" for row in server_events(empty)),
                 "initial cinematic was consumed before any player joined")
-        watcher = launch("empty-first-client", port, movies={"INTRO.ogv": short_ogv}, initial_intro=True)
+        # The second process must finish engine/renderer initialization while
+        # this movie is active. Five seconds is shorter than cold Vulkan startup
+        # on shared CI hosts and would test a post-cinematic join by accident.
+        watcher = launch("empty-first-client", port, movies={"INTRO.ogv": intro_ogv}, initial_intro=True)
         initial_id = started(empty, "intro")
         wait_local(watcher, initial_id, "playing", timeout=args.timeout)
         damaged_smk = bytearray(104)

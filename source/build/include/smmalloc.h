@@ -54,7 +54,8 @@
 #define SMMALLOC_ENABLE_ASSERTS
 #endif
 
-#if defined(_M_X64) || _LP64
+// Size this pointer-bearing cache for the ABI, including Windows ARM64 (LLP64).
+#if UINTPTR_MAX > UINT32_MAX
 #define SMMMALLOC_X64
 #define SMM_MAX_CACHE_ITEMS_COUNT (7)
 #else

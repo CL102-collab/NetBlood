@@ -2826,6 +2826,14 @@ void netInitialize(bool bConsole)
         LOG_F(ERROR, "NET socket/resolve failed");
         netDeinitialize();
         netResetToSinglePlayer();
+#ifdef ENET_IPV4_ONLY
+        if (mode == NETWORK_CLIENT && Bstrchr(gNetAddress, ':'))
+        {
+            LOG_F(ERROR, "This Windows XP build supports IPv4 only. Use the server's IPv4 address.");
+            wm_msgbox("Unsupported server address",
+                      "This Windows XP build supports IPv4 only.\nUse the server's IPv4 address or a hostname with an IPv4 address.");
+        }
+#endif
         return;
     }
     host->checksum           = enet_crc32;

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NetBlood
+Comment=Blood source port with online multiplayer
+Exec=/usr/games/nblood %u
+Icon=netblood
+Terminal=false
+Categories=Game;ActionGame;
+MimeType=x-scheme-handler/netblood;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile and validate Vulkan shaders, then embed reproducible SPIR-V words.
 
-Requires glslangValidator and spirv-val on PATH. Run with --check to verify that
+Requires glslangValidator, spirv-opt and spirv-val on PATH. Run with --check to verify that
 the checked-in header matches the shader sources and the installed compiler.
 """
 # SPDX-License-Identifier: GPL-2.0-only
@@ -41,6 +41,12 @@ def main():
                      "-o", str(binary), program + "." + stage],
                     cwd=source, check=True,
                 )
+                # glslang builds without the optional optimizer retain debug
+                # names even with -g0. Strip them explicitly so that the same
+                # compiler release emits identical headers in minimal CI builds.
+                stripped = binary.with_suffix(".stripped.spv")
+                subprocess.run(["spirv-opt", "--strip-debug", str(binary), "-o", str(stripped)], check=True)
+                stripped.replace(binary)
                 subprocess.run(["spirv-val", "--target-env", "vulkan1.0", str(binary)], check=True)
                 raw = binary.read_bytes()
                 words = struct.unpack("<" + "I" * (len(raw) // 4), raw)
