@@ -68,11 +68,17 @@ the final results and the countdown; legacy input demos remain unchanged.
 `net_status` reports `NET intermission`
 with its active state, remaining milliseconds and frozen level time.
 
-In team games, players can propose **`callvote shuffle`** in the console.
+Players can propose **`callvote restart`** in co-op, Bloodbath and team games.
+A passed vote restarts the **current map with fresh scores and starting
+equipment**, preserving the game mode, server settings, team assignments and
+map rotation position. Restart voting works on dedicated and listen servers,
+with or without a map rotation.
+
+In team games, players can also propose **`callvote shuffle`** in the console.
 Players answer with **`vote yes`** or **`vote no`**; **`vote_status`** shows the
-current ballot. Team shuffling is available without a map rotation. Bloodbath
-and co-op reject shuffle requests, and `-mapvote off` disables both map and
-shuffle votes.
+current ballot and **`vote_maps`** lists available vote commands and maps.
+Team shuffling is available without a map rotation. Bloodbath and co-op reject
+shuffle requests, and `-mapvote off` disables map, restart and shuffle votes.
 
 If the shuffle passes, the server randomly divides all currently connected
 players into two teams whose sizes differ by at most one, then restarts the
@@ -82,12 +88,12 @@ server settings stay the same; the new teams persist into subsequent maps.
 Connection ages and vote cooldowns are retained. Packet demos record the vote,
 restart and resulting team assignments.
 
-Map and shuffle votes share the same rules: a vote runs for **30 seconds**, the
+Map, restart and shuffle votes share the same rules: a vote runs for **30 seconds**, the
 caller automatically votes yes, and at least **51% of the players eligible at
 the start** must vote yes. Late joiners can watch but cannot vote in that ballot;
 departures do not lower its threshold. Only one vote can run at once, and each
-player has a shared **two-minute cooldown** between accepted calls of either
-kind. Neither kind can interrupt the end-of-match pause. Server rules, including
+player has a shared **two-minute cooldown** between accepted vote calls.
+Votes cannot interrupt the end-of-match pause. Server rules, including
 the game type, remain under the server operator's control.
 
 In dedicated Bloodbath games, holstering weapons and chase view are disabled by

@@ -419,8 +419,8 @@ void mapVotePolicy()
         CHECK(!netServerResolveVote(NetServerVoteAction::Map, name, index, error));
         CHECK(index == 77 && !error.empty());
     }
-    for (auto action : {NetServerVoteAction::Restart, NetServerVoteAction::Next})
-        CHECK(!netServerResolveVote(action, "", index, error));
+    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(!netServerResolveVote(NetServerVoteAction::Next, "", index, error));
     settings.gameType = kGameTypeTeams;
     CHECK(netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error) && index == 0);
     CHECK(netServerVoteMaps() == rotation);
@@ -486,7 +486,7 @@ void mapVotePolicy()
     gGameOptions.nGameType = kGameTypeBloodBath;
     CHECK(netServerVoteMaps().empty());
     CHECK(!netServerResolveVote(NetServerVoteAction::Map, "E1M1", index, error));
-    CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
 }
 
 void listenCustomRestart()
@@ -510,6 +510,99 @@ void listenCustomRestart()
     CHECK(gPacketStartGame.episodeId == 0 && gPacketStartGame.levelId == 9);
     CHECK(std::memcmp(&original, &gGameOptions, sizeof(original)) == 0);
     CHECK(queuedOutros == 0);
+}
+
+void restartVotePolicy()
+{
+    std::string error;
+    size_t index = 77;
+    for (bool dedicated : {false, true})
+        for (int mode : {-1, int(kGameTypeSinglePlayer), int(kGameTypeTeams) + 1})
+        {
+            reset(); gDedicated = dedicated;
+            settings.gameType = dedicated ? mode : kGameTypeCoop;
+            gGameOptions.nGameType = mode;
+            CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+            CHECK(error.find("game mode") != std::string::npos && index == 77);
+            CHECK(!netServerApplyVote(NetServerVoteAction::Restart, 0, error));
+            CHECK(shuffles == 0 && preparedMaps == 0 && !gStartNewGame && readMapName.empty());
+        }
+    for (int guard = 0; guard < 10; ++guard)
+    {
+        reset();
+        if (guard == 0) isServer = false;
+        if (guard == 1) gGameStarted = false;
+        if (guard == 2) gStartNewGame = true;
+        if (guard == 3) pendingAdvance = true;
+        if (guard == 4) gGameOptions.uGameFlags = kGameFlagContinuing;
+        if (guard == 5) gGameOptions.uGameFlags = kGameFlagEnding;
+        if (guard == 6) ready2send = false;
+        if (guard == 7) cinematicActive = true;
+        if (guard == 8) intermissionActive = true;
+        if (guard == 9) settings.mapVoteEnabled = false;
+        CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+        CHECK(!netServerApplyVote(NetServerVoteAction::Restart, 0, error));
+        CHECK(!error.empty() && index == 77);
+        CHECK(shuffles == 0 && preparedMaps == 0 && readMapName.empty());
+    }
+
+    for (bool dedicated : {false, true})
+        for (int mode : {kGameTypeCoop, kGameTypeBloodBath, kGameTypeTeams})
+            for (bool hasRotation : {false, true})
+                for (bool custom : {false, true})
+                {
+                    reset(); gDedicated = dedicated;
+                    // Listen hosts must use their actual game mode, regardless
+                    // of any retained dedicated-server settings.
+                    settings.gameType = dedicated ? mode : kGameTypeSinglePlayer;
+                    gGameOptions.nGameType = mode;
+                    settings.maxPlayers = 7; settings.timeLimitMinutes = 11;
+                    settings.scoreLimit = 37; settings.autoAim = 0;
+                    settings.weaponsStay = false; settings.friendlyFire = true;
+                    settings.coopLives = 8; settings.loseKeys = false;
+                    settings.episode = mode == kGameTypeCoop ? 2 : 0;
+                    settings.mapList = hasRotation ? "rotation.txt" : "";
+                    if (hasRotation)
+                    {
+                        rotation = {"E2M1", "E2M2", "E2M3"};
+                        settings.rotationIndex = 1; settings.rotationCount = 3;
+                    }
+                    gGameOptions.nEpisode = 1; gGameOptions.nLevel = 1;
+                    gGameOptions.nDifficulty = 3;
+                    std::strcpy(gGameOptions.zLevelName, custom ? "custom" : "E2M2");
+                    if (custom) std::strcpy(gGameOptions.szUserMap, "custom.map");
+                    gGameOptions.uGameFlags = kGameFlagPlayIntro | kGameFlagPlayOutro;
+                    GAMEOPTIONS expected = gGameOptions;
+                    CHECK(!netServerResolveVote(NetServerVoteAction::Restart, "E2M3", index, error));
+                    CHECK(error.find("map name") != std::string::npos);
+                    CHECK(netServerResolveVote(NetServerVoteAction::Restart, "", index, error));
+                    CHECK(error.empty() && index == 0);
+
+                    mapReadable = false;
+                    CHECK(!netServerApplyVote(NetServerVoteAction::Restart, index, error));
+                    CHECK(error.find(custom ? "custom.map" : "E2M2") != std::string::npos);
+                    CHECK(shuffles == 0 && preparedMaps == 0 && !gStartNewGame);
+                    CHECK(std::memcmp(&gGameOptions, &expected, sizeof(expected)) == 0);
+                    CHECK(settings.rotationIndex == (hasRotation ? 1u : 0u));
+
+                    mapReadable = true;
+                    CHECK(netServerApplyVote(NetServerVoteAction::Restart, index, error));
+                    CHECK(error.empty() && preparedMaps == 1 && gStartNewGame);
+                    CHECK(shuffles == 0 && !pendingAdvance && queuedOutros == 0 && !intermissionActive);
+                    CHECK(readMapName == (custom ? "custom.map" : "E2M2"));
+                    expected.uGameFlags &= ~kGameFlagPlayOutro;
+                    CHECK(std::memcmp(&gGameOptions, &expected, sizeof(expected)) == 0);
+                    CHECK(gPacketStartGame.episodeId == 1 && gPacketStartGame.levelId == 1);
+                    CHECK(gPacketStartGame.userMap == (dedicated && custom));
+                    CHECK(settings.rotationIndex == (hasRotation ? 1u : 0u));
+                    CHECK(settings.rotationCount == (hasRotation ? 3u : 0u));
+                    CHECK(settings.mapList == (hasRotation ? "rotation.txt" : ""));
+                    CHECK(settings.gameType == (dedicated ? mode : kGameTypeSinglePlayer));
+                    CHECK(settings.maxPlayers == 7 && settings.timeLimitMinutes == 11 && settings.scoreLimit == 37);
+                    CHECK(settings.autoAim == 0 && !settings.weaponsStay && settings.friendlyFire);
+                    CHECK(settings.coopLives == 8 && !settings.loseKeys);
+                    CHECK(settings.episode == (mode == kGameTypeCoop ? 2 : 0));
+                }
 }
 
 void teamShufflePolicy()
@@ -645,6 +738,6 @@ void listenCoopNextCinematic()
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); teamShufflePolicy(); listenCoopNextCinematic();
+    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); restartVotePolicy(); teamShufflePolicy(); listenCoopNextCinematic();
     std::printf("PASS: dedicated limits, timed intermissions, hot-join scores, map/shuffle vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
 }

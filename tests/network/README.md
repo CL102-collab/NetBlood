@@ -178,7 +178,7 @@ exclusive.
 | `-friendlyfire` | `on` or `off` (default); teammate damage in co-op and teams |
 | `-holsterweapon` | `on` or `off` (default); permission to holster in Bloodbath |
 | `-chaseview` | `on` or `off` (default); permission to use chase view in Bloodbath |
-| `-mapvote` | `on` (default) or `off`; enables player map and team-shuffle votes |
+| `-mapvote` | `on` (default) or `off`; enables player map, restart and team-shuffle votes |
 | `-maplist` | A `.txt` filename, up to 256 maps and 128 KiB |
 | `-episode` | Cooperative episode, numbered from 1 |
 | `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
@@ -322,10 +322,10 @@ including live, dead, kneeling and reviving players, equipment/score preservatio
 and carried-flag handling. These need no running game or game assets; add
 `SANITIZE=1` for sanitizer coverage.
 
-## Player map and team-shuffle votes
+## Player votes
 
 Dedicated servers enable player voting by default. Add `-mapvote off` to disable
-both map and team-shuffle votes, or specify `-mapvote on` explicitly. The
+map changes, restarts and team-shuffle votes, or specify `-mapvote on` explicitly. The
 server's game mode, time/score limits and other rules remain authoritative.
 
 Players use these console commands:
@@ -334,7 +334,7 @@ Players use these console commands:
 | --- | --- |
 | `vote_maps` | List voting options and allowed rotation maps |
 | `callvote map E1M2` | Propose a map from the server's configured rotation |
-| `callvote restart` | Propose restarting the current co-op map |
+| `callvote restart` | Propose restarting the current map in any multiplayer mode |
 | `callvote next` | Propose the next co-op map |
 | `callvote shuffle` | Propose balanced random teams in teams mode |
 | `vote yes` / `vote no` | Cast one ballot in the active vote |
@@ -345,7 +345,11 @@ started without `-maplist` cannot accept votes to select a map. Names match rota
 case-insensitively, with an optional `.MAP` suffix. Co-op accepts only restart
 or next, following the normal episode exit (or next rotation entry). A custom
 standalone map has no next level, but can be restarted. Listen servers also
-allow co-op restart and next votes.
+allow these votes. Restart votes work in Bloodbath, teams and co-op, with or
+without a map rotation, on dedicated and listen servers. A passed restart
+reloads the current map with fresh scores, health and starting equipment;
+the map rotation position, server settings, team assignments, connection ages
+and vote cooldowns remain unchanged.
 Team-shuffle votes are available only in teams mode and do not require a
 rotation. Bloodbath and co-op reject them.
 
@@ -364,11 +368,11 @@ electorate** participates and at least **51% votes yes**, rounding the required
 count up. For example, three players require two yes votes; two players require
 both. Abstentions and disconnected players do not reduce the required count.
 
-Only one vote of either kind can run at a time. Each player must wait **two
+Only one vote can run at a time. Each player must wait **two
 minutes** from their accepted vote call before calling another; unsuccessful votes also count.
 The cooldown survives map transitions. Rejected calls do not consume a
-cooldown. Map and team-shuffle calls share this cooldown. Ordinary server-driven
-map changes cancel any active vote; neither kind can interrupt the 15-second
+cooldown. Map changes, restarts and team-shuffle calls share this cooldown. Ordinary server-driven
+map changes cancel any active vote; no vote can interrupt the 15-second
 end-of-match intermission.
 
 Exercise the system using real game clients and real vote deadlines:
@@ -388,7 +392,7 @@ rules must remain unchanged. It checks
 the resulting map generations and preserved server rules on both sides. A
 client recording begun during an active vote must restore its vote/options
 baseline and replay the result and map transition to the exact final snapshot.
-Six ballots and packet playback take about three and a half minutes, plus process startup and shutdown.
+Nine ballots and packet playback take about five minutes, plus process startup and shutdown.
 Logs, exact commands, statuses and the tested binary hash are retained in
 `result.json`. The asset-free `vote-test.sh` and `server-settings-test.sh`
 cover clock boundaries, vote policy and map-route edge cases separately. The
@@ -397,6 +401,15 @@ standalone identity without registering its map slot a second time.
 
 Use `--listen-restart-only` to isolate the 30-second listen-server restart
 check without repeating the dedicated-server ballots and playback.
+
+Use `--competitive-restart-only` for three real 30-second restart ballots:
+dedicated Bloodbath without a rotation, dedicated teams with a rotation, and a
+graphical team listen server on a custom map. Ordinary fatal falls establish
+nonzero scores before each restart. The test checks the advertised restart and
+shuffle options, same-map CRC and a single new map generation, reset health and
+scores, preserved server rules/rotation position/team assignments and colors,
+shared voting restrictions and cooldowns. Clients must observe the same
+restarted state as their server.
 
 Exercise team-shuffle ballots, their shared map-vote guards and packet playback:
 

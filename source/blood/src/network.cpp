@@ -1070,10 +1070,12 @@ netwire::VoteOptionsPayload voteOptions(bool requested)
     options.listRequested = requested;
     options.maps = netServerVoteMaps();
     if (!options.maps.empty()) options.actions |= 1;
+    if (options.enabled && (gGameOptions.nGameType == kGameTypeCoop
+        || gGameOptions.nGameType == kGameTypeBloodBath || gGameOptions.nGameType == kGameTypeTeams))
+        options.actions |= 2;
     if (options.enabled && gGameOptions.nGameType == kGameTypeTeams) options.actions |= 8;
     if (options.enabled && gGameOptions.nGameType == kGameTypeCoop)
     {
-        options.actions |= 2;
         size_t index = 0;
         std::string error;
         if (netServerResolveVote(NetServerVoteAction::Next, "", index, error)) options.actions |= 4;
@@ -1115,11 +1117,13 @@ void showVoteOptions(const netwire::VoteOptionsPayload& options)
     if (!options.listRequested) return;
     LOG_F(INFO, "NET vote options enabled=%u actions=%u maps=%u", options.enabled, options.actions, unsigned(options.maps.size()));
     if (!options.enabled) OSD_Printf("Voting is disabled by the server.\n");
-    else if (options.actions & 2) OSD_Printf("callvote restart%s\n", options.actions & 4 ? " or callvote next" : " (no next level available)");
     else
     {
+        if (options.actions & 1) OSD_Printf("callvote map <name>: choose a map from the server's rotation.\n");
+        if (options.actions & 2) OSD_Printf("callvote restart: restart the current map with fresh scores.\n");
+        if (options.actions & 4) OSD_Printf("callvote next: advance to the next co-op level.\n");
         if (options.actions & 8) OSD_Printf("callvote shuffle: shuffle teams and restart the current map.\n");
-        if (options.maps.empty()) OSD_Printf("Map changes require a server map rotation.\n");
+        if (!options.actions) OSD_Printf("No voting actions are available for this game mode.\n");
     }
     for (size_t n = 0; n < options.maps.size(); ++n)
         LOG_F(INFO, "NET vote map index=%u name=%s", unsigned(n), options.maps[n].c_str());

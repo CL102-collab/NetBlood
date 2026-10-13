@@ -1417,7 +1417,7 @@ void PrintHelp(void)
         "-difficulty [n]\tCoop difficulty; Range:0..4; Default:2\n"
         "-lives [n]\tLives per coop player; 0=legacy unlimited respawns; Range:0..255; Default:4\n"
         "-losekeys on|off\tLose keys on coop death; Default:on\n"
-        "-mapvote on|off\tAllow map changes and team-shuffle votes; Default:on\n"
+        "-mapvote on|off\tAllow map, restart and team-shuffle votes; Default:on\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif

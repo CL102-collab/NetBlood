@@ -7,6 +7,7 @@ use their real 30-second deadlines; the test does not accelerate server time.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -38,7 +39,9 @@ def status(game):
     text = game.text()[offset:]
     rules, session = records(text, "NET rules "), records(text, "NET status ")
     require(rules and session, f"{game.name}: missing authoritative status")
-    return {"rules": rules[-1], "session": session[-1]}
+    return {"rules": rules[-1], "session": session[-1],
+            "players": {row["slot"]: row for row in records(text, "NET player ")},
+            "team_scores": records(text, "NET team scores ")[-1:]}
 
 
 def vote_status(game):
@@ -64,8 +67,11 @@ def main():
     parser.add_argument("--engine-data", type=Path, default=repository)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--timeout", type=float, default=45)
-    parser.add_argument("--listen-restart-only", action="store_true",
-                        help="run only the focused listen-server map restart check")
+    focused = parser.add_mutually_exclusive_group()
+    focused.add_argument("--listen-restart-only", action="store_true",
+                         help="run only the focused co-op listen-server map restart check")
+    focused.add_argument("--competitive-restart-only", action="store_true",
+                         help="run only Bloodbath, teams and custom-map listen-server restart votes")
     args = parser.parse_args()
     for name in ("binary", "assets", "engine_data"):
         setattr(args, name, getattr(args, name).resolve())
@@ -82,6 +88,7 @@ def main():
     result = {"passed": False, "source_binary": str(source_binary),
               "binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
               "listen_restart_only": args.listen_restart_only,
+              "competitive_restart_only": args.competitive_restart_only,
               "phases": {}, "failures": []}
     games = []
 
@@ -165,6 +172,134 @@ def main():
         listen.stop()
         print("PASS: listen-server restart preserves map slot, CRC and server rules", flush=True)
 
+    def competitive_restart_phases():
+        from cinematics import focus_window
+        spec = importlib.util.spec_from_file_location("team_balance_fixture", Path(__file__).with_name("team-balance.py"))
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        files = {"NBRST1.MAP": fixture.death_map(), "NBRST2.MAP": fixture.death_map(1),
+                 "rotation.txt": b"NBRST1.MAP\nNBRST2.MAP\n"}
+
+        for name, mode, dedicated, rotation in (
+                ("bloodbath-restart", "bloodbath", True, False),
+                ("teams-restart", "teams", True, True),
+                ("listen-teams-restart", "teams", False, False)):
+            port = free_port()
+            if dedicated:
+                options = ["-dedicated", "-port", str(port), "-gametype", mode, "-maxplayers", "2",
+                           "-timelimit", "10", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "on"]
+                options += ["-maplist", "rotation.txt"] if rotation else ["-map", "NBRST1.MAP"]
+                server = start(name + "-server", port, True, options, files)
+                first = start(name + "-first", port, files=files)
+                clients = [first]
+            else:
+                server = Game(name + "-host", args, root, library, port, listen=True, initial_files=files,
+                              launch_arguments=["-server", "2", "-gametype", mode, "-port", str(port),
+                                                "-map", "NBRST1.MAP"])
+                games.append(server)
+                server.wait(lambda text: any(int(row["server_tick"]) >= 30 for row in records(text, "NET server_tick=")),
+                            "listen team server", args.timeout)
+                first, clients = server, []
+            if mode == "teams":
+                clients.append(start(name + "-second", port, files=files))
+            electorate = len(clients) + (not dedicated)
+            if not dedicated:
+                focus_window(server)
+            before = status(server)
+            before_map = records(server.text(), "NET map generation=")[-1]
+            offset = len(first.text())
+            first.command_text("vote_maps")
+            first.wait(lambda text: bool(records(text[offset:], "NET vote options ")), "restart vote options", args.timeout)
+            advertised = records(first.text()[offset:], "NET vote options ")[-1]
+            expected_actions = 2 | (1 if rotation else 0) | (8 if mode == "teams" else 0)
+            require(int(advertised["actions"]) == expected_actions, f"{name}: wrong available vote actions: {advertised}")
+            first.wait(lambda text: "callvote restart:" in text[offset:] and
+                       (mode != "teams" or "callvote shuffle:" in text[offset:]),
+                       "listed restart and team-shuffle commands", args.timeout)
+            malformed = rejection(first, "callvote restart NBRST2.MAP", "callvote")
+
+            # Ordinary movement into the fixture pit establishes actual dead
+            # state and a nonzero score for the restart to reset.
+            focus_window(first)
+            first.key(26, True)
+            deadline = time.monotonic() + args.timeout
+            try:
+                while time.monotonic() < deadline:
+                    dead = status(server)
+                    if dead["players"]["0"]["health"] == "0":
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise Failure(f"{name}: player did not fall into the fixture pit")
+            finally:
+                first.key(26, False)
+            while time.monotonic() < deadline:
+                dead = status(server)
+                if dead["players"]["0"]["frags"] == "-1":
+                    break
+                time.sleep(0.1)
+            else:
+                raise Failure(f"{name}: fatal fall did not finalize its score")
+            focus_window(first)
+            ballot = call(first, "callvote restart", electorate, electorate)
+            require(ballot["initial"]["action"] == "restart", "restart vote advertised the wrong action")
+            if mode == "teams":
+                second = clients[-1]
+                focus_window(second)
+                rejection(second, "callvote shuffle", "already")
+                second.command_text("vote yes")
+            if not dedicated:
+                focus_window(server)
+            require(status(server)["session"]["map_generation"] == before["session"]["map_generation"],
+                    "restart occurred before the vote deadline")
+            if dedicated:
+                phase = finished(server, ballot, "passed", clients, map_count=2)
+            else:
+                server.wait(lambda text: any(row.get("id") == ballot["id"] and row.get("result") == "passed"
+                                            for row in records(text, "NET vote result=")), "listen restart vote completion", 40)
+                elapsed = time.monotonic() - ballot["began"]
+                require(elapsed >= 29, "listen restart vote finished before its deadline")
+                joined(clients[0], 2, args.timeout)
+                phase = {"elapsed_seconds": elapsed}
+            if not dedicated:
+                focus_window(server)
+            after = status(server)
+            after_map = records(server.text(), "NET map generation=")[-1]
+            same_rules(before, after, allowed=())
+            require(int(after["session"]["map_generation"]) == int(before["session"]["map_generation"]) + 1 and
+                    before_map["crc"] == after_map["crc"], f"{name}: restart must load the same map exactly once")
+            expected_teams = {slot: row["team"] for slot, row in before["players"].items()}
+            require({slot: row["team"] for slot, row in after["players"].items()} == expected_teams,
+                    f"{name}: restart changed team assignments")
+            require(all(row["frags"] == "0" and int(row["health"]) > 0 for row in after["players"].values()),
+                    f"{name}: restart retained previous health/score state")
+            require(all(after["players"][slot]["join_order"] == row["join_order"]
+                        for slot, row in before["players"].items()), f"{name}: restart changed connection ages")
+            require(not records(server.text(), "NET team shuffle "), f"{name}: restart ran team shuffle")
+            if mode == "teams":
+                require(after["team_scores"] and all(value == "0" for value in after["team_scores"][-1].values()),
+                        "restart retained team scores")
+            observed = {}
+            for client in clients:
+                focus_window(client)
+                current = status(client)
+                same_rules(before, current, allowed=())
+                require(current["session"]["map_generation"] == after["session"]["map_generation"] and
+                        {slot: row["team"] for slot, row in current["players"].items()} == expected_teams,
+                        f"{client.name}: restarted generation or teams diverged")
+                if mode == "teams":
+                    require(all(int(row["palette"]) == 11 + int(row["team"]) for row in current["players"].values()),
+                            "restart changed the authoritative team colors")
+                observed[client.name] = current
+            focus_window(first)
+            phase.update(before=before, dead=dead, after=after, clients=observed, before_map=before_map,
+                         after_map=after_map, options=advertised, malformed=malformed,
+                         cooldown=rejection(first, "callvote restart", "wait"))
+            result["phases"][name] = phase
+            for game in clients + [server]:
+                game.stop()
+            print(f"PASS: {name} resets health/scores and preserves map, rules and teams", flush=True)
+
     def multiplayer_phases():
         port = free_port()
         server = start("rotation-server", port, True,
@@ -186,7 +321,6 @@ def main():
         rejected = {}
         for label, command, diagnostic in (
                 ("outside-rotation", "callvote map E1M3", "rotation"),
-                ("competitive-restart", "callvote restart", "rotation"),
                 ("competitive-next", "callvote next", "rotation"),
                 ("gametype", "callvote gametype coop", "callvote"),
                 ("extra-target", "callvote map E1M2 extra", "callvote"),
@@ -257,7 +391,7 @@ def main():
                 0 < recorded_votes[0]["vote_remaining_ms"] < 26000,
                 "recording begun during vote lacks the synthetic active-vote baseline")
         require(recorded_options and recorded_options[0]["sequence"] == 0 and
-                recorded_options[0]["vote_enabled"] == 1 and recorded_options[0]["vote_actions"] == 1 and
+                recorded_options[0]["vote_enabled"] == 1 and recorded_options[0]["vote_actions"] == 3 and
                 recorded_options[0]["vote_map_count"] == 2,
                 "recording begun during vote lacks the synthetic map-options baseline")
         require(any(row["vote_state"] == 2 and row["vote_id"] == int(ballot["id"]) for row in recorded_votes),
@@ -333,9 +467,13 @@ def main():
             client.stop()
             host.stop()
     try:
-        if not args.listen_restart_only:
-            multiplayer_phases()
-        listen_restart_phase()
+        if args.competitive_restart_only:
+            competitive_restart_phases()
+        else:
+            if not args.listen_restart_only:
+                multiplayer_phases()
+                competitive_restart_phases()
+            listen_restart_phase()
         result["passed"] = True
     except (Failure, OSError, subprocess.SubprocessError) as error:
         result["failures"].append(str(error))

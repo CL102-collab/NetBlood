@@ -265,21 +265,21 @@ bool voteTarget(NetServerVoteAction action, size_t index, std::string& name, std
         }
         return false;
     }
+    if (gameType != kGameTypeCoop && gameType != kGameTypeBloodBath && gameType != kGameTypeTeams)
+    {
+        error = "Map voting is unavailable for this game mode.";
+        return false;
+    }
+    if (action == NetServerVoteAction::Restart)
+    {
+        name = gGameOptions.szUserMap[0] ? gGameOptions.szUserMap : gGameOptions.zLevelName;
+        return true;
+    }
     if (gameType == kGameTypeCoop)
     {
-        if (action == NetServerVoteAction::Restart)
-        {
-            name = gGameOptions.szUserMap[0] ? gGameOptions.szUserMap : gGameOptions.zLevelName;
-            return true;
-        }
         if (action == NetServerVoteAction::Next)
             return nextVoteMap(name, error);
         error = "Co-op map votes can only restart the current level or advance to the next level.";
-        return false;
-    }
-    if (gameType != kGameTypeBloodBath && gameType != kGameTypeTeams)
-    {
-        error = "Map voting is unavailable for this game mode.";
         return false;
     }
     if (!gDedicated || rotation.empty())
@@ -619,7 +619,7 @@ bool netServerApplyVote(NetServerVoteAction action, size_t rotationIndex, std::s
             settings.rotationIndex = rotationIndex;
             selectMap(rotation[rotationIndex].c_str());
         }
-        // Selecting a rotation map, restarting co-op or shuffling teams starts
+        // Selecting a rotation map, restarting the map or shuffling teams starts
         // a fresh round; co-op Next retains the usual episode inventory behavior.
         gGameOptions.uGameFlags &= ~(kGameFlagContinuing | kGameFlagEnding | kGameFlagPlayOutro);
         netPrepareCurrentMapSettings();

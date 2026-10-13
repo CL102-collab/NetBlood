@@ -58,8 +58,9 @@ void netServerAdvanceMap();
 void netServerRestartLevel();
 
 enum class NetServerVoteAction { Map, Restart, Next, Shuffle };
-// Competitive map targets are the configured rotation entries; coop exposes
-// Restart and Next. Teams also expose Shuffle without requiring a rotation.
+// Competitive map targets are the configured rotation entries. All multiplayer
+// modes expose Restart, co-op also exposes Next, and teams expose Shuffle.
+// Restart and Shuffle do not require a rotation.
 // The network layer binds resolved votes to a map generation.
 std::vector<std::string> netServerVoteMaps();
 bool netServerResolveVote(NetServerVoteAction action, const std::string& map,
