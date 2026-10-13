@@ -54,6 +54,16 @@ public:
 extern unsigned int gSavedOffset;
 extern GAMEOPTIONS gSaveGameOptions[];
 extern char *gSaveGamePic[10];
+struct SaveGameStats
+{
+    bool valid;
+    uint64_t savedAtUtc;
+    uint32_t elapsedSeconds;
+    int32_t kills, totalKills, secrets, totalSecrets;
+};
+extern SaveGameStats gSaveGameStats[10];
+void CaptureSaveGamePreview(void);
+int SaveGamePreviewTile(int nSlot);
 void UpdateSavedInfo(int nSlot);
 void LoadSavedInfo(void);
 void LoadSaveSetup(void);

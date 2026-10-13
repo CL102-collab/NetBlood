@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
 #include <stdio.h>
+#include <ctime>
 #include "build.h"
 #include "compat.h"
 #include "crc32.h"
@@ -32,6 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "asound.h"
 #include "blood.h"
 #include "demo.h"
+#include "endgame.h"
 #include "globals.h"
 #include "db.h"
 #include "messages.h"
@@ -44,6 +46,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "seq.h"
 #include "sfx.h"
 #include "sound.h"
+#include "tile.h"
 #include "view.h"
 #ifdef NOONE_EXTENSIONS
 #include "nnexts.h"
@@ -53,7 +56,217 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 GAMEOPTIONS gSaveGameOptions[10];
 char *gSaveGamePic[10];
+SaveGameStats gSaveGameStats[10];
 unsigned int gSavedOffset = 0;
+
+namespace
+{
+constexpr int kPreviewWidth = 320;
+constexpr int kPreviewHeight = 200;
+constexpr int kPreviewSize = kPreviewWidth * kPreviewHeight;
+
+// Optional trailer, outside the legacy save body. Older saves have no trailer;
+// the game-state loader deliberately does not need to read it.
+struct SavePreviewFooter
+{
+    char magic[8];
+    uint32_t version;
+    uint16_t width, height;
+    uint32_t size, crc;
+};
+static_assert(sizeof(SavePreviewFooter) == 24, "Save preview footer layout changed");
+
+// Kept separately from the image so a missing or damaged thumbnail does not
+// discard the save's statistics. All numeric fields on disk are little endian.
+struct SaveStatsFooter
+{
+    char magic[8];
+    uint32_t version, size;
+    uint64_t savedAtUtc;
+    uint32_t elapsedSeconds;
+    int32_t kills, totalKills, secrets, totalSecrets;
+    uint32_t crc;
+};
+static_assert(sizeof(SaveStatsFooter) == 48 && offsetof(SaveStatsFooter, crc) == 44,
+    "Save statistics footer layout changed");
+
+SaveGameStats CaptureSaveStats(void)
+{
+    SaveGameStats stats = {};
+    std::time_t const now = std::time(nullptr);
+    if (now < 0)
+        return stats;
+    stats.valid = true;
+    stats.savedAtUtc = static_cast<uint64_t>(now);
+    stats.elapsedSeconds = ClipLow(gLevelTime, 0) / kTicsPerSec;
+    stats.kills = ClipLow(gKillMgr.at4, 0);
+    stats.totalKills = ClipLow(gKillMgr.at0, stats.kills);
+    stats.secrets = ClipLow(gSecretMgr.nNormalSecretsFound, 0);
+    stats.totalSecrets = ClipLow(gSecretMgr.nAllSecrets, stats.secrets);
+    return stats;
+}
+
+void ReadSaveStats(int hFile, int nSlot)
+{
+    gSaveGameStats[nSlot] = {};
+    // The image can be absent or truncated. Only inspect this bounded trailer
+    // area, and accept a complete metadata block with its own version and CRC.
+    constexpr int kTailSize = kPreviewSize + sizeof(SavePreviewFooter) + sizeof(SaveStatsFooter);
+    int const length = kfilelength(hFile);
+    if (length < static_cast<int>(sizeof(SaveStatsFooter)))
+        return;
+    int const tailSize = ClipHigh(length, kTailSize);
+    uint8_t tail[kTailSize];
+    if (klseek(hFile, length - tailSize, SEEK_SET) < 0 || kread(hFile, tail, tailSize) != tailSize)
+        return;
+    for (int offset = tailSize - sizeof(SaveStatsFooter); offset >= 0; --offset)
+    {
+        if (Bmemcmp(tail + offset, "NBSTAT01", 8))
+            continue;
+        SaveStatsFooter footer;
+        Bmemcpy(&footer, tail + offset, sizeof(footer));
+        if (B_LITTLE32(footer.version) != 1 || B_LITTLE32(footer.size) != sizeof(footer)
+            || Bcrc32(&footer, offsetof(SaveStatsFooter, crc), 0) != B_LITTLE32(footer.crc))
+            continue;
+        SaveGameStats stats = {};
+        stats.savedAtUtc = B_LITTLE64(footer.savedAtUtc);
+        stats.elapsedSeconds = B_LITTLE32(footer.elapsedSeconds);
+        stats.kills = B_LITTLE32(footer.kills);
+        stats.totalKills = B_LITTLE32(footer.totalKills);
+        stats.secrets = B_LITTLE32(footer.secrets);
+        stats.totalSecrets = B_LITTLE32(footer.totalSecrets);
+        if (stats.savedAtUtc > INT64_MAX || stats.kills < 0 || stats.totalKills < stats.kills
+            || stats.secrets < 0 || stats.totalSecrets < stats.secrets)
+            continue;
+        stats.valid = true;
+        gSaveGameStats[nSlot] = stats;
+        return;
+    }
+}
+
+void WriteSaveStats(FILE *file, const SaveGameStats &stats)
+{
+    if (!stats.valid)
+        return;
+    SaveStatsFooter footer;
+    Bmemcpy(footer.magic, "NBSTAT01", sizeof(footer.magic));
+    footer.version = B_LITTLE32(1);
+    footer.size = B_LITTLE32(sizeof(footer));
+    footer.savedAtUtc = B_LITTLE64(stats.savedAtUtc);
+    footer.elapsedSeconds = B_LITTLE32(stats.elapsedSeconds);
+    footer.kills = B_LITTLE32(stats.kills);
+    footer.totalKills = B_LITTLE32(stats.totalKills);
+    footer.secrets = B_LITTLE32(stats.secrets);
+    footer.totalSecrets = B_LITTLE32(stats.totalSecrets);
+    footer.crc = B_LITTLE32(Bcrc32(&footer, offsetof(SaveStatsFooter, crc), 0));
+    if (fwrite(&footer, 1, sizeof(footer), file) != sizeof(footer))
+        ThrowError("File error #%d writing save statistics.", errno);
+}
+
+uint8_t pendingPreview[kPreviewSize];
+bool pendingPreviewValid = false;
+int previewTile = -1;
+int previewTileSlot = -1;
+intptr_t previewTilePixels = 0;
+
+void ClearSavePreview(int nSlot)
+{
+    if (gSaveGamePic[nSlot])
+    {
+        Resource::Free(gSaveGamePic[nSlot]);
+        gSaveGamePic[nSlot] = nullptr;
+    }
+    if (previewTileSlot == nSlot)
+        previewTileSlot = -1;
+}
+
+void CacheSavePreview(int nSlot, const uint8_t *pixels)
+{
+    ClearSavePreview(nSlot);
+    if (pixels)
+    {
+        gSaveGamePic[nSlot] = static_cast<char *>(Resource::Alloc(kPreviewSize));
+        Bmemcpy(gSaveGamePic[nSlot], pixels, kPreviewSize);
+    }
+}
+
+void ReadSavePreview(int hFile, int nSlot)
+{
+    ClearSavePreview(nSlot);
+    int const length = kfilelength(hFile);
+    if (length < kPreviewSize + static_cast<int>(sizeof(SavePreviewFooter)))
+        return;
+    SavePreviewFooter footer;
+    if (klseek(hFile, length - sizeof(footer), SEEK_SET) < 0
+        || kread(hFile, &footer, sizeof(footer)) != sizeof(footer)
+        || Bmemcmp(footer.magic, "NBPREV01", sizeof(footer.magic))
+        || B_LITTLE32(footer.version) != 1
+        || B_LITTLE16(footer.width) != kPreviewWidth
+        || B_LITTLE16(footer.height) != kPreviewHeight
+        || B_LITTLE32(footer.size) != kPreviewSize)
+        return;
+
+    uint8_t pixels[kPreviewSize];
+    if (klseek(hFile, length - sizeof(footer) - kPreviewSize, SEEK_SET) < 0
+        || kread(hFile, pixels, kPreviewSize) != kPreviewSize
+        || Bcrc32(pixels, kPreviewSize, 0) != B_LITTLE32(footer.crc))
+        return;
+    CacheSavePreview(nSlot, pixels);
+}
+
+void WriteSavePreview(FILE *file)
+{
+    if (!pendingPreviewValid)
+        return;
+    SavePreviewFooter footer;
+    Bmemcpy(footer.magic, "NBPREV01", sizeof(footer.magic));
+    footer.version = B_LITTLE32(1);
+    footer.width = B_LITTLE16(kPreviewWidth);
+    footer.height = B_LITTLE16(kPreviewHeight);
+    footer.size = B_LITTLE32(kPreviewSize);
+    footer.crc = B_LITTLE32(Bcrc32(pendingPreview, kPreviewSize, 0));
+    if (fwrite(pendingPreview, 1, kPreviewSize, file) != kPreviewSize
+        || fwrite(&footer, 1, sizeof(footer), file) != sizeof(footer))
+        ThrowError("File error #%d writing save preview.", errno);
+}
+}
+
+void CaptureSaveGamePreview(void)
+{
+    pendingPreviewValid = viewCaptureSavePreview(pendingPreview, kPreviewWidth, kPreviewHeight);
+}
+
+int SaveGamePreviewTile(int nSlot)
+{
+    if ((unsigned)nSlot >= 10 || !gSaveGamePic[nSlot])
+        return -1;
+    // Extra ART can replace dynamic tiles when a new episode is loaded.
+    if (previewTile >= 0 && (waloff[previewTile] != previewTilePixels
+        || tilesiz[previewTile].x != kPreviewWidth || tilesiz[previewTile].y != kPreviewHeight))
+    {
+        previewTile = -1;
+        previewTileSlot = -1;
+    }
+    if (previewTile < 0)
+    {
+        previewTile = tileSearchFreeRange(1);
+        if (previewTile < 0)
+            return -1;
+        previewTilePixels = tileCreate(previewTile, kPreviewWidth, kPreviewHeight);
+        if (!previewTilePixels)
+        {
+            previewTile = -1;
+            return -1;
+        }
+    }
+    if (previewTileSlot != nSlot)
+    {
+        Bmemcpy(reinterpret_cast<void *>(previewTilePixels), gSaveGamePic[nSlot], kPreviewSize);
+        tileInvalidate(previewTile, -1, -1);
+        previewTileSlot = nSlot;
+    }
+    return previewTile;
+}
 
 LoadSave LoadSave::head(123);
 FILE *LoadSave::hSFile = NULL;
@@ -286,6 +499,7 @@ static int file_exists(char const* path)
 
 void LoadSave::SaveGame(char *pzFile)
 {
+    SaveGameStats const stats = CaptureSaveStats();
     // TODO: use buildvfs_open_write() etc (probably in the whole file?)
     char fileNameTmp[BMAX_PATH+4];
     const char* saveFileName = pzFile;
@@ -308,7 +522,10 @@ void LoadSave::SaveGame(char *pzFile)
         rover->Save();
         rover = rover->next;
     }
-    fclose(hSFile);
+    WriteSaveStats(hSFile, stats);
+    WriteSavePreview(hSFile);
+    if (fclose(hSFile))
+        ThrowError("File error #%d finishing save file.", errno);
     hSFile = NULL;
     if (saveFileExists)
     {
@@ -317,8 +534,16 @@ void LoadSave::SaveGame(char *pzFile)
 #ifdef _WIN32
         _unlink(pzFile);
 #endif
-        rename(saveFileName, pzFile);
+        if (rename(saveFileName, pzFile))
+            ThrowError("File error #%d replacing save file.", errno);
     }
+    int const nSlot = gGameOptions.nSaveGameSlot;
+    if ((unsigned)nSlot < 10)
+    {
+        CacheSavePreview(nSlot, pendingPreviewValid ? pendingPreview : nullptr);
+        gSaveGameStats[nSlot] = stats;
+    }
+    pendingPreviewValid = false;
 }
 
 class MyLoadSave : public LoadSave
@@ -566,16 +791,20 @@ void MyLoadSave::Save(void)
 
 void LoadSavedInfo(void)
 {
+    for (int nSlot = 0; nSlot < 10; nSlot++)
+    {
+        ClearSavePreview(nSlot);
+        gSaveGameStats[nSlot] = {};
+    }
     int const bakpathsearchmode = pathsearchmode;
     pathsearchmode = 1;
     auto pList = klistpath((g_modDir[0] != '/') ? g_modDir : "./", "game*.sav", BUILDVFS_FIND_FILE);
-    int nCount = 0;
-    for (auto pIterator = pList; pIterator != NULL && nCount < 10; pIterator = pIterator->next, nCount++)
+    for (auto pIterator = pList; pIterator != NULL; pIterator = pIterator->next)
     {
         uint32_t uINICRC = 0;
         int hFile = kopen4loadfrommod(pIterator->name, 0);
         if (hFile == -1)
-            ThrowError("Error loading save file header.");
+            continue;
         int id = 0;
         short version = 0;
         if ((uint32_t)kread(hFile, &id, sizeof(id)) != sizeof(id))
@@ -588,21 +817,39 @@ void LoadSavedInfo(void)
             kclose(hFile);
             continue;
         }
-        kread(hFile, &version, sizeof(version));
-        if (version != BYTEVERSION)
+        if (kread(hFile, &version, sizeof(version)) != sizeof(version) || version != BYTEVERSION)
         {
             kclose(hFile);
             continue;
         }
-        kread(hFile, &uINICRC, sizeof(uINICRC));
-        if (uINICRC != Bcrc32(pINISelected->zName, (unsigned int)BMAX_PATH, 0))
+        if (kread(hFile, &uINICRC, sizeof(uINICRC)) != sizeof(uINICRC)
+            || uINICRC != Bcrc32(pINISelected->zName, (unsigned int)BMAX_PATH, 0))
         {
             kclose(hFile);
             continue;
         }
-        if ((uint32_t)kread(hFile, &gSaveGameOptions[nCount], sizeof(gSaveGameOptions[0])) != sizeof(gSaveGameOptions[0]))
-            ThrowError("Error reading save file.");
-        UpdateSavedInfo(nCount);
+        GAMEOPTIONS options;
+        if (kread(hFile, &options, sizeof(options)) != sizeof(options) || (unsigned)options.nSaveGameSlot >= 10)
+        {
+            kclose(hFile);
+            continue;
+        }
+        int const nSlot = options.nSaveGameSlot;
+        char slotFileName[16];
+        Bsnprintf(slotFileName, sizeof(slotFileName), "game00%02d.sav", nSlot);
+        // Match the file LoadGame opens for this slot; backups and files with
+        // a mismatched header must not replace its title or preview.
+        if (Bstrcmp(pIterator->name, slotFileName))
+        {
+            kclose(hFile);
+            continue;
+        }
+        options.szUserGameName[sizeof(options.szUserGameName) - 1] = '\0';
+        options.zLevelName[sizeof(options.zLevelName) - 1] = '\0';
+        gSaveGameOptions[nSlot] = options;
+        UpdateSavedInfo(nSlot);
+        ReadSavePreview(hFile, nSlot);
+        ReadSaveStats(hFile, nSlot);
         kclose(hFile);
     }
     klistfree(pList);
@@ -611,8 +858,11 @@ void LoadSavedInfo(void)
 
 void UpdateSavedInfo(int nSlot)
 {
-    strcpy(strRestoreGameStrings[gSaveGameOptions[nSlot].nSaveGameSlot], gSaveGameOptions[nSlot].szUserGameName);
-    restoreGameDifficulty[gSaveGameOptions[nSlot].nSaveGameSlot] = gSaveGameOptions[nSlot].nDifficulty;
+    if ((unsigned)nSlot >= 10 || (unsigned)gSaveGameOptions[nSlot].nSaveGameSlot >= 10)
+        return;
+    int const targetSlot = gSaveGameOptions[nSlot].nSaveGameSlot;
+    Bstrncpyz(strRestoreGameStrings[targetSlot], gSaveGameOptions[nSlot].szUserGameName, sizeof(strRestoreGameStrings[0]));
+    restoreGameDifficulty[targetSlot] = ClipRange(gSaveGameOptions[nSlot].nDifficulty, 0, 4);
 }
 
 static MyLoadSave *myLoadSave;

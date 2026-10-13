@@ -37,6 +37,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "qav.h"
 #include "resource.h"
 #include "view.h"
+#include <ctime>
 
 CMenuTextMgr gMenuTextMgr;
 CGameMenuMgr gGameMenuMgr;
@@ -1182,11 +1183,14 @@ void CGameMenuItemBitmapLS::Draw(void)
     }
     else
     {
-        ang = 512;
-        stat = 70;
+        ang = 0;
+        stat = 66; // 320x200 column-major preview, opaque, scaled to 160x100.
         picnum = at24;
     }
-    rotatesprite(200<<15,215<<15,32768, ang, picnum, 0, 0, stat|8, 0, 0, xdim-1, ydim-1);
+    int zoom = 32768;
+    if (at24 == -1 && tilesiz[picnum].x > 0 && tilesiz[picnum].y > 0)
+        zoom = min(divscale16(160, tilesiz[picnum].x), divscale16(100, tilesiz[picnum].y));
+    rotatesprite(100<<16,95<<16,zoom, ang, picnum, 0, 0, stat|8, 0, 0, xdim-1, ydim-1);
 }
 
 bool CGameMenuItemBitmapLS::Event(CGameMenuEvent &event)
@@ -2200,8 +2204,89 @@ void CGameMenuItemZEditBitmap::BackChar(void)
         at20[i - 1] = 0;
 }
 
+static void Menu_BlackRectangle(int32_t x, int32_t y, int32_t width, int32_t height, int32_t orientation);
+
+static void DrawSaveDetail(const char *text, int font, int x, int y, int maxWidth)
+{
+    int width;
+    gMenuTextMgr.GetFontInfo(font, text, &width, nullptr);
+    if (width <= maxWidth)
+    {
+        gMenuTextMgr.DrawText(text, font, x, y, 0, 0, true);
+        return;
+    }
+    // Large counters and replacement fonts must not overlap the other column.
+    int const zoom = divscale16(maxWidth, width);
+    FONT const &style = gFont[font];
+    int xFixed = x << 16;
+    int const yFixed = (y << 16) + style.yoff * zoom;
+    for (const char *letter = text; *letter; ++letter)
+    {
+        int const tile = ((*letter - ' ') & 127) + style.tile;
+        if (tilesiz[tile].x && tilesiz[tile].y)
+        {
+            rotatesprite_fs(xFixed + 65536, yFixed + 65536, zoom, 0, tile, 127, 0, 26);
+            rotatesprite_fs(xFixed, yFixed, zoom, 0, tile, 0, 0, 26);
+            xFixed += (tilesiz[tile].x + style.space) * zoom;
+        }
+    }
+}
+
+static void DrawSaveGameDetails(int slot, int font)
+{
+    if ((unsigned)slot >= 10)
+        return;
+    SaveGameStats const &stats = gSaveGameStats[slot];
+    if (!gSaveGameOptions[slot].zLevelName[0] && !stats.valid)
+    {
+        gMenuTextMgr.DrawText("EMPTY SLOT", font, 20, 155, 0, 0, true);
+        return;
+    }
+
+    char text[96];
+    Bsnprintf(text, sizeof(text), "DIFFICULTY: %s", zDiffStrings[restoreGameDifficulty[slot]]);
+    DrawSaveDetail(text, font, 20, 155, 166);
+    if (stats.valid)
+        Bsnprintf(text, sizeof(text), "TIME: %02u:%02u:%02u", stats.elapsedSeconds / 3600,
+            (stats.elapsedSeconds / 60) % 60, stats.elapsedSeconds % 60);
+    else
+        Bstrcpy(text, "TIME: UNKNOWN");
+    DrawSaveDetail(text, font, 196, 155, 114);
+
+    if (stats.valid)
+        Bsnprintf(text, sizeof(text), "KILLS: %d / %d", stats.kills, stats.totalKills);
+    else
+        Bstrcpy(text, "KILLS: UNKNOWN");
+    DrawSaveDetail(text, font, 20, 168, 166);
+    if (stats.valid)
+        Bsnprintf(text, sizeof(text), "SECRETS: %d / %d", stats.secrets, stats.totalSecrets);
+    else
+        Bstrcpy(text, "SECRETS: UNKNOWN");
+    DrawSaveDetail(text, font, 196, 168, 114);
+
+    // Unix timestamps are UTC; conversion belongs here so a timezone change
+    // (or moving the save to another machine) uses the viewer's local time.
+    char date[32] = {};
+    time_t const savedAt = static_cast<time_t>(stats.savedAtUtc);
+    if (stats.valid && stats.savedAtUtc && savedAt >= 0 && uint64_t(savedAt) == stats.savedAtUtc)
+        if (std::tm const *local = std::localtime(&savedAt))
+            std::strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", local);
+    if (date[0])
+        Bsnprintf(text, sizeof(text), "SAVED: %s (LOCAL)", date);
+    else
+        Bstrcpy(text, "SAVED: UNKNOWN");
+    DrawSaveDetail(text, font, 20, 181, 290);
+}
+
 void CGameMenuItemZEditBitmap::Draw(void)
 {
+    // Slot zero is drawn first in both menus. Put the panels behind every
+    // row and the selected save's details, including when a game is running.
+    if (at28 == 0)
+    {
+        Menu_BlackRectangle(190<<16, 45<<16, 124<<16, 104<<16, 1|32);
+        Menu_BlackRectangle(16<<16, 151<<16, 298<<16, 42<<16, 1|32);
+    }
     int height, width;
     gMenuTextMgr.GetFontInfo(m_nFont, NULL, &width, &height);
     int shade = bEnable ? 32 : 48;
@@ -2209,16 +2294,15 @@ void CGameMenuItemZEditBitmap::Draw(void)
     if (pMenu->IsFocusItem(this))
     {
         shade = 32-((int)totalclock&63);
-        char buffer[32];
-        snprintf(buffer, sizeof(buffer), "DIFFICULTY: %s", zDiffStrings[restoreGameDifficulty[at28]]);
-        gMenuTextMgr.DrawText(buffer, m_nFont, 20, 50, 32, 0, true);
+        DrawSaveGameDetails(at28, m_nFont);
+        if (at2c)
+            at2c->at24 = SaveGamePreviewTile(at28);
     }
-    at2c->at24 = -1;
     if (bScan)
         shade = -128;
     if (m_pzText)
         gMenuTextMgr.DrawText(m_pzText, m_nFont, m_nX, m_nY, shade, pal, false);
-    int x = m_nX+m_nWidth-1-(at24+1)*width;
+    int x = m_nX;
     if (at20 && (at20[0] != '\0' || strlen(gSaveGameOptions[at28].zLevelName)))
     {
         int width;

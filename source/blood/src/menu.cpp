@@ -302,29 +302,29 @@ CGameMenuItemTitle itemKeysTitle("KEY SETUP", 1, 160, 20, 2038);
 CGameMenuItemKeyList itemKeyList("", 3, 56, 40, 200, 16, NUMGAMEFUNCTIONS, 0);
 
 CGameMenuItemTitle itemSaveTitle("Save Game", 1, 160, 20, 2038);
-CGameMenuItemZEditBitmap itemSaveGame1(NULL, 3, 20, 60, 320, strRestoreGameStrings[0], 16, 1, SaveGame, 0);
-CGameMenuItemZEditBitmap itemSaveGame2(NULL, 3, 20, 70, 320, strRestoreGameStrings[1], 16, 1, SaveGame, 1);
-CGameMenuItemZEditBitmap itemSaveGame3(NULL, 3, 20, 80, 320, strRestoreGameStrings[2], 16, 1, SaveGame, 2);
-CGameMenuItemZEditBitmap itemSaveGame4(NULL, 3, 20, 90, 320, strRestoreGameStrings[3], 16, 1, SaveGame, 3);
-CGameMenuItemZEditBitmap itemSaveGame5(NULL, 3, 20, 100, 320, strRestoreGameStrings[4], 16, 1, SaveGame, 4);
-CGameMenuItemZEditBitmap itemSaveGame6(NULL, 3, 20, 110, 320, strRestoreGameStrings[5], 16, 1, SaveGame, 5);
-CGameMenuItemZEditBitmap itemSaveGame7(NULL, 3, 20, 120, 320, strRestoreGameStrings[6], 16, 1, SaveGame, 6);
-CGameMenuItemZEditBitmap itemSaveGame8(NULL, 3, 20, 130, 320, strRestoreGameStrings[7], 16, 1, SaveGame, 7);
-CGameMenuItemZEditBitmap itemSaveGame9(NULL, 3, 20, 140, 320, strRestoreGameStrings[8], 16, 1, SaveGame, 8);
-CGameMenuItemZEditBitmap itemSaveGame10(NULL, 3, 20, 150, 320, strRestoreGameStrings[9], 16, 1, SaveGame, 9);
+CGameMenuItemZEditBitmap itemSaveGame1(NULL, 3, 196, 50, 114, strRestoreGameStrings[0], 16, 1, SaveGame, 0);
+CGameMenuItemZEditBitmap itemSaveGame2(NULL, 3, 196, 60, 114, strRestoreGameStrings[1], 16, 1, SaveGame, 1);
+CGameMenuItemZEditBitmap itemSaveGame3(NULL, 3, 196, 70, 114, strRestoreGameStrings[2], 16, 1, SaveGame, 2);
+CGameMenuItemZEditBitmap itemSaveGame4(NULL, 3, 196, 80, 114, strRestoreGameStrings[3], 16, 1, SaveGame, 3);
+CGameMenuItemZEditBitmap itemSaveGame5(NULL, 3, 196, 90, 114, strRestoreGameStrings[4], 16, 1, SaveGame, 4);
+CGameMenuItemZEditBitmap itemSaveGame6(NULL, 3, 196, 100, 114, strRestoreGameStrings[5], 16, 1, SaveGame, 5);
+CGameMenuItemZEditBitmap itemSaveGame7(NULL, 3, 196, 110, 114, strRestoreGameStrings[6], 16, 1, SaveGame, 6);
+CGameMenuItemZEditBitmap itemSaveGame8(NULL, 3, 196, 120, 114, strRestoreGameStrings[7], 16, 1, SaveGame, 7);
+CGameMenuItemZEditBitmap itemSaveGame9(NULL, 3, 196, 130, 114, strRestoreGameStrings[8], 16, 1, SaveGame, 8);
+CGameMenuItemZEditBitmap itemSaveGame10(NULL, 3, 196, 140, 114, strRestoreGameStrings[9], 16, 1, SaveGame, 9);
 CGameMenuItemBitmapLS itemSaveGamePic(NULL, 3, 0, 0, 2050);
 
 CGameMenuItemTitle itemLoadTitle("Load Game", 1, 160, 20, 2038);
-CGameMenuItemZEditBitmap itemLoadGame1(NULL, 3, 20, 60, 320, strRestoreGameStrings[0], 16, 1, LoadGame, 0);
-CGameMenuItemZEditBitmap itemLoadGame2(NULL, 3, 20, 70, 320, strRestoreGameStrings[1], 16, 1, LoadGame, 1);
-CGameMenuItemZEditBitmap itemLoadGame3(NULL, 3, 20, 80, 320, strRestoreGameStrings[2], 16, 1, LoadGame, 2);
-CGameMenuItemZEditBitmap itemLoadGame4(NULL, 3, 20, 90, 320, strRestoreGameStrings[3], 16, 1, LoadGame, 3);
-CGameMenuItemZEditBitmap itemLoadGame5(NULL, 3, 20, 100, 320, strRestoreGameStrings[4], 16, 1, LoadGame, 4);
-CGameMenuItemZEditBitmap itemLoadGame6(NULL, 3, 20, 110, 320, strRestoreGameStrings[5], 16, 1, LoadGame, 5);
-CGameMenuItemZEditBitmap itemLoadGame7(NULL, 3, 20, 120, 320, strRestoreGameStrings[6], 16, 1, LoadGame, 6);
-CGameMenuItemZEditBitmap itemLoadGame8(NULL, 3, 20, 130, 320, strRestoreGameStrings[7], 16, 1, LoadGame, 7);
-CGameMenuItemZEditBitmap itemLoadGame9(NULL, 3, 20, 140, 320, strRestoreGameStrings[8], 16, 1, LoadGame, 8);
-CGameMenuItemZEditBitmap itemLoadGame10(NULL, 3, 20, 150, 320, strRestoreGameStrings[9], 16, 1, LoadGame, 9);
+CGameMenuItemZEditBitmap itemLoadGame1(NULL, 3, 196, 50, 114, strRestoreGameStrings[0], 16, 1, LoadGame, 0);
+CGameMenuItemZEditBitmap itemLoadGame2(NULL, 3, 196, 60, 114, strRestoreGameStrings[1], 16, 1, LoadGame, 1);
+CGameMenuItemZEditBitmap itemLoadGame3(NULL, 3, 196, 70, 114, strRestoreGameStrings[2], 16, 1, LoadGame, 2);
+CGameMenuItemZEditBitmap itemLoadGame4(NULL, 3, 196, 80, 114, strRestoreGameStrings[3], 16, 1, LoadGame, 3);
+CGameMenuItemZEditBitmap itemLoadGame5(NULL, 3, 196, 90, 114, strRestoreGameStrings[4], 16, 1, LoadGame, 4);
+CGameMenuItemZEditBitmap itemLoadGame6(NULL, 3, 196, 100, 114, strRestoreGameStrings[5], 16, 1, LoadGame, 5);
+CGameMenuItemZEditBitmap itemLoadGame7(NULL, 3, 196, 110, 114, strRestoreGameStrings[6], 16, 1, LoadGame, 6);
+CGameMenuItemZEditBitmap itemLoadGame8(NULL, 3, 196, 120, 114, strRestoreGameStrings[7], 16, 1, LoadGame, 7);
+CGameMenuItemZEditBitmap itemLoadGame9(NULL, 3, 196, 130, 114, strRestoreGameStrings[8], 16, 1, LoadGame, 8);
+CGameMenuItemZEditBitmap itemLoadGame10(NULL, 3, 196, 140, 114, strRestoreGameStrings[9], 16, 1, LoadGame, 9);
 CGameMenuItemBitmapLS itemLoadGamePic(NULL, 3, 0, 0, 2518);
 
 CGameMenu menuMultiUserMaps;
@@ -2851,7 +2851,7 @@ void SaveGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
 {
     char strSaveGameName[BMAX_PATH];
     int nSlot = pItem->at28;
-    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted || (unsigned)nSlot >= 10)
         return;
     if (event->at0 != 6/* || strSaveGameName[0]*/)
     {
@@ -2865,6 +2865,7 @@ void SaveGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
     memset(gGameOptions.szSaveGameName, 0, sizeof(gGameOptions.szSaveGameName));
     sprintf(gGameOptions.szSaveGameName, "%s", strSaveGameName);
     gGameOptions.nSaveGameSlot = nSlot;
+    CaptureSaveGamePreview();
     viewLoadingScreen(gMenuPicnum, "Saving", "Saving Your Game", strRestoreGameStrings[nSlot]);
     videoNextPage();
     gSaveGameNum = nSlot;
@@ -2882,7 +2883,7 @@ void SaveGame(CGameMenuItemZEditBitmap *pItem, CGameMenuEvent *event)
 void QuickSaveGame(void)
 {
     char strSaveGameName[BMAX_PATH];
-    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted)
+    if (netIsLive() || gGameOptions.nGameType != kGameTypeSinglePlayer || !gGameStarted || (unsigned)gQuickSaveSlot >= 10)
         return;
     /*if (strSaveGameName[0])
     {
@@ -2896,6 +2897,7 @@ void QuickSaveGame(void)
     memset(gGameOptions.szSaveGameName, 0, sizeof(gGameOptions.szSaveGameName));
     sprintf(gGameOptions.szSaveGameName, "%s", strSaveGameName);
     gGameOptions.nSaveGameSlot = gQuickSaveSlot;
+    CaptureSaveGamePreview();
     viewLoadingScreen(gMenuPicnum, "Saving", "Saving Your Game", strRestoreGameStrings[gQuickSaveSlot]);
     videoNextPage();
     LoadSave::SaveGame(strSaveGameName);

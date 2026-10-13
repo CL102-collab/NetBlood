@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <vector>
 
 #include "compat.h"
 #include "a.h"
@@ -3966,7 +3967,7 @@ int gLastPal = 0;
 
 int32_t g_frameRate;
 
-void viewDrawScreen(void)
+void viewDrawScreen(bool worldOnly)
 {
     viewUpdateCoopSpectator();
     bool const intermission = netIntermissionActive();
@@ -3980,8 +3981,9 @@ void viewDrawScreen(void)
     ClockTicks delta = totalclock - lastUpdate;
     if (delta < 0)
         delta = 0;
-    lastUpdate = totalclock;
-    if (!gPaused && (!CGameMenuMgr::m_bActive || gGameOptions.nGameType != kGameTypeSinglePlayer))
+    if (!worldOnly)
+        lastUpdate = totalclock;
+    if (!worldOnly && !gPaused && (!CGameMenuMgr::m_bActive || gGameOptions.nGameType != kGameTypeSinglePlayer))
     {
         gInterpolate = ((totalclock-gNetFifoClock)+kTicsPerFrame).toScale16()/kTicsPerFrame;
     }
@@ -4010,7 +4012,7 @@ void viewDrawScreen(void)
     else
         rotatespritesmoothratio = 65536;
 
-    if (gViewMode == 3 || gViewMode == 4 || gOverlayMap)
+    if (!worldOnly && (gViewMode == 3 || gViewMode == 4 || gOverlayMap))
     {
         DoSectorLighting();
     }
@@ -4082,7 +4084,7 @@ void viewDrawScreen(void)
             q16horiz = fix16_from_float(100.f * tanf(fix16_to_float(q16look) * fPI / 1024.f));
         }
         gViewSpritePredictLoc.x = cX, gViewSpritePredictLoc.y = cY, gViewSpritePredictLoc.ang = cA;
-        if (!intermission)
+        if (!intermission && !worldOnly)
             viewUpdateShake();
         q16horiz += fix16_from_int(shakeHoriz);
         cA += fix16_from_int(shakeAngle);
@@ -4121,7 +4123,7 @@ void viewDrawScreen(void)
         bool bDelirium = powerupCheck(gView, kPwUpDeliriumShroom) > 0;
         static bool bDeliriumOld = false;
         int tiltcs = 0, tiltdim = 320;
-        const char bCrystalBall = (powerupCheck(gView, kPwUpCrystalBall) > 0) && (gNetPlayers > 1);
+        const char bCrystalBall = !worldOnly && (powerupCheck(gView, kPwUpCrystalBall) > 0) && (gNetPlayers > 1);
 #ifdef USE_OPENGL
         renderSetRollAngle(0);
 #endif
@@ -4365,7 +4367,7 @@ RORHACK:
 #ifdef USE_OPENGL
             else
             {
-                if (videoUsesPolymost() && gDeliriumBlur)
+                if (!worldOnly && videoUsesPolymost() && gDeliriumBlur)
                 {
                     if (!bDeliriumOld)
                     {
@@ -4383,7 +4385,8 @@ RORHACK:
 #endif
         }
 
-        bDeliriumOld = bDelirium && gDeliriumBlur;
+        if (!worldOnly)
+            bDeliriumOld = bDelirium && gDeliriumBlur;
 
         if (r_usenewaspect)
             newaspect_enable = 0;
@@ -4411,7 +4414,7 @@ RORHACK:
             }
         }
 #endif
-        if (gViewPos == VIEWPOS_0)
+        if (!worldOnly && gViewPos == VIEWPOS_0)
         {
             if (gAimReticle)
             {
@@ -4449,11 +4452,11 @@ RORHACK:
            
 
         }
-        if (gViewPos == VIEWPOS_0 && gView->pXSprite->burnTime > 60)
+        if (!worldOnly && gViewPos == VIEWPOS_0 && gView->pXSprite->burnTime > 60)
         {
             viewBurnTime(gView->pXSprite->burnTime);
         }
-        if (packItemActive(gView, kPackDivingSuit))
+        if (!worldOnly && packItemActive(gView, kPackDivingSuit))
         {
             rotatesprite(0, 0, 65536, 0, 2344, 0, 0, 256+18, gViewX0, gViewY0, gViewX1, gViewY1);
             rotatesprite(320<<16, 0, 65536, 1024, 2344, 0, 0, 512+22, gViewX0, gViewY0, gViewX1, gViewY1);
@@ -4465,7 +4468,7 @@ RORHACK:
                 rotatesprite(212<<16, 77<<16, 65536, 0, 2347, 32, 0, 512+19, gViewX0, gViewY0, gViewX1, gViewY1);
             }
         }
-        if (powerupCheck(gView, kPwUpAsbestArmor) > 0)
+        if (!worldOnly && powerupCheck(gView, kPwUpAsbestArmor) > 0)
         {
             rotatesprite(0, 200<<16, 65536, 0, 2358, 0, 0, 256+22, gViewX0, gViewY0, gViewX1, gViewY1);
             rotatesprite(320<<16, 200<<16, 65536, 1024, 2358, 0, 0, 512+18, gViewX0, gViewY0, gViewX1, gViewY1);
@@ -4526,69 +4529,72 @@ RORHACK:
         gViewMap.Process(cX, cY, nAng);
         UpdateGotSectorSectorFX();
     }
-    viewDrawInterface(delta);
-    netLagDraw();
-    netDrawMapVote();
-    viewDrawCoopStatus();
-    if (IsPlayerSprite(gView->pSprite) && (gView->hand == 1))
+    if (!worldOnly)
     {
-        int zn = ((gView->zWeapon-gView->zView-(12<<8))>>7)+220;
-        gChoke.Draw(160, zn);
-    }
-    if (byte_1A76C6)
-    {
-        DrawStatSprite(2048, xdim-15, 20);
-    }
-    viewDisplayMessage();
-    CalcFrameRate();
-#if 0
-    if (gShowFrameRate)
-    {
-        int fX, fY;
-        if (gViewMode == 3)
+        viewDrawInterface(delta);
+        netLagDraw();
+        netDrawMapVote();
+        viewDrawCoopStatus();
+        if (IsPlayerSprite(gView->pSprite) && (gView->hand == 1))
         {
-            fX = gViewX1;
+            int zn = ((gView->zWeapon-gView->zView-(12<<8))>>7)+220;
+            gChoke.Draw(160, zn);
         }
-        else
+        if (byte_1A76C6)
         {
-            fX = xdim;
+            DrawStatSprite(2048, xdim-15, 20);
         }
-        if (gViewMode == 3)
+        viewDisplayMessage();
+        CalcFrameRate();
+    #if 0
+        if (gShowFrameRate)
         {
-            fY = gViewY0;
+            int fX, fY;
+            if (gViewMode == 3)
+            {
+                fX = gViewX1;
+            }
+            else
+            {
+                fX = xdim;
+            }
+            if (gViewMode == 3)
+            {
+                fY = gViewY0;
+            }
+            else
+            {
+                fY = 0;
+            }
+            if (gViewMode == 4)
+            {
+                fY += mulscale16(20, yscale);
+            }
+            sprintf(gTempStr, "%3i", gFrameRate);
+            printext256(fX-12, fY, 31, -1, gTempStr, 1);
+            fY += 8;
+            sprintf(gTempStr, "pos=%d,%d,%d", gView->pSprite->x, gView->pSprite->y, gView->pSprite->z);
+            printext256(fX-strlen(gTempStr)*4, fY, 31, -1, gTempStr, 1);
         }
-        else
+    #endif
+        viewDrawMapTitle();
+        viewDrawAimedPlayerName();
+        viewPrintFPS();
+        if (gPaused)
         {
-            fY = 0;
+            viewDrawText(1, "PAUSED", 160, 10, 0, 0, 1, 0);
         }
-        if (gViewMode == 4)
+        else if (gView != gMe && !netCoopPlayerIsSpectator(myconnectindex))
         {
-            fY += mulscale16(20, yscale);
+            sprintf(gTempStr, "] %s [", gProfile[gView->nPlayer].name);
+            viewDrawText(0, gTempStr, 160, 10, 0, 0, 1, 0);
         }
-        sprintf(gTempStr, "%3i", gFrameRate);
-        printext256(fX-12, fY, 31, -1, gTempStr, 1);
-        fY += 8;
-        sprintf(gTempStr, "pos=%d,%d,%d", gView->pSprite->x, gView->pSprite->y, gView->pSprite->z);
-        printext256(fX-strlen(gTempStr)*4, fY, 31, -1, gTempStr, 1);
+        if (errMsg[0])
+        {
+            viewDrawText(0, errMsg, 160, 20, 0, 0, 1, 0);
+        }
+        viewDrawScoreboard();
     }
-#endif
-    viewDrawMapTitle();
-    viewDrawAimedPlayerName();
-    viewPrintFPS();
-    if (gPaused)
-    {
-        viewDrawText(1, "PAUSED", 160, 10, 0, 0, 1, 0);
-    }
-    else if (gView != gMe && !netCoopPlayerIsSpectator(myconnectindex))
-    {
-        sprintf(gTempStr, "] %s [", gProfile[gView->nPlayer].name);
-        viewDrawText(0, gTempStr, 160, 10, 0, 0, 1, 0);
-    }
-    if (errMsg[0])
-    {
-        viewDrawText(0, errMsg, 160, 20, 0, 0, 1, 0);
-    }
-    viewDrawScoreboard();
     if (netPredictActive())
         netPredictEndRender();
     else if (gViewInterpolate && !intermission)
@@ -4597,6 +4603,93 @@ RORHACK:
     }
     // Frozen damage/blindness effects must not obscure the final results.
     UpdateDacs(intermission ? 0 : nPalette, intermission);
+}
+
+bool viewCaptureSavePreview(uint8_t *pixels, int width, int height)
+{
+    if (!pixels || width <= 0 || height <= 0 || width > 320 || height > 200
+        || !gGameStarted || gGameOptions.nGameType != kGameTypeSinglePlayer
+        || !gView || !gView->pSprite || xdim <= 0 || ydim <= 0)
+        return false;
+
+    int const oldViewSize = gViewSize, oldViewMode = gViewMode, oldOverlay = gOverlayMap;
+    int const oldInterpolate = gInterpolate, oldViewInterpolate = gViewInterpolate;
+    auto const oldSmoothRatio = rotatespritesmoothratio;
+    auto const oldAutomapping = automapping;
+    auto const oldRandomSeed = randomseed;
+    auto const oldWRandomSeed = wrandomseed;
+    extern unsigned int randSeed;
+    auto const oldQRandomSeed = randSeed;
+    uint8_t oldGotPic[sizeof(gotpic)], oldGotSector[sizeof(gotsector)], oldGotSectorROR[sizeof(gotsectorROR)];
+    Bmemcpy(oldGotPic, gotpic, sizeof(gotpic));
+    Bmemcpy(oldGotSector, gotsector, sizeof(gotsector));
+    Bmemcpy(oldGotSectorROR, gotsectorROR, sizeof(gotsectorROR));
+
+    // Draw the saved state, including the world hidden by a reduced viewport.
+    // Never advance simulation or reveal additional areas on the automap.
+    gViewMode = 3;
+    gOverlayMap = 0;
+    gViewInterpolate = 0;
+    gInterpolate = 65536;
+    automapping = 0;
+    viewResizeView(0);
+    videoClearScreen(0);
+    viewDrawScreen(true);
+
+    videoBeginDrawing();
+#ifdef USE_OPENGL
+    if (videoGetRenderMode() >= REND_POLYMOST)
+    {
+        // RGBA avoids row-alignment padding at odd screen widths. Vulkan's
+        // frontend performs its synchronous readback through this same API.
+        std::vector<uint8_t> rgba(size_t(xdim) * ydim * 4);
+        GLint oldAlignment, oldRowLength;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &oldAlignment);
+        glGetIntegerv(GL_PACK_ROW_LENGTH, &oldRowLength);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+        glReadPixels(0, 0, xdim, ydim, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, oldAlignment);
+        glPixelStorei(GL_PACK_ROW_LENGTH, oldRowLength);
+        for (int x = 0; x < width; ++x)
+            for (int y = 0; y < height; ++y)
+            {
+                int const sx = int((int64_t(2 * x + 1) * xdim) / (2 * width));
+                int const sy = ydim - 1 - int((int64_t(2 * y + 1) * ydim) / (2 * height));
+                uint8_t const *color = &rgba[(size_t(sy) * xdim + sx) * 4];
+                pixels[x * height + y] = paletteGetClosestColorUpToIndex(color[0], color[1], color[2], 254);
+            }
+    }
+    else
+#endif
+    {
+        uint8_t const opaqueBlack = paletteGetClosestColorUpToIndex(0, 0, 0, 254);
+        for (int x = 0; x < width; ++x)
+            for (int y = 0; y < height; ++y)
+            {
+                int const sx = int((int64_t(2 * x + 1) * xdim) / (2 * width));
+                int const sy = int((int64_t(2 * y + 1) * ydim) / (2 * height));
+                uint8_t const color = *(reinterpret_cast<uint8_t const *>(frameplace + ylookup[sy]) + sx);
+                pixels[x * height + y] = color == 255 ? opaqueBlack : color;
+            }
+    }
+    videoEndDrawing();
+
+    Bmemcpy(gotpic, oldGotPic, sizeof(gotpic));
+    Bmemcpy(gotsector, oldGotSector, sizeof(gotsector));
+    Bmemcpy(gotsectorROR, oldGotSectorROR, sizeof(gotsectorROR));
+    randomseed = oldRandomSeed;
+    wrandomseed = oldWRandomSeed;
+    randSeed = oldQRandomSeed;
+    automapping = oldAutomapping;
+    gViewMode = oldViewMode;
+    gOverlayMap = oldOverlay;
+    gViewInterpolate = oldViewInterpolate;
+    gInterpolate = oldInterpolate;
+    rotatespritesmoothratio = oldSmoothRatio;
+    viewResizeView(oldViewSize);
+    viewUpdatePages();
+    return true;
 }
 
 int nLoadingScreenTile;
