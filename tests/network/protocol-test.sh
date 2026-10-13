@@ -5,6 +5,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 "$repo/tests/network/compatibility-test.sh"
 "$repo/tests/network/uri-test.sh"
+"$repo/tests/network/chat-test.sh"
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/netblood-network-test.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 sanitize=

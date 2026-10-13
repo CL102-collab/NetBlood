@@ -25,6 +25,7 @@ SANITIZE=1 tests/network/teams-test.sh
 tests/network/player-team-test.sh
 SANITIZE=1 tests/network/player-team-test.sh
 SANITIZE=1 tests/network/uri-test.sh
+SANITIZE=1 tests/network/chat-test.sh
 ```
 
 The first script needs C/C++ compilers and uses the repository's LZ4 and ENet
@@ -131,6 +132,39 @@ establish map-transition coverage. `--timeout` adjusts startup/join deadlines.
 (5) for graphical processes; that renderer must be enabled in the tested build.
 The input harness uses Linux `LD_PRELOAD` and a FIFO; it is not a Windows runtime
 test. Windows compilation and execution must be reported separately.
+
+## Public and team chat
+
+Open the ordinary chat input (the `Send_Message` action, normally T). In teams
+and co-op, press Tab to switch between `say:` and `team say:`; the small Tab
+keycap beside the label advertises this control. Switching keeps the draft.
+Enter sends, Escape cancels, and Ctrl+Backspace clears the text without changing
+the selected channel. Opening a new chat always starts in public mode.
+Bloodbath has public chat only. Cooperative players all share one team channel.
+Received team messages begin with `[TEAM]`.
+
+Run the live check under X11/Xvfb with an ordinary native build:
+
+```sh
+python3 tests/network/team-chat.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-team-chat-evidence
+```
+
+The harness types text and presses the real Tab, Enter, Escape and
+Ctrl+Backspace keys. A dedicated server with three players verifies that public
+messages reach everyone exactly once, while private messages reach only their
+sender and current teammate. It captures both input labels and the Tab keycap.
+Client packet recordings and replays must retain the correct channels and must
+not expose team messages in an opponent's chat, presentation events, logs or
+demo bytes. A graphical listen server separately checks an opposing remote
+sender and a host-originated team message, protecting against accidental global
+rebroadcast from local display code. Co-op and Bloodbath verify their respective
+team/public policies. The output includes the tested binary digest, logs,
+screenshots, decoded packet inventories and `result.json`. Use `--renderer 3`
+for Polymost or `--renderer 5` for Vulkan; `--skip-screenshots` omits captures.
+`--listen-renderer 3` can check the listen host's prompts with Polymost while
+the dedicated clients use Vulkan.
 
 ## Dedicated startup rules
 

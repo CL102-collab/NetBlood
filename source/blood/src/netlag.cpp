@@ -11,6 +11,7 @@
 #ifndef NETLAG_NO_DRAW
 #include "build.h"
 #include "timer.h"
+#include <vector>
 #endif
 
 int32_t gNetLagometer = 1;
@@ -81,9 +82,14 @@ void netLagDraw()
     {
         int const scale = std::max(1, ydim / 400);
         int const width = 64 * scale;
-        int const height = 48 * scale;
-        int const x = std::max(windowxy1.x + 2, windowxy2.x - width - 8 * scale);
-        int const y = std::max(windowxy1.y + 10, windowxy2.y - 2 * height - 12 * scale - 5);
+        // The blue team flag starts near y=70 in the 320x200 HUD. Anchor
+        // the graph above it, independently of the size of the 3D viewport.
+        int const bottom = ydim * 66 / 200;
+        // Leave room for two rows of player names and the ping label even
+        // at low resolutions, where the graph cannot retain its full height.
+        int const height = std::min(48 * scale, std::max(4, bottom - ydim / 10 - 10));
+        int const x = std::max(2, xdim - width - 8 * scale);
+        int const y = bottom - height;
         int const mid = y + height / 4;
         int const frameRange = height / 4;
         int const pingRange = height / 2;
@@ -94,6 +100,18 @@ void netLagDraw()
         palette_t const red = Color(255, 32, 32);
         uint64_t const frameCount = std::min<uint64_t>(gHistory.frameCount, kNetLagSamples);
         uint64_t const snapshotCount = std::min<uint64_t>(gHistory.snapshotCount, kNetLagSamples);
+        // This is a full-screen HUD element, like the flags. Give the line
+        // primitives full-screen clipping, including software column bounds.
+        int32_t const oldWx1 = wx1, oldWy1 = wy1, oldWx2 = wx2, oldWy2 = wy2;
+        auto const oldUpper = startumost, oldLower = startdmost;
+        static std::vector<int16_t> upperClip, lowerClip;
+        if (upperClip.size() != static_cast<size_t>(xdim))
+            upperClip.assign(xdim, 0);
+        if (lowerClip.size() != static_cast<size_t>(xdim) || lowerClip.front() != ydim)
+            lowerClip.assign(xdim, ydim);
+        wx1 = wy1 = 0;
+        wx2 = xdim * 4096; wy2 = ydim * 4096;
+        startumost = upperClip.data(); startdmost = lowerClip.data();
         for (int column = 0; column < width; ++column)
         {
             int const at = x + width - column - 1;
@@ -119,6 +137,8 @@ void netLagDraw()
                     sample.pingMs < 0 ? red : sample.rateDelayed ? yellow : green);
             }
         }
+        wx1 = oldWx1; wy1 = oldWy1; wx2 = oldWx2; wy2 = oldWy2;
+        startumost = oldUpper; startdmost = oldLower;
         int lost = 0, received = 0, ping = 0;
         for (uint64_t age = 0; age < snapshotCount; ++age)
         {

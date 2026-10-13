@@ -35,6 +35,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "levels.h"
 #include "map2d.h"
+#include "messages.h"
 #include "network.h"
 #include "view.h"
 
@@ -235,6 +236,7 @@ void ctrlGetInput(void)
     {
         CONTROL_ClearButton(gamefunc_Send_Message);
         keyFlushScans();
+        gPlayerMsg.Begin();
         gInputMode = INPUT_MODE_2;
     }
 

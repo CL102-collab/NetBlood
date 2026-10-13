@@ -68,6 +68,18 @@ the final results and the countdown; legacy input demos remain unchanged.
 `net_status` reports `NET intermission`
 with its active state, remaining milliseconds and frozen level time.
 
+Open chat with the **Send Message** control. Normal chat shows **`say:`**.
+In team games and co-op, a **Tab key icon** appears before the prompt: press
+Tab to switch to **`team say:`**, or press it again to return to normal chat.
+Switching keeps your draft; Enter sends it and Escape cancels it. Each new
+chat starts in normal mode. Bloodbath offers normal chat only.
+
+Team messages appear as **`[TEAM] Name: message`** and reach only players on
+the sender's team, including the sender. In co-op, all players are teammates.
+The server selects recipients from its current team assignments. Packet demos
+retain only the chat delivered to their recorded player; opposing-team chat
+is not included.
+
 Players can propose **`callvote restart`** in co-op, Bloodbath and team games.
 A passed vote restarts the **current map with fresh scores and starting
 equipment**, preserving the game mode, server settings, team assignments and
@@ -293,6 +305,9 @@ Only the server chooses maps and match rules. Clients can change presentation
 settings without changing authoritative gameplay.
 
 ## Lagometer
+
+The graph sits at the right edge, just above the blue team flag, leaving both
+team scores visible. Its position stays fixed when the game view is reduced.
 
 The graph follows the presentation used by Quake III Arena:
 

@@ -84,6 +84,7 @@ public:
     int at0;
     char text[41];
     CPlayerMsg() { at0 = 0; text[0] = 0; }
+    void Begin(void);
     void Clear(void);
     void Term(void);
     void Draw(void);
@@ -93,6 +94,7 @@ public:
     void Send(void);
     void ProcessKeys(void);
 private:
+    bool teamOnly = false;
     bool IsWhitespaceOnly(const char* const pzString);
 };
 

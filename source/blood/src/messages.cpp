@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "control.h"
 #include "function.h"
 #include "common_game.h"
+#include "colmatch.h"
 #include "blood.h"
 #include "config.h"
 #include "demo.h"
@@ -39,6 +40,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "network.h"
 #include "player.h"
 #include "view.h"
+
+#include <vector>
 
 CPlayerMsg gPlayerMsg;
 CCheatMgr gCheatMgr;
@@ -520,6 +523,12 @@ void CGameMessageMgr::SortMessagesByTime(messageStruct** messages, int count) {
     }
 }
 
+void CPlayerMsg::Begin(void)
+{
+    Clear();
+    teamOnly = false;
+}
+
 void CPlayerMsg::Clear(void)
 {
     text[0] = 0;
@@ -529,19 +538,85 @@ void CPlayerMsg::Clear(void)
 void CPlayerMsg::Term(void)
 {
     Clear();
+    teamOnly = false;
     gInputMode = INPUT_MODE_0;
+}
+
+static void DrawChatTabKey(int x, int y, int width, int height)
+{
+    // Match the left-aligned 320x200 HUD coordinates used by viewDrawText.
+    // The keycap has a transparent centre, with a black outline around its
+    // white border and lettering so it stays visible against the world.
+    int const hudWidth = !g_rotatespriteNoWidescreen && 4 * ydim <= 3 * xdim
+        ? scale(ydim, 4, 3) : xdim;
+    int const left = scale(x, hudWidth, 320), right = scale(x + width, hudWidth, 320);
+    int const top = scale(y + gFont[0].yoff, ydim, 200);
+    int const bottom = scale(y + gFont[0].yoff + height, ydim, 200);
+    int const thickness = ClipLow(scale(1, ydim, 200), 1);
+    // Chat text is a full-screen HUD element. Map views can retain the last
+    // reduced 3D viewport, so temporarily give its keycap the same full-screen
+    // clip as the text, including the software renderer's per-column bounds.
+    int32_t const oldWx1 = wx1, oldWy1 = wy1, oldWx2 = wx2, oldWy2 = wy2;
+    auto const oldUpper = startumost, oldLower = startdmost;
+    static std::vector<int16_t> upperClip, lowerClip;
+    if (upperClip.size() != static_cast<size_t>(xdim))
+        upperClip.assign(xdim, 0);
+    if (lowerClip.size() != static_cast<size_t>(xdim) || lowerClip.front() != ydim)
+        lowerClip.assign(xdim, ydim);
+    wx1 = wy1 = 0;
+    wx2 = xdim * 4096; wy2 = ydim * 4096;
+    startumost = upperClip.data(); startdmost = lowerClip.data();
+    auto frame = [&](int offset, int color)
+    {
+        int const x0 = left - offset, x1 = right + offset;
+        int const y0 = top - offset, y1 = bottom + offset;
+        renderDrawLine(x0 * 4096, y0 * 4096, x1 * 4096, y0 * 4096, color);
+        renderDrawLine(x0 * 4096, y1 * 4096, x1 * 4096, y1 * 4096, color);
+        renderDrawLine(x0 * 4096, y0 * 4096, x0 * 4096, y1 * 4096, color);
+        renderDrawLine(x1 * 4096, y0 * 4096, x1 * 4096, y1 * 4096, color);
+    };
+    int const black = paletteGetClosestColor(0, 0, 0);
+    int const white = paletteGetClosestColor(255, 255, 255);
+    for (int offset = -thickness; offset <= thickness; ++offset)
+        frame(offset, black);
+    frame(0, white);
+    wx1 = oldWx1; wy1 = oldWy1; wx2 = oldWx2; wy2 = oldWy2;
+    startumost = oldUpper; startdmost = oldLower;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+            if (dx || dy)
+                viewDrawText(0, "TAB", x + 3 + dx, y + 2 + dy, 127, 0, 0, false, 256);
+    viewDrawText(0, "TAB", x + 3, y + 2, -128, 0, 0, false, 256);
 }
 
 void CPlayerMsg::Draw(void)
 {
-    char buffer[44];
-    strcpy(buffer, text);
-    if ((int)totalclock & 16)
-        strcat(buffer, "_");
     int x = gViewMode == 3 ? gViewX0S : 0;
     int y = gViewMode == 3 ? gViewY0S : 0;
     if (gViewSize >= 1)
         y += tilesiz[2229].y*((gNetPlayers+3)/4);
+    char const *prompt = gGameOptions.nGameType == kGameTypeSinglePlayer
+        ? "" : teamOnly ? "team say: " : "say: ";
+    if (netTeamChatAvailable())
+    {
+        int width, height;
+        viewGetFontInfo(0, "TAB", &width, &height);
+        DrawChatTabKey(x + 2, y + 1, width + 6, height + 4);
+        x += width + 12;
+        y += 2;
+    }
+    char buffer[sizeof(text) + sizeof("team say: ") + 1];
+    char const *visibleText = text;
+    int width;
+    int const right = gViewMode == 3 ? gViewX1S : 320;
+    do
+    {
+        Bsprintf(buffer, "%s%s%s", prompt, visibleText, ((int)totalclock & 16) ? "_" : "");
+        viewGetFontInfo(0, buffer, &width, nullptr);
+        if (width <= right - x - 2 || !*visibleText)
+            break;
+        ++visibleText;
+    } while (true);
     viewDrawText(0, buffer, x+1,y+1, -128, 0, 0, false, 256);
     viewUpdatePages();
 }
@@ -572,6 +647,15 @@ void CPlayerMsg::Set(const char * pzString)
 
 void CPlayerMsg::Send(void)
 {
+    // Macros sent outside the editor are always public. Inside the editor they
+    // use the selected channel, just like typed messages.
+    bool const privateMessage = gInputMode == INPUT_MODE_2 && teamOnly;
+    if (netIsLive() || privateMessage)
+    {
+        if (IsWhitespaceOnly(text) || netSendChat(text, privateMessage))
+            Term();
+        return; // Only the server echo displays a live message, exactly once.
+    }
     if (VanillaMode() || !IsWhitespaceOnly(text))
     {
         netBroadcastMessage(myconnectindex, text);
@@ -602,6 +686,12 @@ void CPlayerMsg::ProcessKeys(void)
         {
         case sc_Escape:
             Term();
+            break;
+        case sc_Tab:
+            if (netTeamChatAvailable())
+                teamOnly = !teamOnly;
+            CONTROL_ClearButton(gamefunc_Map_Toggle);
+            keystatus[sc_Tab] = 0;
             break;
         case sc_F1:
         case sc_F2:

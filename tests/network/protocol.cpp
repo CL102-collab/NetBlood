@@ -68,6 +68,9 @@ void framing()
     static_assert(netwire::CinematicState == 19 && netwire::CinematicDone == 20,
                   "Cinematic messages append to existing message IDs");
     static_assert(netwire::Scoreboard == 21, "Scoreboard metadata appends to existing message IDs");
+    static_assert(netwire::Chat == 7 && netwire::PublicEndpoint == 22 &&
+                  netwire::Intermission == 23 && netwire::TeamChat == 24,
+                  "Team chat appends without changing public chat or existing packet-demo message IDs");
     for (uint32_t type = netwire::Hello; type < netwire::TypeCount; ++type) {
         header.type = type;
         CHECK(decode(netwire::encode(header, payload)));

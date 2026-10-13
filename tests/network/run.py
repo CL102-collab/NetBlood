@@ -244,6 +244,14 @@ def inspect_demo(path):
             require(len(body) >= 28+16, "recorded vote options are truncated")
             enabled, actions, requested, count = struct.unpack_from("<4I", body, 28)
             record.update(vote_enabled=enabled, vote_actions=actions, vote_map_count=count)
+        elif kind in (7, 24):
+            require(len(body) >= 31, "recorded chat is truncated")
+            sender, length = struct.unpack_from("<BH", body, 28)
+            require(sender < 8 and length <= 240 and len(body) == 31+length,
+                    "recorded chat has invalid sender or text length")
+            text = body[31:]
+            require(b"\0" not in text, "recorded chat contains a null byte")
+            record.update(chat_sender=sender, chat_text=text.decode("latin1"), team_chat=kind == 24)
         packets.append(record)
     else:
         raise Failure("packet demo missing end marker")

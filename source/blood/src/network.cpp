@@ -37,6 +37,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "menu.h"
 #include "network.h"
+#include "netchat.h"
 #include "netserver.h"
 #include "neturi.h"
 #include "netcoop.h"
@@ -1035,6 +1036,56 @@ bool readyVoter(int p)
 #else
     return false;
 #endif
+}
+bool chatPlayerReady(int p)
+{
+    return p >= 0 && p < kMaxPlayers && slots[p].active && slots[p].ready && !slots[p].pendingDrop;
+}
+bool chatRecipient(int sender, int recipient, bool teamOnly)
+{
+    if (!chatPlayerReady(sender) || !chatPlayerReady(recipient)) return false;
+    if (!teamOnly) return true;
+    if (gGameOptions.nGameType == kGameTypeCoop) return true;
+    return gGameOptions.nGameType == kGameTypeTeams
+        && unsigned(gPlayer[sender].teamId) < 2
+        && gPlayer[sender].teamId == gPlayer[recipient].teamId;
+}
+void showChat(int sender, const std::string& message, bool teamOnly)
+{
+    char text[320];
+    Bsnprintf(text, sizeof(text), "%s%s: %s", teamOnly ? "[TEAM] " : "", gProfile[sender].name, message.c_str());
+    // Chat has already been routed to its recipients. In particular, a listen
+    // host must never rebroadcast private text through viewSetMessage's event hook.
+    OSD_Printf("%s\n", text);
+    gGameMessageMgr.Add(text, 15, 10, MESSAGE_PRIORITY_NORMAL);
+    LOG_F(INFO, "NET chat channel=%s sender=%d text=%s", teamOnly ? "team" : "all", sender, message.c_str());
+}
+bool routeChat(int sender, const std::string& message, bool teamOnly)
+{
+    if (!gGameStarted || gStartNewGame || !chatPlayerReady(sender)
+        || (teamOnly && !netTeamChatAvailable())) return false;
+    netchat::Message chat;
+    chat.sender = unsigned(sender);
+    chat.text = message;
+    netwire::Writer writer;
+    if (!netchat::writeMessage(writer, chat)) return false;
+    uint32_t const type = teamOnly ? netwire::TeamChat : netwire::Chat;
+    unsigned recipients = 0;
+    for (int p = 0; p < kMaxPlayers; ++p)
+    {
+        if (!chatRecipient(sender, p, teamOnly)) continue;
+        recipients |= 1u << p;
+        if (!gDedicated && p == myconnectindex) showChat(sender, message, teamOnly);
+#ifndef NETCODE_DISABLE
+        else sendTo(slots[p].peer, type, writer.data);
+#endif
+    }
+    // Server recordings follow their selected player, just like a client demo.
+    // Enemy chat must not become visible when that recording is played back.
+    if (netDemoIsRecording() && !recordNeedsWelcome && chatRecipient(sender, recordSlot, teamOnly))
+        netDemoRecordPacket(serverTick, envelope(type, writer.data));
+    LOG_F(INFO, "NET chat routed channel=%s sender=%d recipients=%02x", teamOnly ? "team" : "all", sender, recipients);
+    return recipients != 0;
 }
 netwire::VoteStatusPayload voteStatus(int recipient)
 {
@@ -2064,19 +2115,26 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
             netDemoRecordPacket(serverTick, Bytes(data, data + size));
         return ok;
     }
-    if (h.type == netwire::Chat)
+    if (h.type == netwire::Chat || h.type == netwire::TeamChat)
     {
-        int         p       = r.u8();
-        std::string message = r.text(240);
-        if (r.end() && p < 8)
+        netchat::Message chat;
+        bool const teamOnly = h.type == netwire::TeamChat;
+        if (teamOnly)
         {
-            char text[320];
-            Bsnprintf(text, sizeof(text), "%s: %s", gProfile[p].name, message.c_str());
-            viewSetMessage(text, 10);
-            if (netDemoIsRecording() && !replay)
-                netDemoRecordPacket(serverTick, Bytes(data, data + size));
-            return true;
+            if (!netchat::readMessage(r, chat)) return false;
         }
+        else
+        {
+            // Preserve public-chat packets in older demos, including the
+            // newline used by the legacy frag announcements.
+            chat.sender = r.u8();
+            chat.text = r.text(240);
+            if (!r.end() || chat.sender >= kMaxPlayers) return false;
+        }
+        showChat(int(chat.sender), chat.text, teamOnly);
+        if (netDemoIsRecording() && !replay)
+            netDemoRecordPacket(serverTick, Bytes(data, data + size));
+        return true;
     }
     if (h.type == netwire::Taunt)
     {
@@ -2312,20 +2370,11 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         if (!netwire::readVoteRequest(r, request)) { malformedMessages++; return; }
         handleVoteRequest(slot, request);
     }
-    else if (h.type == netwire::Chat)
+    else if (h.type == netwire::Chat || h.type == netwire::TeamChat)
     {
-        std::string message = r.text(240);
-        if (r.end())
-        {
-            netwire::Writer w;
-            w.u8(slot);
-            w.text(message, 240);
-            for (auto &dest : slots)
-                if (dest.ready)
-                    sendTo(dest.peer, netwire::Chat, w.data);
-            if (!gDedicated)
-                viewSetMessage(message.c_str(), 10);
-        }
+        netchat::Request chat;
+        if (!netchat::readRequest(r, chat)) { malformedMessages++; return; }
+        routeChat(slot, chat.text, h.type == netwire::TeamChat);
     }
     else if (h.type == netwire::Taunt)
     {
@@ -3527,6 +3576,39 @@ void netBroadcastPlayerInfo(int p)
     if (!netIsClient())
         gProfile[p].skill = netIsServer() ? serverPlayerSkill() : gSkill;
 }
+bool netTeamChatAvailable()
+{
+    return !demoPlayback && netIsLive()
+        && (gGameOptions.nGameType == kGameTypeCoop || gGameOptions.nGameType == kGameTypeTeams);
+}
+bool netSendChat(const char* text, bool teamOnly)
+{
+    if (!text || demoPlayback || !netIsLive() || !gGameStarted || gStartNewGame
+        || (netIsClient() && !clientSnapshotReady))
+    {
+        OSD_Printf("Chat requires an active multiplayer connection.\n");
+        return false;
+    }
+    if (teamOnly && !netTeamChatAvailable())
+    {
+        OSD_Printf("Team chat is only available in team games and co-op.\n");
+        return false;
+    }
+    netchat::Request chat;
+    chat.text = text;
+    netwire::Writer writer;
+    if (!netchat::writeRequest(writer, chat))
+    {
+        OSD_Printf("Chat messages must contain at most 240 printable characters.\n");
+        return false;
+    }
+    if (netIsServer()) return routeChat(myconnectindex, chat.text, teamOnly);
+#ifndef NETCODE_DISABLE
+    return sendTo(serverPeer, teamOnly ? netwire::TeamChat : netwire::Chat, writer.data);
+#else
+    return false;
+#endif
+}
 void netBroadcastMessage(int p, const char *text)
 {
 #ifndef NETCODE_DISABLE
@@ -3858,7 +3940,7 @@ bool netDemoReplayPacket(const uint8_t *data, size_t size)
     netwire::Header h;
     netwire::Reader body(nullptr, 0);
     if (!netwire::decode(data, size, h, body)
-        || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::Taunt
+        || (h.type != netwire::Welcome && h.type != netwire::Snapshot && h.type != netwire::Event && h.type != netwire::Chat && h.type != netwire::TeamChat && h.type != netwire::Taunt
             && h.type != netwire::VoteStatus && h.type != netwire::VoteOptions && h.type != netwire::Scoreboard && h.type != netwire::Intermission))
         return false;
     return acceptClientPacket(data, size, true);

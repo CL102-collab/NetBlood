@@ -110,6 +110,8 @@ extern PKT_STARTGAME gPacketStartGame;
 void netResetState(void);
 void netResetToSinglePlayer(void);
 void netBroadcastMessage(int nPlayer, const char *pzMessage);
+bool netTeamChatAvailable();
+bool netSendChat(const char* text, bool teamOnly);
 void netWaitForEveryone(char a1);
 void netBroadcastFrag(const char *pzString);
 void netGetPackets(void);
