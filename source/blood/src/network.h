@@ -71,7 +71,7 @@ extern bool gRobust;
 extern bool bOutOfSync;
 extern bool ready2send;
 extern NETWORKMODE gNetMode;
-extern char gNetAddress[32];
+extern char gNetAddress[254];
 extern int gNetPort;
 
 

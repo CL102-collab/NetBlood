@@ -490,11 +490,12 @@ int main(int argc, char *argv[])
     argv[argc] = NULL;
 #endif
 
-    // Dedicated Blood servers must not touch a display server, including the
-    // launcher that normally opens before app_main parses the game options.
+    // Dedicated servers and URI registration must not open the game launcher
+    // before app_main handles their command-line options.
     bool headless = false;
     for (int i = 1; i < argc; ++i)
-        if (!Bstrcasecmp(argv[i], "-dedicated") || !Bstrcasecmp(argv[i], "/dedicated"))
+        if (!Bstrcasecmp(argv[i], "-dedicated") || !Bstrcasecmp(argv[i], "/dedicated")
+            || !Bstrcasecmp(argv[i], "-register-uri") || !Bstrcasecmp(argv[i], "/register-uri"))
             headless = true;
     if (headless)
         novideo = 1;

@@ -253,6 +253,7 @@
     <ClCompile Include="..\..\source\blood\src\netmap.cpp" />
     <ClCompile Include="..\..\source\blood\src\netpredict.cpp" />
     <ClCompile Include="..\..\source\blood\src\netserver.cpp" />
+    <ClCompile Include="..\..\source\blood\src\neturireg.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot.cpp" />
     <ClCompile Include="..\..\source\blood\src\netsnapshot_codec.cpp" />
     <ClCompile Include="..\..\source\blood\src\nnextcdud.cpp" />

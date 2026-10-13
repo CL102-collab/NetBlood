@@ -388,7 +388,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE /*hPrevInst*/, LPSTR /*lpCmdLine*/
                MB_OK|MB_ICONINFORMATION);
 #endif
 
-    startwin_open();
+    bool registeringUri = false;
+    for (int i = 1; i < _buildargc; ++i)
+        if (!Bstrcasecmp(_buildargv[i], "-register-uri") || !Bstrcasecmp(_buildargv[i], "/register-uri"))
+            registeringUri = true;
+    if (!registeringUri)
+        startwin_open();
 
     r = app_main(_buildargc, _buildargv);
 
@@ -396,7 +401,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE /*hPrevInst*/, LPSTR /*lpCmdLine*/
 
     if (r) Sleep(3000);
 
-    startwin_close();
+    if (!registeringUri)
+        startwin_close();
 
     Xfree(argvbuf);
 

@@ -93,6 +93,47 @@ included in packet demo recording/playback. Legacy input demos remain unchanged.
 The port uses UDP. Clients connect directly to the server address. The server
 checks protocol, content and map identity.
 
+### Join links on Windows and Linux
+
+Register this installation once for your current OS user:
+
+```sh
+./nblood -register-uri        # Linux (requires xdg-utils)
+```
+
+```bat
+nblood.exe -register-uri
+```
+
+Registration exits without loading game assets and needs no administrator/root
+access. Windows registers `netblood` under `HKEY_CURRENT_USER\Software\Classes`.
+Linux installs `netblood.desktop` in `$XDG_DATA_HOME/applications` (normally
+`~/.local/share/applications`) and uses `xdg-mime` to associate
+`x-scheme-handler/netblood`. Run the command again after moving the executable,
+or to switch which installation opens links.
+
+Websites and chat messages can now link to `netblood://server.example:23513`.
+The browser may ask whether to open NBlood. Hostnames, IPv4, and bracketed IPv6
+are supported, for example `netblood://192.0.2.10:23513` and
+`netblood://[2001:db8::10]:23513`. Omit the port to use **23513**. A single
+trailing slash is accepted. Credentials, query strings, fragments and map paths
+are not supported; the server selects the map and game rules.
+
+You can also open a link directly with
+`./nblood 'netblood://server.example:23513'` or
+`./nblood -connect-uri 'netblood://server.example:23513'` (`nblood.exe` on
+Windows). Link launches accept exactly one URI and **no additional arguments**;
+use ordinary `-client`/`-port` launching when you need other command-line options.
+Malformed links stop with an error before game options or files are processed.
+
+A link starts a new game process and joins automatically, skipping intros and
+the usual startup dialog once a configuration exists. The initial working
+directory is the executable's directory, so a browser's directory cannot
+change which portable game files are found. Normal user-profile settings and
+Steam/GOG asset discovery still apply. Set up the installation and its game
+assets normally before opening links. The existing Windows prompt for an
+already-running copy still applies; links do not replace an active session.
+
 ### Client version compatibility
 
 On connection, the server advertises its required network protocol version and

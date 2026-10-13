@@ -24,6 +24,7 @@ tests/network/teams-test.sh
 SANITIZE=1 tests/network/teams-test.sh
 tests/network/player-team-test.sh
 SANITIZE=1 tests/network/player-team-test.sh
+SANITIZE=1 tests/network/uri-test.sh
 ```
 
 The first script needs C/C++ compilers and uses the repository's LZ4 and ENet
@@ -38,6 +39,9 @@ The checks include:
 - Explicit little-endian wire bytes, exact lengths, invalid fields, truncated
   commands, sequence wrap, stale/duplicate input suppression, a bounded receive
   window, and recovery after a long input outage.
+- Connection URI parsing: DNS/IPv4/bracketed IPv6, every valid UDP port, missing
+  and invalid ports, malformed hosts, argument-injection characters, and unchanged
+  endpoints on rejection. This check also runs from `protocol-test.sh`.
 - Full and XOR-delta snapshots, lost/wrong baseline rejection and recovery,
   state growth/shrinkage, checksums, truncation, 16 MiB limits, unchanged output
   on rejected data, and 30,000 deterministic malformed inputs.
@@ -636,3 +640,40 @@ names surviving a map change, and an empty listen-host name reserving `Caleb00`
 before its first guest joins. Empty CLI names use the inline `-pname=` form.
 The evidence directory contains commands, logs, binary digest, relay counters
 and phase results in `result.json`.
+
+## Connection links and desktop registration
+
+```sh
+SANITIZE=1 tests/network/uri-test.sh
+python3 tests/network/uri-registration.py
+python3 tests/network/uri-join.py \
+  --binary ./nblood --assets /path/to/blood-1.21 \
+  --output /tmp/netblood-uri-join-evidence
+```
+
+The asset-free registration test needs a C++ compiler, GIO and
+`desktop-file-validate`. It exercises the production Linux registration helper
+in isolated HOME/XDG directories, checking desktop syntax and real GIO launches
+from paths containing spaces, quotes, backslashes, dollar signs, percent field
+codes and Unicode, plus registration failure diagnostics.
+
+The live join test needs X11/Xvfb, GIO, `xdg-mime`, and Blood assets. It registers
+and opens a link through the desktop handler, then verifies a real authoritative
+snapshot on a nondefault server port. Additional clients cover a positional DNS
+link, bracketed IPv6 (including a full 39-character address through desktop
+dispatch) and the default port. Malformed links and extra command-line
+arguments must fail before recording files or loading game configuration. All
+registration and configuration writes are isolated; `result.json` records phases,
+binary digest and clean process exits.
+
+`uri-registration-windows.cpp` tests the Windows helper, registry values,
+`ShellExecuteExW` dispatch and executable-relative working directory. Compile
+it with `neturireg.cpp`, the Blood source include path, and `advapi32`/`shell32`.
+Run it only in a disposable Windows user profile or Wine prefix: the test
+registers its own executable as that user's handler.
+
+Wine versions without the Windows HKCU/HKLM merged classes view may fail URI
+lookup despite correct HKCU registration. For that isolated Wine test only,
+`NETBLOOD_TEST_WINE_CLASSES=1` explicitly enables a logged HKCR mirror after
+verifying the production HKCU values. This tests command dispatch and directory
+handling; it does not verify native Windows' per-user association lookup.

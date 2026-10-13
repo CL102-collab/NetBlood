@@ -820,6 +820,7 @@ blood_game_objs := \
 	netmap.cpp \
 	netpredict.cpp \
 	netserver.cpp \
+	neturireg.cpp \
 	netsnapshot.cpp \
 	netsnapshot_codec.cpp \
 	osdcmd.cpp \

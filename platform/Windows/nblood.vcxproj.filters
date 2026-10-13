@@ -54,6 +54,9 @@
     <ClCompile Include="..\..\source\blood\src\netpredict.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\source\blood\src\neturireg.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\source\blood\src\netsnapshot.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

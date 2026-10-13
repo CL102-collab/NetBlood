@@ -59,6 +59,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "network.h"
 #include "netcontent.h"
 #include "netserver.h"
+#include "neturi.h"
+#include "neturireg.h"
 #include "osdcmds.h"
 #include "replace.h"
 #include "resource.h"
@@ -1372,6 +1374,9 @@ void PrintHelp(void)
         "-cachesize #\tSet cache size in kB\n"
         "-cfg [file.cfg]\tUse an alternate configuration file\n"
         "-client [host]\tConnect to a multiplayer game\n"
+        "netblood://host[:port]\tJoin a server from a connection link (no other arguments)\n"
+        "-connect-uri [URI]\tOpen a netblood:// connection link (no other arguments)\n"
+        "-register-uri\tRegister netblood:// links for this user, then exit\n"
         "-game_dir [dir]\tSpecify game data directory\n"
         "-g [file.grp]\tLoad additional game data\n"
         "-h [file.def]\tLoad an alternate definitions file\n"
@@ -1930,9 +1935,78 @@ static int RunDedicatedServer()
     return 0;
 }
 
+// Handle external links before the ordinary option parser can open files or
+// change game settings. A Windows URI containing quotes can become multiple
+// arguments; reject the whole invocation instead of interpreting those options.
+static bool IsUriSwitch(const char* arg, const char* name)
+{
+    if (*arg != '-' && *arg != '/') return false;
+    size_t const length = Bstrlen(name);
+    return !Bstrncasecmp(arg + 1, name, length)
+        && (arg[length + 1] == 0 || arg[length + 1] == '=');
+}
+
+static int UriCommandError(const std::string& error)
+{
+    LOG_F(ERROR, "Connection link: %s", error.c_str());
+    wm_msgbox(APPNAME " connection link", "%s", error.c_str());
+    return 1;
+}
+
+// Returns -1 for normal game startup, or an exit status for a completed command.
+static int HandleUriCommandLine(int& argc, char const * const * argv)
+{
+    bool registration = false, connection = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        registration |= IsUriSwitch(argv[i], "register-uri");
+        connection |= IsUriSwitch(argv[i], "connect-uri") || !Bstrncasecmp(argv[i], "netblood:", 9);
+    }
+    if (!registration && !connection) return -1;
+
+    std::string error;
+    if (registration)
+    {
+        if (argc != 2 || !IsUriSwitch(argv[1], "register-uri") || Bstrchr(argv[1], '='))
+            return UriCommandError("Use -register-uri by itself to register connection links.");
+        bool const registered = neturi::registerHandler(error);
+        const char* message = registered ? "Registered netblood:// connection links for this user." : error.c_str();
+        LOG_F(INFO, "%s", message);
+        // The Windows executable has no console when launched from a shortcut.
+#ifdef _WIN32
+        MessageBoxA(nullptr, message, APPNAME " connection links", MB_OK | (registered ? MB_ICONINFORMATION : MB_ICONERROR));
+#endif
+        return registered ? 0 : 1;
+    }
+
+    const char* uri = nullptr;
+    if (argc == 2 && !Bstrncasecmp(argv[1], "netblood:", 9))
+        uri = argv[1];
+    else if (argc == 3 && IsUriSwitch(argv[1], "connect-uri") && !Bstrchr(argv[1], '='))
+        uri = argv[2];
+    if (!uri)
+        return UriCommandError("Open exactly one netblood://host[:port] link, without additional command-line arguments.");
+
+    neturi::Endpoint endpoint;
+    if (!neturi::parse(uri, endpoint, error) || !neturi::prepareLaunch(error))
+        return UriCommandError(error);
+    Bstrncpyz(gNetAddress, endpoint.host.c_str(), sizeof(gNetAddress));
+    gNetPort = endpoint.port;
+    gNetMode = NETWORK_CLIENT;
+    bQuickStart = bNoDemo = true;
+    gNoSetup = true;
+    gCommandSetup = false;
+    // The URI has been consumed. It must never reach the file/map option parser.
+    argc = 1;
+    LOG_F(INFO, "NET connection link host=%s port=%d", gNetAddress, gNetPort);
+    return -1;
+}
+
 int app_main(int argc, char const * const * argv)
 {
     char buffer[BMAX_PATH];
+    int const uriResult = HandleUriCommandLine(argc, argv);
+    if (uriResult >= 0) return uriResult;
     margc = argc;
     margv = argv;
 #ifdef _WIN32

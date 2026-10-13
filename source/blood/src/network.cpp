@@ -70,7 +70,7 @@ bool         bOutOfSync = false;
 bool         ready2send = false;
 
 NETWORKMODE gNetMode = NETWORK_NONE;
-char        gNetAddress[32];
+char        gNetAddress[254]; // Full DNS hostname (253 bytes) plus terminator.
 // PORT-TODO: Use different port?
 int gNetPort = kNetDefaultPort;
 

@@ -39,6 +39,16 @@ If you have the GOG version of the game, do the following:
 ### Notes
 NBlood now uses nblood_cvars.cfg instead of settings.cfg. Please rename your settings.cfg if you need to retain settings from a previous version.
 
+### Join links
+
+On Windows, run `nblood.exe -register-uri` once; on Linux, run
+`./nblood -register-uri` (requires `xdg-utils`). This registers the current
+installation for your user without administrator access. You can then click
+`netblood://server.example:23513` links in websites or chat to join a server.
+The default port is 23513. Run registration again if you move the executable.
+Set up your game assets normally first. Links launch a new game process using
+its usual saved settings. See [join-link details](docs/networking.md#join-links-on-windows-and-linux).
+
 ### Dedicated multiplayer server
 
 Start a headless server with hot-join and server-owned gameplay rules:
