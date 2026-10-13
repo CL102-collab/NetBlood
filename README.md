@@ -155,6 +155,17 @@ OpenGL context. Polymer remains a separate renderer.
 Vulkan currently uses uncompressed GPU textures, so large texture packs can use
 more graphics memory than OpenGL with texture compression enabled.
 
+Polymost and Vulkan enable screen-space ambient occlusion by default. Toggle
+**Options → Display Setup → Renderer Setup → Ambient Occlusion**, or use
+`r_ambientocclusion 0` / `r_ambientocclusion 1` in the console. The setting is
+saved and takes effect immediately. AO adds local contact shading around visible
+corners and geometry; weapons, crosshairs, text and the HUD are drawn afterward.
+Sky and mirror/room-over-room portal surfaces are excluded from the depth samples.
+As a screen-space effect, it cannot account for geometry outside the view or
+behind another surface. Transparent surfaces use the opaque depth behind them.
+OpenGL requires framebuffer blit and packed depth/stencil support; unsupported
+hardware keeps rendering normally and reports that AO is unavailable.
+
 Vulkan records commands on the calling thread and up to four background threads.
 The automatic background count is `min(4, available CPUs - 1)`, so three CPUs
 use the caller plus two background workers; five or more use the caller plus
@@ -214,7 +225,8 @@ MSBuild's `/p:UseVulkan=true` requires the SDK, while `/p:UseVulkan=false` disab
 Vulkan. ARM64 Visual Studio configurations currently exclude Vulkan.
 
 Ordinary builds use the checked-in SPIR-V header. After editing
-`source/build/src/vulkan_polymost.vert` or `.frag`, regenerate it with Python 3,
+the Vulkan shaders or shared `source/build/src/ambient_occlusion.glsl`,
+regenerate the shader headers with Python 3,
 `glslangValidator`, and `spirv-val` on `PATH`:
 
 ```sh
@@ -226,7 +238,8 @@ python3 tests/vulkan/generate-shaders.py --check
 OpenGL/Vulkan scene comparisons and switching renderers. Those checks cover
 selected scenes and fixtures; they do not establish complete Polymost parity or
 coverage of every platform and driver. Use the demo suite below separately to
-check simulation regressions.
+check simulation regressions. [Ambient occlusion checks](tests/ambient-occlusion/README.md)
+cover contact shading, live toggling, HUD isolation and renderer parity.
 
 ### Demo regression validation
 

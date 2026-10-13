@@ -3,6 +3,7 @@
 #include "vulkan_renderer.h"
 #include <SDL.h>
 #include <glad/glad.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -791,6 +792,245 @@ void run(SDL_Window *window, unsigned workerCount)
     vulkanDestroy();
 }
 
+// The constant-colored geometry removes texture/shade variation from AO checks.
+// A flat front-facing wall must remain unoccluded. Two planes meeting in a
+// 90-degree concave corner must darken only near their common vertical edge.
+void ambientFrame(int width, int height, bool corner, bool apply, float strength = 1.f,
+                  bool eligible = true, bool hud = false, bool inset = false, bool isolated = false)
+{
+    VulkanDrawState state = defaults(width, height);
+    float const background[] = { 0.12f, 0.23f, 0.34f, 1.f };
+    vulkanClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                background, 1.f, 0, state);
+    state.depthTest = true;
+    state.stencilTest = true;
+    state.stencilReference = eligible ? 128 : 0;
+    state.stencilWriteMask = 128;
+    state.stencilPass = GL_REPLACE;
+    if (isolated)
+    {
+        state.scissorTest = true;
+        state.scissor[0] = width / 2;
+        state.scissor[1] = height / 2;
+        state.scissor[2] = state.scissor[3] = 1;
+    }
+    if (inset)
+    {
+        state.viewport[0] = width / 8;
+        state.viewport[1] = height / 8;
+        state.viewport[2] = width * 3 / 4;
+        state.viewport[3] = height * 3 / 4;
+    }
+    // Polymost's positive-Z perspective with near=1 and far=16; the backend preserves
+    // this projection's depth regardless of depth-clip-control availability.
+    std::fill(state.uniforms.projection, state.uniforms.projection + 16, 0.f);
+    state.uniforms.projection[0] = state.uniforms.projection[5] = 1.f;
+    state.uniforms.projection[10] = isolated ? 1.f : 17.f / 15.f;
+    state.uniforms.projection[11] = 1.f;
+    state.uniforms.projection[14] = isolated ? -2.f : -32.f / 15.f;
+    auto wall = [&state](float left, float leftZ, float right, float rightZ)
+    {
+        float const positions[4][3] = {
+            {left, -4.f, leftZ}, {right, -4.f, rightZ},
+            {right, 4.f, rightZ}, {left, 4.f, leftZ}
+        };
+        unsigned const indices[] = {0, 1, 2, 0, 2, 3};
+        VulkanVertex vertices[6] = {};
+        for (unsigned i = 0; i < 6; ++i)
+        {
+            for (unsigned axis = 0; axis < 3; ++axis)
+                vertices[i].position[axis] = positions[indices[i]][axis];
+            vertices[i].position[3] = 1.f;
+            vertices[i].color[0] = 0.8f;
+            vertices[i].color[1] = 0.6f;
+            vertices[i].color[2] = 0.4f;
+            vertices[i].color[3] = 1.f;
+        }
+        vulkanDraw(vertices, 6, state);
+    };
+    if (corner)
+    {
+        wall(-2.f, 2.f, 0.f, 4.f);
+        wall(0.f, 4.f, 2.f, 2.f);
+    }
+    else wall(-4.f, 4.f, 4.f, 4.f);
+    if (apply)
+        require(vulkanAmbientOcclusion(state.uniforms.projection, state.viewport, 2.f, strength, 0.06f),
+                "apply native GPU ambient occlusion");
+    if (hud)
+    {
+        // Draw after AO exactly as the game's HUD does. Its white/magenta bars
+        // cross the otherwise-darkened corner so order mistakes are visible.
+        state = defaults(width, height);
+        state.scissorTest = true;
+        state.scissor[0] = width / 4;
+        state.scissor[1] = height / 8;
+        state.scissor[2] = width / 2;
+        state.scissor[3] = height / 8;
+        triangle(state, 1.f, 1.f, 1.f);
+        state.scissor[1] += height / 8;
+        triangle(state, 1.f, 0.f, 1.f);
+    }
+}
+
+std::vector<unsigned char> ambientImage(int width, int height)
+{
+    std::vector<unsigned char> image(static_cast<size_t>(width) * height * 4);
+    require(vulkanReadPixels(0, 0, width, height, image.data()), "read AO comparison image");
+    return image;
+}
+
+void ambientWriteImage(char const *label, int width, int height, std::vector<unsigned char> const &image)
+{
+    // Optional lossless evidence, no screenshot library/game assets required.
+    char const *directory = std::getenv("NBLOOD_AO_TEST_OUTPUT");
+    if (!directory || !*directory) return;
+    std::string const path = std::string(directory) + "/" + label + ".ppm";
+    FILE *file = std::fopen(path.c_str(), "wb");
+    require(file != nullptr, "open AO evidence image in the supplied existing directory");
+    std::fprintf(file, "P6\n%d %d\n255\n", width, height);
+    // ReadPixels uses OpenGL's bottom-left origin; PPM files start at the top.
+    for (int y = height - 1; y >= 0; --y)
+        for (int x = 0; x < width; ++x)
+            require(std::fwrite(&image[(size_t(y) * width + x) * 4], 1, 3, file) == 3,
+                    "write AO evidence pixels");
+    require(std::fclose(file) == 0, "close AO evidence image");
+}
+
+void ambientSceneChecks(int width, int height)
+{
+    ambientFrame(width, height, false, false);
+    auto const flatOff = ambientImage(width, height);
+    ambientFrame(width, height, false, true);
+    auto const flatOn = ambientImage(width, height);
+    for (size_t i = 0; i < flatOff.size(); ++i)
+        require(std::abs(int(flatOff[i]) - int(flatOn[i])) <= 1,
+                "a flat wall has no self-occlusion or alpha changes");
+
+    ambientFrame(width, height, true, false);
+    auto const cornerOff = ambientImage(width, height);
+    ambientFrame(width, height, true, true);
+    auto const cornerOn = ambientImage(width, height);
+    unsigned maxDarkening = 0, changed = 0;
+    double nearSum = 0, farSum = 0;
+    unsigned nearCount = 0, farCount = 0;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+        {
+            size_t const offset = (size_t(y) * width + x) * 4;
+            require(cornerOn[offset + 3] == cornerOff[offset + 3], "AO preserves destination alpha");
+            for (unsigned c = 0; c < 3; ++c)
+                require(cornerOn[offset + c] <= cornerOff[offset + c] + 1,
+                        "AO never brightens the constant-colored scene");
+            if (y < height / 3 || y >= height * 2 / 3) continue;
+            int const darkening = int(cornerOff[offset]) - int(cornerOn[offset]);
+            if (x >= width * 7 / 16 && x < width * 9 / 16)
+            {
+                nearSum += darkening;
+                ++nearCount;
+                if (darkening >= 2) ++changed;
+                maxDarkening = std::max(maxDarkening, unsigned(std::max(0, darkening)));
+            }
+            else if ((x >= width / 8 && x < width / 4) ||
+                     (x >= width * 3 / 4 && x < width * 7 / 8))
+            {
+                farSum += darkening;
+                ++farCount;
+            }
+        }
+    require(maxDarkening >= 4 && changed > nearCount / 20,
+            "the concave corner receives visible local occlusion");
+    require(nearSum / nearCount > farSum / farCount + 0.5,
+            "the corner darkens more than distant flat wall regions");
+    std::printf("PASS: AO corner %dx%d: peak darkening %u, near mean %.3f, distant mean %.3f\n",
+                width, height, maxDarkening, nearSum / nearCount, farSum / farCount);
+    if (width == 160)
+    {
+        ambientWriteImage("flat-off", width, height, flatOff);
+        ambientWriteImage("flat-on", width, height, flatOn);
+        ambientWriteImage("corner-off", width, height, cornerOff);
+        ambientWriteImage("corner-on", width, height, cornerOn);
+    }
+
+    ambientFrame(width, height, true, true, 0.f);
+    require(ambientImage(width, height) == cornerOff, "zero-strength AO is an exact bypass after prior use");
+    ambientFrame(width, height, true, false);
+    require(ambientImage(width, height) == cornerOff, "disabling AO restores exact original pixels");
+    ambientFrame(width, height, true, true, 1.f, false);
+    require(ambientImage(width, height) == cornerOff, "stencil-ineligible world content is excluded from AO");
+    // A one-pixel silhouette has no valid neighboring depths. With an infinite
+    // far plane, reconstructing those invalid depths would produce infinities.
+    ambientFrame(width, height, false, false, 1.f, true, false, false, true);
+    auto const isolatedOff = ambientImage(width, height);
+    ambientFrame(width, height, false, true, 1.f, true, false, false, true);
+    require(ambientImage(width, height) == isolatedOff,
+            "isolated geometry with an infinite far plane has no invalid-depth artifacts");
+
+    ambientFrame(width, height, true, false, 1.f, true, true);
+    auto const hudOff = ambientImage(width, height);
+    ambientFrame(width, height, true, true, 1.f, true, true);
+    auto const hudOn = ambientImage(width, height);
+    for (int y = height / 8; y < (height / 8) * 3; ++y)
+        for (int x = width / 4; x < width * 3 / 4; ++x)
+            for (unsigned c = 0; c < 4; ++c)
+                require(hudOn[(size_t(y) * width + x) * 4 + c] == hudOff[(size_t(y) * width + x) * 4 + c],
+                        "HUD drawn after AO remains byte-for-byte unchanged");
+
+    ambientFrame(width, height, true, false, 1.f, true, false, true);
+    auto const insetOff = ambientImage(width, height);
+    ambientFrame(width, height, true, true, 1.f, true, false, true);
+    auto const insetOn = ambientImage(width, height);
+    unsigned insetChanges = 0;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+        {
+            size_t const offset = (size_t(y) * width + x) * 4;
+            bool const outside = x < width / 8 || x >= width * 7 / 8 ||
+                                 y < height / 8 || y >= height * 7 / 8;
+            for (unsigned c = 0; c < 4; ++c)
+                if (outside)
+                    require(insetOn[offset + c] == insetOff[offset + c], "AO respects the supplied world viewport");
+            if (!outside && insetOn[offset] + 2 < insetOff[offset]) ++insetChanges;
+        }
+    require(insetChanges > 0, "offset viewport still receives corner occlusion");
+    std::puts("PASS: AO flat wall, bypass/restore, mask exclusion, post-pass HUD and viewport boundaries");
+}
+
+void ambientOcclusion(SDL_Window *window)
+{
+    for (char const *slots : { "1", "2", "3" })
+    {
+        require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", slots, 1) == 0, "configure AO submission slots");
+        require(SDL_setenv("NBLOOD_VULKAN_WORKERS", slots, 1) == 0, "configure AO recording workers");
+        SDL_SetWindowSize(window, 160, 120);
+        SDL_PumpEvents();
+        require(vulkanCreate(window, 160, 120, 0), "create AO renderer");
+        require(SDL_GL_GetCurrentContext() == nullptr, "native AO uses no OpenGL context");
+        ambientSceneChecks(160, 120);
+        // Warm all AO resources, then retain multiple frames without readbacks.
+        ambientFrame(160, 120, true, true, 1.f, true, true);
+        auto const expected = ambientImage(160, 120);
+        VulkanSubmissionStats before = {}, after = {};
+        vulkanGetSubmissionStats(&before);
+        for (unsigned frame = 0; frame < 12; ++frame)
+        {
+            ambientFrame(160, 120, true, true, 1.f, true, true);
+            require(vulkanPresent(), "present AO frames without CPU readback or Finish");
+        }
+        vulkanGetSubmissionStats(&after);
+        require(before.queueIdleWaits == after.queueIdleWaits && before.deviceIdleWaits == after.deviceIdleWaits,
+                "steady-state AO does not idle the queue or device");
+        require(ambientImage(160, 120) == expected, "AO frame results remain exact across queued submissions");
+        SDL_SetWindowSize(window, 240, 180);
+        SDL_PumpEvents();
+        require(vulkanResize(240, 180), "recreate AO targets after resize");
+        ambientSceneChecks(240, 180);
+        require(vulkanPresent(), "present resized AO targets");
+        vulkanDestroy();
+        std::printf("PASS: native AO with %s submission slots, queued frames, resize and teardown\n", slots);
+    }
+}
+
 void automaticWorkers(SDL_Window *window)
 {
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "0", 1) == 0, "configure automatic recording workers");
@@ -1005,9 +1245,10 @@ void teardownIdleFailure(SDL_Window *window)
 int main(int argc, char **argv)
 {
     bool const teardownOnly = argc == 2 && std::strcmp(argv[1], "--teardown-idle-only") == 0;
-    if (argc > 1 && !teardownOnly)
+    bool const ambientOnly = argc == 2 && std::strcmp(argv[1], "--ambient-occlusion-only") == 0;
+    if (argc > 1 && !teardownOnly && !ambientOnly)
     {
-        std::fprintf(stderr, "Usage: %s [--teardown-idle-only]\n", argv[0]);
+        std::fprintf(stderr, "Usage: %s [--teardown-idle-only|--ambient-occlusion-only]\n", argv[0]);
         return 2;
     }
     if (SDL_Init(SDL_INIT_VIDEO))
@@ -1032,6 +1273,14 @@ int main(int argc, char **argv)
         SDL_DestroyWindow(window);
         SDL_Quit();
         std::puts("PASS: targeted Vulkan teardown idle failure check");
+        return 0;
+    }
+    if (ambientOnly)
+    {
+        ambientOcclusion(window);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::puts("PASS: targeted native Vulkan ambient occlusion checks");
         return 0;
     }
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "1", 1) == 0, "configure synchronous recording reference");
@@ -1074,6 +1323,7 @@ int main(int argc, char **argv)
     workerFailures(window);
     submissionFailures(window);
     teardownIdleFailure(window);
+    ambientOcclusion(window);
     SDL_DestroyWindow(window);
     SDL_Quit();
     std::puts("PASS: all native Vulkan backend regression checks");

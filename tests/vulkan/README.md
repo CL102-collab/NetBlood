@@ -175,9 +175,12 @@ floor/ceiling ROR and vertical portal chains, not movement through portals or
 every map configuration. Masked ROR sectors are excluded because `mirrors.cpp`
 currently rejects them for the Polymost reference (`MASKED_ROR_ISSUE`).
 
-`generate-shaders.py` regenerates the checked-in Vulkan SPIR-V include using
-`glslangValidator`; generated shader consistency is separate from these runtime
-checks.
+`generate-shaders.py` regenerates the checked-in material and ambient-occlusion
+SPIR-V includes using `glslangValidator`; generated shader consistency is
+separate from these runtime checks. The AO shader includes
+`source/build/src/ambient_occlusion.glsl`, also used by OpenGL. See the
+[AO checks](../ambient-occlusion/README.md) for contact shading, toggle persistence,
+HUD isolation and the focused `--ambient-occlusion-only` backend test.
 
 `backend-test.sh` runs focused Vulkan API checks without game assets. It needs a
 C++ compiler, SDL2/Vulkan development packages discoverable through `pkg-config`,

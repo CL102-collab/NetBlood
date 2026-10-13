@@ -41,6 +41,11 @@ void polymost_initosdfuncs(void);
 void polymost_drawrooms(void);
 void polymost_prepareMirror(int32_t dax, int32_t day, int32_t daz, fix16_t daang, fix16_t dahoriz, int16_t mirrorWall);
 void polymost_completeMirror();
+// Bracket only the main world view, excluding mirror/portal/camera prepasses.
+void polymost_beginAmbientOcclusion(void);
+void polymost_cancelAmbientOcclusion(void);
+void polymost_applyAmbientOcclusion(void);
+void polymost_ambientOcclusionDepthWrite(bool enabled);
 void polymost_startBufferedDrawing(int nn);
 void polymost_bufferVert(vec3f_t const v, vec2f_t const t);
 void polymost_finishBufferedDrawing(int mode);
@@ -108,6 +113,7 @@ extern int32_t r_detailmapping;
 #endif
 
 extern int32_t r_animsmoothing;
+extern int32_t r_ambientocclusion;
 extern int32_t r_downsize;
 extern int32_t r_downsizevar;
 extern int32_t r_drawpolyVertsBufferLength;

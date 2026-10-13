@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 #include "glad/glad.h" // Enumerants only; this backend never calls OpenGL.
 #include "vulkan_polymost_spv.h"
+#include "ambient_occlusion_vk_spv.h"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 #include <cerrno>
 #include <cfloat>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -127,6 +129,26 @@ struct RecordingWorker
 struct RetiredImage { Image image; uint64_t serial; };
 struct RetiredBuffer { Buffer buffer; uint64_t serial; };
 
+struct AmbientOcclusion
+{
+    VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule vertexShader = VK_NULL_HANDLE, fragmentShader = VK_NULL_HANDLE;
+    VkImageView depthView = VK_NULL_HANDLE, stencilView = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    bool supported = false, warned = false;
+};
+
+// Keep the order identical to ambient_occlusion_vk.frag's std140 block and
+// the shared ambient_occlusion.glsl algorithm used by OpenGL Polymost.
+struct AmbientOcclusionUniforms
+{
+    float projection[4], depth[4], viewport[4], target[4];
+};
+
 struct Backend
 {
     SDL_Window *window = nullptr;
@@ -155,6 +177,7 @@ struct Backend
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     VkShaderModule vertexShader = VK_NULL_HANDLE, fragmentShader = VK_NULL_HANDLE;
     Image color, depth;
+    AmbientOcclusion ao;
     std::map<uint32_t, Image> textures;
     std::map<PipelineKey, VkPipeline> pipelines;
     std::map<SamplerKey, VkSampler> samplers;
@@ -1163,6 +1186,136 @@ bool createRenderPass()
     return check(vkCreateRenderPass(g.device, &info, nullptr, &g.renderPass), "create render pass");
 }
 
+bool createAmbientOcclusionResources()
+{
+    if (!g.ao.supported) return true;
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    for (uint32_t i = 0; i < 3; ++i)
+    {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo descriptor = {};
+    descriptor.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor.bindingCount = 3;
+    descriptor.pBindings = bindings;
+    if (!check(vkCreateDescriptorSetLayout(g.device, &descriptor, nullptr, &g.ao.descriptorLayout), "create AO descriptor layout")) return false;
+    VkPipelineLayoutCreateInfo layout = {};
+    layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &g.ao.descriptorLayout;
+    if (!check(vkCreatePipelineLayout(g.device, &layout, nullptr, &g.ao.pipelineLayout), "create AO pipeline layout")) return false;
+
+    // Depth is sampled, never simultaneously attached by this pass. Color is
+    // multiplied through blending, avoiding a scene-color copy or feedback loop.
+    VkAttachmentDescription attachment = {};
+    attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    VkSubpassDependency dependencies[2] = {};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    for (auto &dependency : dependencies)
+    {
+        dependency.srcStageMask = dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    VkRenderPassCreateInfo renderPass = {};
+    renderPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPass.attachmentCount = 1;
+    renderPass.pAttachments = &attachment;
+    renderPass.subpassCount = 1;
+    renderPass.pSubpasses = &subpass;
+    renderPass.dependencyCount = 2;
+    renderPass.pDependencies = dependencies;
+    if (!check(vkCreateRenderPass(g.device, &renderPass, nullptr, &g.ao.renderPass), "create AO render pass")) return false;
+
+    VkShaderModuleCreateInfo shader = {};
+    shader.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader.codeSize = sizeof(ambient_occlusion_vk_vert_spv);
+    shader.pCode = ambient_occlusion_vk_vert_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.ao.vertexShader), "create AO vertex shader")) return false;
+    shader.codeSize = sizeof(ambient_occlusion_vk_frag_spv);
+    shader.pCode = ambient_occlusion_vk_frag_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.ao.fragmentShader), "create AO fragment shader")) return false;
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = g.ao.vertexShader;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = g.ao.fragmentShader;
+    stages[0].pName = stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertex = {};
+    vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo assembly = {};
+    assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport = {};
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster = {};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.f;
+    VkPipelineMultisampleStateCreateInfo samples = {};
+    samples.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend = {};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+    VkPipelineColorBlendStateCreateInfo blending = {};
+    blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blending.attachmentCount = 1;
+    blending.pAttachments = &blend;
+    VkDynamicState dynamics[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic = {};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamics;
+    VkGraphicsPipelineCreateInfo pipeline = {};
+    pipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline.stageCount = 2;
+    pipeline.pStages = stages;
+    pipeline.pVertexInputState = &vertex;
+    pipeline.pInputAssemblyState = &assembly;
+    pipeline.pViewportState = &viewport;
+    pipeline.pRasterizationState = &raster;
+    pipeline.pMultisampleState = &samples;
+    pipeline.pColorBlendState = &blending;
+    pipeline.pDynamicState = &dynamic;
+    pipeline.layout = g.ao.pipelineLayout;
+    pipeline.renderPass = g.ao.renderPass;
+    if (!check(vkCreateGraphicsPipelines(g.device, g.pipelineCache, 1, &pipeline, nullptr, &g.ao.pipeline), "create AO pipeline")) return false;
+    VkSamplerCreateInfo sampler = {};
+    sampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler.magFilter = sampler.minFilter = VK_FILTER_NEAREST;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    return check(vkCreateSampler(g.device, &sampler, nullptr, &g.ao.sampler), "create AO sampler");
+}
+
 bool createSubmissionSlots()
 {
     unsigned count = 2;
@@ -1226,6 +1379,11 @@ void destroySubmissionSlots()
 
 void destroyTargets()
 {
+    if (g.ao.framebuffer) vkDestroyFramebuffer(g.device, g.ao.framebuffer, nullptr);
+    if (g.ao.depthView) vkDestroyImageView(g.device, g.ao.depthView, nullptr);
+    if (g.ao.stencilView) vkDestroyImageView(g.device, g.ao.stencilView, nullptr);
+    g.ao.framebuffer = VK_NULL_HANDLE;
+    g.ao.depthView = g.ao.stencilView = VK_NULL_HANDLE;
     if (g.framebuffer) vkDestroyFramebuffer(g.device, g.framebuffer, nullptr);
     g.framebuffer = VK_NULL_HANDLE;
     destroyImage(g.color);
@@ -1327,7 +1485,8 @@ bool createTargets(int width, int height)
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT)) return false;
     if (!createImage(g.depth, extent.width, extent.height, 1, g.depthFormat,
-                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         (g.ao.supported ? VK_IMAGE_USAGE_SAMPLED_BIT : 0),
                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return false;
     VkImageView attachments[] = { g.color.view, g.depth.view };
     VkFramebufferCreateInfo framebuffer = {};
@@ -1339,6 +1498,24 @@ bool createTargets(int width, int height)
     framebuffer.height = extent.height;
     framebuffer.layers = 1;
     if (!check(vkCreateFramebuffer(g.device, &framebuffer, nullptr, &g.framebuffer), "create framebuffer")) return false;
+    if (g.ao.supported)
+    {
+        // Vulkan exposes the depth and stencil channels through distinct
+        // aspect views. Stencil is sampled as unsigned integers by the AO mask.
+        VkImageViewCreateInfo view = {};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = g.depth.handle;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = g.depthFormat;
+        view.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (!check(vkCreateImageView(g.device, &view, nullptr, &g.ao.depthView), "create AO depth view")) return false;
+        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        if (!check(vkCreateImageView(g.device, &view, nullptr, &g.ao.stencilView), "create AO stencil view")) return false;
+        framebuffer.renderPass = g.ao.renderPass;
+        framebuffer.attachmentCount = 1;
+        framebuffer.pAttachments = &g.color.view;
+        if (!check(vkCreateFramebuffer(g.device, &framebuffer, nullptr, &g.ao.framebuffer), "create AO framebuffer")) return false;
+    }
     if (!beginCommands()) return false;
     imageBarrier(g.color.handle, VK_IMAGE_ASPECT_COLOR_BIT, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -1522,6 +1699,17 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
         }
     }
     if (g.depthFormat == VK_FORMAT_UNDEFINED) return fail("No depth/stencil attachment format is available");
+    {
+        // Keep the preferred GL-compatible depth format even when sampling is
+        // unavailable. AO is optional and must not alter AO-off depth rounding.
+        VkFormatProperties properties;
+        VkImageFormatProperties imageProperties;
+        vkGetPhysicalDeviceFormatProperties(g.physical, g.depthFormat, &properties);
+        g.ao.supported = (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
+            vkGetPhysicalDeviceImageFormatProperties(g.physical, g.depthFormat, VK_IMAGE_TYPE_2D,
+                VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &imageProperties) == VK_SUCCESS;
+    }
     VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1556,6 +1744,7 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
     shader.pCode = vulkan_polymost_frag_spv;
     if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.fragmentShader), "create fragment shader")) return false;
     if (!createRenderPass()) return false;
+    if (!createAmbientOcclusionResources()) return false;
     if (!createRecordingWorkers()) return false;
     if (!createSubmissionSlots()) return false;
     if (!createTargets(width, height)) return false;
@@ -1640,6 +1829,13 @@ void vulkanDestroy()
         for (auto const &sampler : g.samplers) vkDestroySampler(g.device, sampler.second, nullptr);
         for (auto &texture : g.textures) destroyImage(texture.second);
         destroyTargets();
+        if (g.ao.pipeline) vkDestroyPipeline(g.device, g.ao.pipeline, nullptr);
+        if (g.ao.vertexShader) vkDestroyShaderModule(g.device, g.ao.vertexShader, nullptr);
+        if (g.ao.fragmentShader) vkDestroyShaderModule(g.device, g.ao.fragmentShader, nullptr);
+        if (g.ao.sampler) vkDestroySampler(g.device, g.ao.sampler, nullptr);
+        if (g.ao.pipelineLayout) vkDestroyPipelineLayout(g.device, g.ao.pipelineLayout, nullptr);
+        if (g.ao.renderPass) vkDestroyRenderPass(g.device, g.ao.renderPass, nullptr);
+        if (g.ao.descriptorLayout) vkDestroyDescriptorSetLayout(g.device, g.ao.descriptorLayout, nullptr);
         if (g.vertexShader) vkDestroyShaderModule(g.device, g.vertexShader, nullptr);
         if (g.fragmentShader) vkDestroyShaderModule(g.device, g.fragmentShader, nullptr);
         if (g.pipelineCache) vkDestroyPipelineCache(g.device, g.pipelineCache, nullptr);
@@ -1700,6 +1896,102 @@ void vulkanFinish()
 }
 
 void vulkanFlush() { if (vulkanActive() && !g.failed) submit(); }
+
+bool vulkanAmbientOcclusion(float const projection[16], int const worldViewport[4],
+                            float radius, float strength, float bias)
+{
+    if (!vulkanActive() || g.failed) return false;
+    // In particular, AO-off must not flush a batch or otherwise change the
+    // existing rendering/submission behavior.
+    if (radius <= 0.f || strength <= 0.f || g.suspended) return true;
+    if (!projection || !worldViewport || !std::isfinite(radius) || !std::isfinite(strength) || !std::isfinite(bias)) return false;
+    for (unsigned i = 0; i < 16; ++i) if (!std::isfinite(projection[i])) return false;
+    if (worldViewport[2] <= 0 || worldViewport[3] <= 0) return true;
+    if (projection[0] <= 0.f || projection[5] <= 0.f ||
+        std::fabs(projection[11] - 1.f) > 0.00001f || std::fabs(projection[15]) > 0.00001f) return false;
+    if (!g.ao.supported)
+    {
+        if (!g.ao.warned)
+        {
+            std::fprintf(stderr, "Vulkan: ambient occlusion disabled; this device cannot sample the scene depth/stencil format\n");
+            g.ao.warned = true;
+        }
+        return false;
+    }
+    int64_t const x0 = std::max<int64_t>(0, worldViewport[0]);
+    int64_t const y0 = std::max<int64_t>(0, worldViewport[1]);
+    int64_t const x1 = std::min<int64_t>(g.extent.width, int64_t(worldViewport[0]) + worldViewport[2]);
+    int64_t const y1 = std::min<int64_t>(g.extent.height, int64_t(worldViewport[1]) + worldViewport[3]);
+    if (x1 <= x0 || y1 <= y0) return true;
+
+    if (!endRenderPass()) return false;
+    VkDeviceSize offset;
+    VkDeviceSize const alignment = std::max<VkDeviceSize>(16, g.properties.limits.minUniformBufferOffsetAlignment);
+    if (!reserveStream(sizeof(AmbientOcclusionUniforms), alignment, offset) || !ensureRecordingWorkers(1)) return false;
+    AmbientOcclusionUniforms uniforms = {};
+    uniforms.projection[0] = projection[0]; uniforms.projection[1] = projection[5];
+    uniforms.projection[2] = projection[8]; uniforms.projection[3] = projection[9];
+    uniforms.depth[0] = projection[10]; uniforms.depth[1] = projection[14];
+    uniforms.depth[2] = radius; uniforms.depth[3] = std::max(0.f, std::min(1.f, bias));
+    for (unsigned i = 0; i < 4; ++i) uniforms.viewport[i] = float(worldViewport[i]);
+    uniforms.target[0] = 1.f / g.extent.width; uniforms.target[1] = 1.f / g.extent.height;
+    uniforms.target[2] = strength;
+    std::memcpy(static_cast<uint8_t *>(currentSlot().stream.mapped) + offset, &uniforms, sizeof(uniforms));
+
+    // Use the current fence-owned descriptor page. A postprocess descriptor may
+    // outlive this CPU frame, just like the preceding parallel world packets.
+    RecordingWorker allocator;
+    allocator.context.device = g.device;
+    allocator.context.descriptorLayout = g.ao.descriptorLayout;
+    allocator.resources = currentSlot().recorders[0];
+    VkDescriptorSet set;
+    if (!allocateWorkerDescriptor(allocator, set)) return check(allocator.error, allocator.operation);
+    ++currentSlot().descriptorCount;
+    VkDescriptorBufferInfo uniform = { currentSlot().stream.handle, offset, sizeof(uniforms) };
+    VkDescriptorImageInfo images[2] = {
+        { g.ao.sampler, g.ao.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+        { g.ao.sampler, g.ao.stencilView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+    };
+    VkWriteDescriptorSet writes[3] = {};
+    for (uint32_t i = 0; i < 3; ++i)
+    {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (i) writes[i].pImageInfo = &images[i - 1];
+        else writes[i].pBufferInfo = &uniform;
+    }
+    vkUpdateDescriptorSets(g.device, 3, writes, 0, nullptr);
+    VkImageAspectFlags const aspects = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    VkRenderPassBeginInfo begin = {};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin.renderPass = g.ao.renderPass;
+    begin.framebuffer = g.ao.framebuffer;
+    begin.renderArea.extent = g.extent;
+    VkCommandBuffer const command = currentSlot().command;
+    vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport viewport = { 0.f, 0.f, float(g.extent.width), float(g.extent.height), 0.f, 1.f };
+    VkRect2D scissor = { { int32_t(x0), int32_t(g.extent.height - y1) }, { uint32_t(x1 - x0), uint32_t(y1 - y0) } };
+    vkCmdSetViewport(command, 0, 1, &viewport);
+    vkCmdSetScissor(command, 0, 1, &scissor);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.ao.pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.ao.pipelineLayout, 0, 1, &set, 0, nullptr);
+    vkCmdDraw(command, 3, 1, 0, 0);
+    vkCmdEndRenderPass(command);
+    imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                 VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
+    return true;
+}
 
 bool vulkanPresent()
 {

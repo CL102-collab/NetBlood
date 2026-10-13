@@ -20,6 +20,9 @@ Ken Silverman's official web site: http://www.advsys.net/ken
 #include "colmatch.h"
 #include "texcache.h"
 #include "hash.h"
+#include "vulkan_renderer.h"
+
+#include <string>
 
 #ifdef POLYMOST2
 int32_t r_enablepolymost2 = 0;
@@ -32,6 +35,7 @@ int32_t r_detailmapping = 1;
 #endif
 
 int32_t r_animsmoothing = 1;
+int32_t r_ambientocclusion = 1;
 int32_t r_downsize;
 int32_t r_downsizevar = -1;
 int32_t r_drawpolyVertsBufferLength = 30000;
@@ -189,6 +193,12 @@ extern char const *polymost1Vert;
 static GLuint polymost1CurrentShaderProgramID = 0;
 static GLuint polymost1BasicShaderProgramID = 0;
 static GLuint polymost1ExtendedShaderProgramID = 0;
+static bool ambientOcclusionWorld = false;
+static bool ambientOcclusionFailed = false;
+static GLuint ambientOcclusionTexture = 0, ambientOcclusionFramebuffer = 0, ambientOcclusionProgram = 0;
+static int ambientOcclusionWidth = 0, ambientOcclusionHeight = 0;
+static GLint ambientOcclusionUniforms[6] = { -1, -1, -1, -1, -1, -1 };
+extern char const *ambient_occlusion;
 static GLint polymost1TexSamplerLoc = -1;
 static GLint polymost1PalSwapSamplerLoc = -1;
 static GLint polymost1PaletteSamplerLoc = -1;
@@ -497,8 +507,251 @@ static GLuint polymost2_compileShader(GLenum shaderType, const char* const sourc
     return polymost2_compileShader(shaderType, source, &length);
 }
 
+static void polymost_resetAmbientOcclusion()
+{
+    if (ambientOcclusionTexture) glDeleteTextures(1, &ambientOcclusionTexture);
+#ifndef EDUKE32_GLES
+    if (ambientOcclusionFramebuffer) glDeleteFramebuffers(1, &ambientOcclusionFramebuffer);
+#endif
+    if (ambientOcclusionProgram) glDeleteProgram(ambientOcclusionProgram);
+    ambientOcclusionTexture = ambientOcclusionFramebuffer = ambientOcclusionProgram = 0;
+    ambientOcclusionWidth = ambientOcclusionHeight = 0;
+    ambientOcclusionWorld = ambientOcclusionFailed = false;
+}
+
+void polymost_cancelAmbientOcclusion()
+{
+    if (!ambientOcclusionWorld) return;
+    ambientOcclusionWorld = false;
+    buildgl_setDisabled(GL_STENCIL_TEST);
+    glStencilMask(255);
+    glStencilFunc(GL_ALWAYS, 0, 255);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+}
+
+void polymost_beginAmbientOcclusion()
+{
+    polymost_cancelAmbientOcclusion();
+    if (!r_ambientocclusion || !videoUsesPolymost() || ambientOcclusionFailed) return;
+    ambientOcclusionWorld = true;
+    // Mirrors have already finished. Reserve only the high stencil bit, so
+    // their low-bit clip masks remain intact until the next mirror prepass.
+    glStencilMask(128);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    buildgl_setEnabled(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, 128, 128);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+}
+
+void polymost_ambientOcclusionDepthWrite(bool enabled)
+{
+    // A translucent particle must not make the sky/depth beneath it eligible.
+    if (ambientOcclusionWorld) glStencilMask(enabled ? 128 : 0);
+}
+
+#ifndef EDUKE32_GLES
+static bool polymost_ambientOcclusionFramebufferSupported()
+{
+    return glGenFramebuffers && glDeleteFramebuffers && glBindFramebuffer && glBlitFramebuffer &&
+           glFramebufferTexture2D && glCheckFramebufferStatus;
+}
+
+static bool polymost_createAmbientOcclusion(int depthBits)
+{
+    if (depthBits != 24 && depthBits != 32)
+        return false;
+
+    if (!ambientOcclusionProgram)
+    {
+        char const vertexSource[] = "#version 120\nvoid main() { gl_Position = gl_Vertex; }\n";
+        std::string fragmentSource =
+            "#version 120\n"
+            "uniform sampler2D u_aoTexture;\n"
+            "uniform vec4 u_aoProjection, u_aoDepth, u_aoViewport, u_aoTarget;\n"
+            "uniform int u_aoMaskPass;\n"
+            "#define AO_DEPTH(uv) texture2D(u_aoTexture, uv).r\n";
+        fragmentSource += ambient_occlusion;
+        fragmentSource +=
+            "\nvoid main() {\n"
+            " if (u_aoMaskPass != 0) { gl_FragColor = vec4(1.0); return; }\n"
+            " gl_FragColor = vec4(vec3(ambientOcclusion(gl_FragCoord.xy)), 1.0);\n"
+            "}\n";
+        GLuint vertex = polymost2_compileShader(GL_VERTEX_SHADER, vertexSource);
+        GLuint fragment = polymost2_compileShader(GL_FRAGMENT_SHADER, fragmentSource.c_str());
+        GLint vertexOK = 0, fragmentOK = 0, linked = 0;
+        if (vertex) glGetShaderiv(vertex, GL_COMPILE_STATUS, &vertexOK);
+        if (fragment) glGetShaderiv(fragment, GL_COMPILE_STATUS, &fragmentOK);
+        if (vertexOK && fragmentOK)
+        {
+            ambientOcclusionProgram = glCreateProgram();
+            glAttachShader(ambientOcclusionProgram, vertex);
+            glAttachShader(ambientOcclusionProgram, fragment);
+            glLinkProgram(ambientOcclusionProgram);
+            glGetProgramiv(ambientOcclusionProgram, GL_LINK_STATUS, &linked);
+        }
+        if (vertex) glDeleteShader(vertex);
+        if (fragment) glDeleteShader(fragment);
+        if (!linked) return false;
+        char const *names[] = { "u_aoProjection", "u_aoDepth", "u_aoViewport", "u_aoTarget", "u_aoTexture", "u_aoMaskPass" };
+        for (int i = 0; i < 6; ++i)
+            ambientOcclusionUniforms[i] = glGetUniformLocation(ambientOcclusionProgram, names[i]);
+    }
+
+    if (!ambientOcclusionFramebuffer) glGenFramebuffers(1, &ambientOcclusionFramebuffer);
+    if (!ambientOcclusionTexture) glGenTextures(1, &ambientOcclusionTexture);
+    glBindTexture(GL_TEXTURE_2D, ambientOcclusionTexture);
+    if (ambientOcclusionWidth != xdim || ambientOcclusionHeight != ydim)
+    {
+        GLenum format = depthBits == 32 ? GL_DEPTH32F_STENCIL8 : GL_DEPTH24_STENCIL8;
+        GLenum type = depthBits == 32 ? GL_FLOAT_32_UNSIGNED_INT_24_8_REV : GL_UNSIGNED_INT_24_8;
+        glTexImage2D(GL_TEXTURE_2D, 0, format, xdim, ydim, 0, GL_DEPTH_STENCIL, type, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        ambientOcclusionWidth = xdim;
+        ambientOcclusionHeight = ydim;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, ambientOcclusionFramebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, ambientOcclusionTexture, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+}
+
+static void polymost_ambientOcclusionTriangle()
+{
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.f, -1.f, 1.f);
+    glVertex3f(3.f, -1.f, 1.f);
+    glVertex3f(-1.f, 3.f, 1.f);
+    glEnd();
+}
+#endif
+
+void polymost_applyAmbientOcclusion()
+{
+    bool const eligible = ambientOcclusionWorld;
+    polymost_cancelAmbientOcclusion();
+    if (!eligible || !r_ambientocclusion) return;
+
+    float projection[16];
+    GLint viewport[4];
+    glGetFloatv(GL_PROJECTION_MATRIX, projection);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    float const nearClip = projection[14] / (-1.f - projection[10]);
+    if (viewport[2] <= 0 || viewport[3] <= 0 || nearClip <= 0.f ||
+        projection[0] <= 0.f || projection[5] <= 0.f) return;
+    float const radius = nearClip * 3.f, strength = 2.f, bias = 0.06f;
+#ifdef USE_VULKAN
+    if (videoGetRenderMode() == REND_VULKAN)
+    {
+        vulkanAmbientOcclusion(projection, viewport, radius, strength, bias);
+        return;
+    }
+#endif
+#ifndef EDUKE32_GLES
+    // Older GL contexts can expose framebuffer objects without framebuffer
+    // blitting/read-vs-draw targets. Check the complete feature set before
+    // querying or binding any of those targets, including on the fallback path.
+    if (!polymost_ambientOcclusionFramebufferSupported())
+    {
+        ambientOcclusionFailed = true;
+        LOG_F(WARNING, "Ambient occlusion is unavailable: OpenGL depth/stencil framebuffer support is required.");
+        return;
+    }
+    // All mutations below use raw GL calls under saved GL state. Do not update
+    // buildgl's cached state and then undo only the driver's state with PopAttrib.
+    GLint previousProgram, previousReadFramebuffer = 0, previousDrawFramebuffer = 0, depthBits;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
+    glGetIntegerv(GL_DEPTH_BITS, &depthBits);
+    if (glBindFramebuffer)
+    {
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFramebuffer);
+    }
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+    glActiveTexture(GL_TEXTURE0);
+    GLint previousSampler = 0;
+    if (glinfo.samplerobjects)
+    {
+        glGetIntegerv(GL_SAMPLER_BINDING, &previousSampler);
+        glBindSampler(0, 0);
+    }
+    bool const ready = polymost_createAmbientOcclusion(depthBits);
+    if (ready)
+    {
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, previousDrawFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ambientOcclusionFramebuffer);
+        glBlitFramebuffer(0, 0, xdim, ydim, 0, 0, xdim, ydim,
+                          GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+        glViewport(0, 0, xdim, ydim);
+        glUseProgram(ambientOcclusionProgram);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_FOG);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        // Sanitize only our private depth copy: sky and portal planes must not
+        // occlude neighboring world pixels or receive contact shading.
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glDepthMask(GL_TRUE);
+        glDepthRange(0., 1.);
+        glEnable(GL_STENCIL_TEST);
+        glStencilMask(0);
+        glStencilFunc(GL_EQUAL, 0, 128);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glUniform1i(ambientOcclusionUniforms[5], 1);
+        polymost_ambientOcclusionTriangle();
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFramebuffer);
+        glBindTexture(GL_TEXTURE_2D, ambientOcclusionTexture);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(windowxy1.x, ydim - windowxy2.y - 1,
+                  windowxy2.x - windowxy1.x + 1, windowxy2.y - windowxy1.y + 1);
+        glUniform4f(ambientOcclusionUniforms[0], projection[0], projection[5], projection[8], projection[9]);
+        glUniform4f(ambientOcclusionUniforms[1], projection[10], projection[14], radius, bias);
+        glUniform4f(ambientOcclusionUniforms[2], float(viewport[0]), float(viewport[1]), float(viewport[2]), float(viewport[3]));
+        glUniform4f(ambientOcclusionUniforms[3], 1.f / xdim, 1.f / ydim, strength, 0.f);
+        glUniform1i(ambientOcclusionUniforms[4], 0);
+        glUniform1i(ambientOcclusionUniforms[5], 0);
+        polymost_ambientOcclusionTriangle();
+    }
+    if (glBindFramebuffer)
+    {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousDrawFramebuffer);
+    }
+    if (glinfo.samplerobjects) glBindSampler(0, previousSampler);
+    glUseProgram(previousProgram);
+    glPopAttrib();
+    if (!ready)
+    {
+        ambientOcclusionFailed = true;
+        LOG_F(WARNING, "Ambient occlusion is unavailable: OpenGL depth/stencil framebuffer support is required.");
+    }
+#endif
+}
+
 void polymost_glreset()
 {
+    polymost_resetAmbientOcclusion();
     buildgl_resetStateAccounting();
     if (!nogl || videoGetRenderMode() == REND_VULKAN)
         buildgl_activeTexture(GL_TEXTURE0);
@@ -3446,6 +3699,13 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
         return;
     }
 
+    if (ambientOcclusionWorld)
+    {
+        bool const validWorldDepth = !skyzbufferhack && !drawingskybox && waloff[globalpicnum] &&
+            !(globalpicnum >= r_rortexture && globalpicnum < r_rortexture + r_rortexturerange);
+        glStencilFunc(GL_ALWAYS, validWorldDepth ? 128 : 0, 128);
+    }
+
     if (!waloff[globalpicnum])
     {
         tsiz.x = tsiz.y = 1;
@@ -3888,6 +4148,8 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 
     if (!waloff[globalpicnum])
         glColorMask(true, true, true, true);
+
+    if (ambientOcclusionWorld) glStencilFunc(GL_ALWAYS, 128, 128);
 }
 
 
@@ -10211,6 +10473,7 @@ void polymost_initosdfuncs(void)
         { "r_texcache","enable/disable OpenGL compressed texture cache",(void *) &glusetexcache, CVAR_INT, 0, 2 },
 #endif
         { "r_animsmoothing","enable/disable model animation smoothing",(void *) &r_animsmoothing, CVAR_BOOL, 0, 1 },
+        { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost and Vulkan", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
         { "r_anisotropy", "changes the OpenGL texture anisotropy setting (requires r_useindexedcolortextures to be off)", (void *) &glanisotropy, CVAR_INT|CVAR_FUNCPTR|CVAR_RESTARTVID, 1, 16 },
         { "r_downsize","controls downsizing factor (quality) for hires textures",(void *) &r_downsize, CVAR_INT|CVAR_FUNCPTR, 0, 5 },
         { "r_finishbeforeswap", "run glFinish() before swapping when 'r_glfinish' is 1 and when not using KMT vsync", (void *) &r_finishbeforeswap, CVAR_BOOL, 0, 1 },

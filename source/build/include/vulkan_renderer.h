@@ -95,6 +95,12 @@ void vulkanSetVsync(int vsync);
 bool vulkanPresent();
 void vulkanFinish();
 void vulkanFlush();
+// World-only screen-space ambient occlusion. The projection and viewport use
+// Polymost's OpenGL conventions (positive eye Z, bottom-left viewport origin).
+// Stencil bit 0x80 identifies eligible opaque world pixels. The pass multiplies
+// RGB without modifying alpha or depth; no CPU readback or queue-idle wait.
+bool vulkanAmbientOcclusion(const float projection[16], const int viewport[4],
+                            float radius, float strength, float bias);
 void vulkanDraw(const VulkanVertex *vertices, unsigned count, const VulkanDrawState &state);
 void vulkanClear(uint32_t mask, const float color[4], float depth, uint32_t stencil,
                  const VulkanDrawState &state);

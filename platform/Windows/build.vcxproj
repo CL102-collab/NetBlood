@@ -449,10 +449,13 @@
     <ClInclude Include="..\..\source\build\include\xxhash_config.h" />
     <ClInclude Include="..\..\source\build\src\engine_priv.h" />
     <ClInclude Include="..\..\source\build\src\vulkan_polymost_spv.h" />
+    <ClInclude Include="..\..\source\build\src\ambient_occlusion_vk_spv.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\source\build\src\vulkan_polymost.vert" />
+    <None Include="..\..\source\build\src\ambient_occlusion_vk.vert" />
     <None Include="..\..\source\build\src\vulkan_polymost.frag" />
+    <None Include="..\..\source\build\src\ambient_occlusion_vk.frag" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\..\source\build\src\a.masm">
@@ -487,6 +490,16 @@ echo )shader^"; &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp</C
       <Outputs>$(IntermediateOutputPath)%(Filename)%(Extension).cpp</Outputs>
     </CustomBuild>
     <ClCompile Include="$(IntermediateOutputPath)\polymost1Vert.glsl.cpp" Filter="Source Files/Generated" />
+    <CustomBuild Include="..\..\source\build\src\ambient_occlusion.glsl">
+      <FileType>Document</FileType>
+      <Command>echo char const *%(Filename) = R^"shader( &gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp
+type %(Identity) &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp
+echo )shader^"; &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp</Command>
+      <Message>Compiling shader to $(IntermediateOutputPath)%(Filename)%(Extension).cpp</Message>
+      <Inputs>%(Identity)</Inputs>
+      <Outputs>$(IntermediateOutputPath)%(Filename)%(Extension).cpp</Outputs>
+    </CustomBuild>
+    <ClCompile Include="$(IntermediateOutputPath)\ambient_occlusion.glsl.cpp" Filter="Source Files/Generated" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

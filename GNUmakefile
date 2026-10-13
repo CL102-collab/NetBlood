@@ -374,6 +374,7 @@ engine_objs := \
     $(call getfiltered,engine,*.cpp) \
     polymost1Frag.glsl \
     polymost1Vert.glsl \
+    ambient_occlusion.glsl \
 
 ifeq (0,$(NOASM))
   engine_objs += a.nasm

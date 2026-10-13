@@ -4303,6 +4303,11 @@ RORHACKOTHER:
         int nRORLimit = 32; // limit ROR rendering to 32 times
         ClearGotSectorSectorFX();
 RORHACK:
+#ifdef USE_OPENGL
+        // A visibility retry may run another mirror/ROR prepass. Its depth is
+        // a different camera's and must not enter the main-view AO mask.
+        polymost_cancelAmbientOcclusion();
+#endif
         char ror_status[kMaxMirrors];
         for (int i = 0; i < mirrorcnt; i++)
             ror_status[i] = ROR_TestGotPic(i);
@@ -4322,6 +4327,9 @@ RORHACK:
             polymer_setanimatesprites(viewProcessSprites, cX, cY, cZ, fix16_to_int(cA), gInterpolate);
 #endif
         yax_preparedrawrooms();
+#ifdef USE_OPENGL
+        polymost_beginAmbientOcclusion();
+#endif
         renderDrawRoomsQ16(cX, cY, cZ, cA, q16horiz + fix16_from_int(defaultHoriz) + deliriumPitchI, nSectnum);
         UpdateGotSectorSectorFX();
         yax_drawrooms(viewProcessSprites, nSectnum, 0, gInterpolate);
@@ -4344,6 +4352,11 @@ RORHACK:
         sub_557C4(cX, cY, gInterpolate);
         renderDrawMasks();
         gView->pSprite->cstat = bakCstat;
+
+#ifdef USE_OPENGL
+        // Finish contact shading before blur, weapons, crosshair and HUD.
+        polymost_applyAmbientOcclusion();
+#endif
 
         if (nTilt || bDelirium)
         {

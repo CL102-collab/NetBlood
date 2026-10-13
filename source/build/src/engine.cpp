@@ -10075,6 +10075,7 @@ static void PolymostDrawMasks(int32_t numSprites)
             else
             {
                 glDepthMask(GL_FALSE);
+                polymost_ambientOcclusionDepthWrite(false);
 
                 for (bssize_t k = i; k > j; k--)
                 {
@@ -10083,6 +10084,7 @@ static void PolymostDrawMasks(int32_t numSprites)
                 }
 
                 glDepthMask(GL_TRUE);
+                polymost_ambientOcclusionDepthWrite(true);
 
                 glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 
@@ -10116,6 +10118,7 @@ static void PolymostDrawMasks(int32_t numSprites)
     }
 
     glDepthMask(GL_FALSE);
+    polymost_ambientOcclusionDepthWrite(false);
 #endif
 }
 
@@ -10434,6 +10437,7 @@ killsprite:
     if (isPolymost)
     {
         glDepthMask(GL_TRUE);
+        polymost_ambientOcclusionDepthWrite(true);
         polymost_setClamp(0);
     }
 #endif

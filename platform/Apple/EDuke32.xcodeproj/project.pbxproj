@@ -591,7 +591,9 @@
 		20E014DA23BF366100CC954F /* polymost1Frag.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */; };
 		20E014DB23BF366100CC954F /* polymost1Frag.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */; };
 		20E014DC23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */; };
+		96E0923C1956130549CEC87D /* ambient_occlusion.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */; };
 		20E014DD23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */; };
+		57F41F260F93ACC7B6412BBB /* ambient_occlusion.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */; };
 		20E16CE11C7022C300EE8446 /* cmdline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CDF1C7022C300EE8446 /* cmdline.cpp */; };
 		20E16CE21C7022C300EE8446 /* cmdline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CDF1C7022C300EE8446 /* cmdline.cpp */; };
 		20E16CE81C7022DE00EE8446 /* screens.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CE61C7022DE00EE8446 /* screens.cpp */; };
@@ -1071,8 +1073,10 @@
 		20CEFB231E08A91D0077879C /* clip.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = clip.h; sourceTree = "<group>"; };
 		20E014D623BF362200CC954F /* polymost1Frag.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = polymost1Frag.glsl; sourceTree = "<group>"; };
 		20E014D723BF362200CC954F /* polymost1Vert.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = polymost1Vert.glsl; sourceTree = "<group>"; };
+		54F96C39CD43302BB6325862 /* ambient_occlusion.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = ambient_occlusion.glsl; sourceTree = "<group>"; };
 		20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = polymost1Frag.glsl.cpp; path = ../../obj/build/polymost1Frag.glsl.cpp; sourceTree = SOURCE_ROOT; };
 		20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = polymost1Vert.glsl.cpp; path = ../../obj/build/polymost1Vert.glsl.cpp; sourceTree = SOURCE_ROOT; };
+		44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ambient_occlusion.glsl.cpp; path = ../../obj/build/ambient_occlusion.glsl.cpp; sourceTree = SOURCE_ROOT; };
 		20E16CDF1C7022C300EE8446 /* cmdline.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = cmdline.cpp; sourceTree = "<group>"; };
 		20E16CE01C7022C300EE8446 /* cmdline.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = cmdline.h; sourceTree = "<group>"; };
 		20E16CE61C7022DE00EE8446 /* screens.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = screens.cpp; sourceTree = "<group>"; };
@@ -1490,8 +1494,10 @@
 				0008E8FB19F1AC540091588D /* polymost.cpp */,
 				20E014D623BF362200CC954F /* polymost1Frag.glsl */,
 				20E014D723BF362200CC954F /* polymost1Vert.glsl */,
+				54F96C39CD43302BB6325862 /* ambient_occlusion.glsl */,
 				20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */,
 				20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */,
+				44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */,
 				0008E8FC19F1AC540091588D /* pragmas.cpp */,
 				0008E9D219F1AD9B0091588D /* rev.cpp */,
 				2044C98F1E08A6BC00A8C543 /* screenshot.cpp */,
@@ -2172,6 +2178,7 @@
 			buildPhases = (
 				20E014D523BF35B800CC954F /* Run Script - Process polymost1Frag.glsl */,
 				20FBE49A23BF37A80039029B /* Run Script - Process polymost1Vert.glsl */,
+				3B7ACA05A7ECBE7980D3FC7B /* Run Script - Process ambient_occlusion.glsl */,
 				0008E6B319F1A9260091588D /* Sources */,
 				0008E6B419F1A9260091588D /* Frameworks */,
 				0008E6B519F1A9260091588D /* Headers */,
@@ -2242,6 +2249,7 @@
 			buildPhases = (
 				205B242F23BF4805003F7BB8 /* Run Script - Process polymost1Frag.glsl */,
 				205B243023BF4842003F7BB8 /* Run Script - Process polymost1Vert.glsl */,
+				79323BB074760C7A46896DB4 /* Run Script - Process ambient_occlusion.glsl */,
 				0013828A19F361B60007DA6C /* Sources */,
 				001382A919F361B60007DA6C /* Frameworks */,
 				001382AD19F361B60007DA6C /* Headers */,
@@ -2455,6 +2463,26 @@
 			shellPath = /bin/sh;
 			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
 		};
+		79323BB074760C7A46896DB4 /* Run Script - Process ambient_occlusion.glsl */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../source/build/src/ambient_occlusion.glsl",
+			);
+			name = "Run Script - Process ambient_occlusion.glsl";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/../../obj/build/ambient_occlusion.glsl.cpp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
 		20E014D523BF35B800CC954F /* Run Script - Process polymost1Frag.glsl */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -2490,6 +2518,26 @@
 			);
 			outputPaths = (
 				"$(SRCROOT)/../../obj/build/polymost1Vert.glsl.cpp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
+		3B7ACA05A7ECBE7980D3FC7B /* Run Script - Process ambient_occlusion.glsl */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../source/build/src/ambient_occlusion.glsl",
+			);
+			name = "Run Script - Process ambient_occlusion.glsl";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/../../obj/build/ambient_occlusion.glsl.cpp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -2582,6 +2630,7 @@
 				0008E98219F1AC540091588D /* texcache.cpp in Sources */,
 				0008E95B19F1AC540091588D /* cache1d.cpp in Sources */,
 				20E014DC23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */,
+				96E0923C1956130549CEC87D /* ambient_occlusion.glsl.cpp in Sources */,
 				0008E97E19F1AC540091588D /* smalltextfont.cpp in Sources */,
 				0008E97619F1AC540091588D /* polymer.cpp in Sources */,
 				20B02C4E23BF30DF00896299 /* miniz.c in Sources */,
@@ -2777,6 +2826,7 @@
 				001382A419F361B60007DA6C /* hightile.cpp in Sources */,
 				001382A519F361B60007DA6C /* dxtfilter.cpp in Sources */,
 				20E014DD23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */,
+				57F41F260F93ACC7B6412BBB /* ambient_occlusion.glsl.cpp in Sources */,
 				20A63CBD23BF23070007D142 /* cpuid.cpp in Sources */,
 				20B02C4D23BF30DF00896299 /* miniz_tdef.c in Sources */,
 				001382A619F361B60007DA6C /* lz4.c in Sources */,

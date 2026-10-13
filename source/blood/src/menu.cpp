@@ -487,7 +487,7 @@ CGameMenuItemZBool itemOptionsDisplayBoolMessages("MESSAGES:", 3, 66, 150, 180, 
 CGameMenuItemZBool itemOptionsDisplayBoolWidescreen("WIDESCREEN:", 3, 66, 160, 180, r_usenewaspect, SetWidescreen, NULL, NULL);
 CGameMenuItemSlider itemOptionsDisplayFOV("FOV:", 3, 66, 170, 180, &gFov, 75, 140, 5, SetFOV, -1, -1, kMenuSliderValue);
 #ifdef USE_OPENGL
-CGameMenuItemChain itemOptionsDisplayPolymost("POLYMOST SETUP", 3, 66, 180, 180, 0, &menuOptionsDisplayPolymost, -1, SetupVideoPolymostMenu, 0);
+CGameMenuItemChain itemOptionsDisplayPolymost("RENDERER SETUP", 3, 66, 180, 180, 0, &menuOptionsDisplayPolymost, -1, SetupVideoPolymostMenu, 0);
 #endif
 
 const char *pzRendererStrings[] = {
@@ -621,7 +621,8 @@ void UpdateDeliriumBlur(CGameMenuItemZBool *pItem);
 void UpdateYShrearing(CGameMenuItemZBool *pItem);
 #ifdef USE_OPENGL
 void PreDrawDisplayPolymost(CGameMenuItem *pItem);
-CGameMenuItemTitle itemOptionsDisplayPolymostTitle("POLYMOST SETUP", 1, 160, 20, 2038);
+void UpdateAmbientOcclusion(CGameMenuItemZBool *pItem);
+CGameMenuItemTitle itemOptionsDisplayPolymostTitle("RENDERER SETUP", 1, 160, 20, 2038);
 CGameMenuItemZCycle itemOptionsDisplayPolymostTextureMode("TEXTURE MODE:", 3, 66, 60, 180, 0, UpdateTextureMode, pzTextureModeStrings, 2, 0);
 CGameMenuItemZCycle itemOptionsDisplayPolymostAnisotropy("ANISOTROPY:", 3, 66, 70, 180, 0, UpdateAnisotropy, pzAnisotropyStrings, 6, 0);
 CGameMenuItemZBool itemOptionsDisplayPolymostTrueColorTextures("TRUE COLOR TEXTURES:", 3, 66, 80, 180, 0, UpdateTrueColorTextures, NULL, NULL);
@@ -633,6 +634,7 @@ CGameMenuItemZBool itemOptionsDisplayPolymostGlowTex("GLOW TEXTURES:", 3, 66, 13
 CGameMenuItemZBool itemOptionsDisplayPolymost3DModels("3D MODELS:", 3, 66, 140, 180, 0, Update3DModels, NULL, NULL);
 CGameMenuItemZBool itemOptionsDisplayPolymostDeliriumBlur("DELIRIUM EFFECT BLUR:", 3, 66, 150, 180, 0, UpdateDeliriumBlur, NULL, NULL);
 CGameMenuItemZBool itemOptionsDisplayPolymostYShearing("Y-SHEARING:", 3, 66, 160, 180, 0, UpdateYShrearing, NULL, NULL);
+CGameMenuItemZBool itemOptionsDisplayAmbientOcclusion("AMBIENT OCCLUSION:", 3, 66, 170, 180, 1, UpdateAmbientOcclusion, NULL, NULL);
 #endif
 
 void UpdateSoundToggle(CGameMenuItemZBool *pItem);
@@ -1409,6 +1411,7 @@ void SetupOptionsMenu(void)
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayPolymost3DModels, false);
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayPolymostDeliriumBlur, false);
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayPolymostYShearing, false);
+    menuOptionsDisplayPolymost.Add(&itemOptionsDisplayAmbientOcclusion, false);
     menuOptionsDisplayPolymost.Add(&itemBloodQAV, false);
 
     itemOptionsDisplayPolymostTexQuality.pPreDrawCallback = PreDrawDisplayPolymost;
@@ -1416,6 +1419,7 @@ void SetupOptionsMenu(void)
     itemOptionsDisplayPolymostTexCache.pPreDrawCallback = PreDrawDisplayPolymost;
     itemOptionsDisplayPolymostDetailTex.pPreDrawCallback = PreDrawDisplayPolymost;
     itemOptionsDisplayPolymostGlowTex.pPreDrawCallback = PreDrawDisplayPolymost;
+    itemOptionsDisplayAmbientOcclusion.pPreDrawCallback = PreDrawDisplayPolymost;
 #endif
 
     menuOptionsSound.Add(&itemOptionsSoundTitle, false);
@@ -2180,6 +2184,7 @@ void SetupVideoPolymostMenu(CGameMenuItemChain *pItem)
     itemOptionsDisplayPolymost3DModels.at20 = usemodels;
     itemOptionsDisplayPolymostDeliriumBlur.at20 = gDeliriumBlur;
     itemOptionsDisplayPolymostYShearing.at20 = r_yshearing;
+    itemOptionsDisplayAmbientOcclusion.at20 = r_ambientocclusion;
 }
 
 void UpdateTextureMode(CGameMenuItemZCycle *pItem)
@@ -2252,6 +2257,12 @@ void UpdateYShrearing(CGameMenuItemZBool *pItem)
     r_yshearing = pItem->at20;
 }
 
+void UpdateAmbientOcclusion(CGameMenuItemZBool *pItem)
+{
+    if (videoUsesPolymost())
+        r_ambientocclusion = pItem->at20;
+}
+
 void PreDrawDisplayPolymost(CGameMenuItem *pItem)
 {
     if (pItem == &itemOptionsDisplayPolymostTexQuality)
@@ -2264,6 +2275,11 @@ void PreDrawDisplayPolymost(CGameMenuItem *pItem)
         pItem->bEnable = usehightile;
     else if (pItem == &itemOptionsDisplayPolymostGlowTex)
         pItem->bEnable = usehightile;
+    else if (pItem == &itemOptionsDisplayAmbientOcclusion)
+    {
+        pItem->bEnable = videoUsesPolymost();
+        itemOptionsDisplayAmbientOcclusion.at20 = r_ambientocclusion;
+    }
 }
 #endif
 
