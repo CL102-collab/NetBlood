@@ -646,7 +646,10 @@ void polymost_applyAmbientOcclusion()
     float const nearClip = projection[14] / (-1.f - projection[10]);
     if (viewport[2] <= 0 || viewport[3] <= 0 || nearClip <= 0.f ||
         projection[0] <= 0.f || projection[5] <= 0.f) return;
-    float const radius = nearClip * 3.f, strength = 2.f, bias = 0.06f;
+    // Broader, stronger contact shadows remain visible against Blood's dark
+    // textures. Both backends use these same parameters and the shader's
+    // darkening cap, so flat surfaces retain their original lighting.
+    float const radius = nearClip * 6.f, strength = 6.f, bias = 0.06f;
 #ifdef USE_VULKAN
     if (videoGetRenderMode() == REND_VULKAN)
     {
