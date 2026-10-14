@@ -21,8 +21,13 @@ Ken Silverman's official web site: http://www.advsys.net/ken
 #include "texcache.h"
 #include "hash.h"
 #include "native_renderer.h"
+#include "vulkan_renderer.h"
+#ifdef USE_VULKAN
+#include "vulkan_lighting.h"
+#endif
 
 #include <string>
+#include <cmath>
 
 #ifdef POLYMOST2
 int32_t r_enablepolymost2 = 0;
@@ -36,6 +41,7 @@ int32_t r_detailmapping = 1;
 
 int32_t r_animsmoothing = 1;
 int32_t r_ambientocclusion = 1;
+int32_t r_realtimelighting = 1;
 int32_t r_downsize;
 int32_t r_downsizevar = -1;
 int32_t r_drawpolyVertsBufferLength = 30000;
@@ -194,6 +200,11 @@ static GLuint polymost1CurrentShaderProgramID = 0;
 static GLuint polymost1BasicShaderProgramID = 0;
 static GLuint polymost1ExtendedShaderProgramID = 0;
 static bool ambientOcclusionWorld = false;
+#ifdef USE_VULKAN
+static bool realtimeLightingView = false;
+static float realtimeLightingEyeToWorld[16], realtimeLightingProjection[16];
+static int realtimeLightingViewport[4];
+#endif
 static bool ambientOcclusionFailed = false;
 static GLuint ambientOcclusionTexture = 0, ambientOcclusionFramebuffer = 0, ambientOcclusionProgram = 0;
 static int ambientOcclusionWidth = 0, ambientOcclusionHeight = 0;
@@ -521,6 +532,9 @@ static void polymost_resetAmbientOcclusion()
 
 void polymost_cancelAmbientOcclusion()
 {
+#ifdef USE_VULKAN
+    realtimeLightingView = false;
+#endif
     if (!ambientOcclusionWorld) return;
     ambientOcclusionWorld = false;
     buildgl_setDisabled(GL_STENCIL_TEST);
@@ -532,7 +546,13 @@ void polymost_cancelAmbientOcclusion()
 void polymost_beginAmbientOcclusion()
 {
     polymost_cancelAmbientOcclusion();
-    if (!r_ambientocclusion || !videoUsesPolymost() || ambientOcclusionFailed) return;
+    bool lighting = false;
+#ifdef USE_VULKAN
+    lighting = r_realtimelighting && videoGetRenderMode() == REND_VULKAN;
+#endif
+    // The high stencil bit is also the lighting mask. Keep recording it with
+    // AO disabled, so lighting never reaches skies, portals or the HUD.
+    if ((!r_ambientocclusion && !lighting) || !videoUsesPolymost() || (ambientOcclusionFailed && !lighting)) return;
     ambientOcclusionWorld = true;
     // Mirrors have already finished. Reserve only the high stencil bit, so
     // their low-bit clip masks remain intact until the next mirror prepass.
@@ -549,6 +569,68 @@ void polymost_ambientOcclusionDepthWrite(bool enabled)
     // A translucent particle must not make the sky/depth beneath it eligible.
     if (ambientOcclusionWorld) glStencilMask(enabled ? 128 : 0);
 }
+
+#ifdef USE_VULKAN
+static void polymost_captureLightingView()
+{
+    if (!ambientOcclusionWorld || !r_realtimelighting || videoGetRenderMode() != REND_VULKAN || inpreparemirror) return;
+#ifdef YAX_ENABLE
+    if (yax_globallev != YAX_MAXDRAWS) return;
+#endif
+    // drawpoly converts the Build camera basis to viewport-dependent eye units
+    // before the shader applies pitch and tilt. Invert that exact transform;
+    // distances and shadow geometry must stay in world units across FOV changes.
+    float const scale = 1.f / (gxyaspect * gyxscale * 1024.f);
+    float worldToEye[16] = {
+        -gsinang * scale, 0.f, gcosang2 * scale, 0.f,
+         gcosang * scale, 0.f, gsinang2 * scale, 0.f,
+         0.f, float(-16.f / (gxyaspect * ghalfx * 1024.f)), 0.f, 0.f,
+         0.f, 0.f, 0.f, 1.f,
+    };
+    float pitch[16] = {
+        1.f, 0.f, 0.f, 0.f,
+        0.f, gchang, -gshang * gvrcorrection, 0.f,
+        0.f, gshang / gvrcorrection, gchang, 0.f,
+        0.f, 0.f, 0.f, 1.f,
+    };
+    float tilt[16] = {
+        gctang, -gstang, 0.f, 0.f,
+        gstang, gctang, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f,
+        0.f, 0.f, 0.f, 1.f,
+    };
+    // multiplyMatrix4f uses row-major arithmetic on column-major GL arrays,
+    // so these calls produce tilt * pitch * worldToEye in shader convention.
+    multiplyMatrix4f(worldToEye, pitch);
+    multiplyMatrix4f(worldToEye, tilt);
+    double const a = worldToEye[0], b = worldToEye[4], c = worldToEye[8];
+    double const d = worldToEye[1], e = worldToEye[5], f = worldToEye[9];
+    double const g = worldToEye[2], h = worldToEye[6], i = worldToEye[10];
+    double const determinant = a * (e*i-f*h) - b * (d*i-f*g) + c * (d*h-e*g);
+    if (!std::isfinite(determinant) || determinant == 0.0) return;
+    double const inverse = 1.0 / determinant;
+    float const eyeToWorld[16] = {
+        float((e*i-f*h)*inverse), float((f*g-d*i)*inverse), float((d*h-e*g)*inverse), 0.f,
+        float((c*h-b*i)*inverse), float((a*i-c*g)*inverse), float((b*g-a*h)*inverse), 0.f,
+        float((b*f-c*e)*inverse), float((c*d-a*f)*inverse), float((a*e-b*d)*inverse), 0.f,
+        float(globalposx), float(globalposy), float(globalposz) / 16.f, 1.f,
+    };
+    Bmemcpy(realtimeLightingEyeToWorld, eyeToWorld, sizeof(eyeToWorld));
+    glGetFloatv(GL_PROJECTION_MATRIX, realtimeLightingProjection);
+    glGetIntegerv(GL_VIEWPORT, realtimeLightingViewport);
+    realtimeLightingView = true;
+}
+
+void polymost_applyRealtimeLighting(VulkanLight const *lights, unsigned lightCount)
+{
+    if (!realtimeLightingView || !r_realtimelighting || videoGetRenderMode() != REND_VULKAN || !lightCount) return;
+    lightCount = min(lightCount, kVulkanMaxLights);
+    static std::vector<VulkanShadowVertex> shadowVertices;
+    vulkanBuildShadowMesh(lights, lightCount, shadowVertices);
+    vulkanRealtimeLighting(realtimeLightingProjection, realtimeLightingEyeToWorld, realtimeLightingViewport,
+                           lights, lightCount, shadowVertices.data(), unsigned(shadowVertices.size()));
+}
+#endif
 
 #ifndef EDUKE32_GLES
 static bool polymost_ambientOcclusionFramebufferSupported()
@@ -7530,6 +7612,9 @@ void polymost_drawrooms()
 
     grhalfxdown10x = grhalfxdown10;
 
+#ifdef USE_VULKAN
+    polymost_captureLightingView();
+#endif
     if (inpreparemirror)
     {
         // see engine.c: INPREPAREMIRROR_NO_BUNCHES
@@ -10477,6 +10562,7 @@ void polymost_initosdfuncs(void)
 #endif
         { "r_animsmoothing","enable/disable model animation smoothing",(void *) &r_animsmoothing, CVAR_BOOL, 0, 1 },
         { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost, Vulkan and Metal", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
+        { "r_realtimelighting", "enable/disable Vulkan realtime lighting and shadows", (void *) &r_realtimelighting, CVAR_BOOL, 0, 1 },
         { "r_anisotropy", "changes the OpenGL texture anisotropy setting (requires r_useindexedcolortextures to be off)", (void *) &glanisotropy, CVAR_INT|CVAR_FUNCPTR|CVAR_RESTARTVID, 1, 16 },
         { "r_downsize","controls downsizing factor (quality) for hires textures",(void *) &r_downsize, CVAR_INT|CVAR_FUNCPTR, 0, 5 },
         { "r_finishbeforeswap", "run glFinish() before swapping when 'r_glfinish' is 1 and when not using KMT vsync", (void *) &r_finishbeforeswap, CVAR_BOOL, 0, 1 },

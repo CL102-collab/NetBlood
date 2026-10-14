@@ -630,6 +630,7 @@ void UpdateYShrearing(CGameMenuItemZBool *pItem);
 #ifdef USE_OPENGL
 void PreDrawDisplayPolymost(CGameMenuItem *pItem);
 void UpdateAmbientOcclusion(CGameMenuItemZBool *pItem);
+void UpdateRealtimeLighting(CGameMenuItemZBool *pItem);
 CGameMenuItemTitle itemOptionsDisplayPolymostTitle("RENDERER SETUP", 1, 160, 20, 2038);
 CGameMenuItemZCycle itemOptionsDisplayPolymostTextureMode("TEXTURE MODE:", 3, 66, 60, 180, 0, UpdateTextureMode, pzTextureModeStrings, 2, 0);
 CGameMenuItemZCycle itemOptionsDisplayPolymostAnisotropy("ANISOTROPY:", 3, 66, 70, 180, 0, UpdateAnisotropy, pzAnisotropyStrings, 6, 0);
@@ -643,6 +644,7 @@ CGameMenuItemZBool itemOptionsDisplayPolymost3DModels("3D MODELS:", 3, 66, 140, 
 CGameMenuItemZBool itemOptionsDisplayPolymostDeliriumBlur("DELIRIUM EFFECT BLUR:", 3, 66, 150, 180, 0, UpdateDeliriumBlur, NULL, NULL);
 CGameMenuItemZBool itemOptionsDisplayPolymostYShearing("Y-SHEARING:", 3, 66, 160, 180, 0, UpdateYShrearing, NULL, NULL);
 CGameMenuItemZBool itemOptionsDisplayAmbientOcclusion("AMBIENT OCCLUSION:", 3, 66, 170, 180, 1, UpdateAmbientOcclusion, NULL, NULL);
+CGameMenuItemZBool itemOptionsDisplayRealtimeLighting("LIGHTING AND SHADOWS:", 3, 66, 180, 180, 1, UpdateRealtimeLighting, NULL, NULL);
 #endif
 
 void UpdateSoundToggle(CGameMenuItemZBool *pItem);
@@ -1471,6 +1473,7 @@ void SetupOptionsMenu(void)
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayPolymostDeliriumBlur, false);
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayPolymostYShearing, false);
     menuOptionsDisplayPolymost.Add(&itemOptionsDisplayAmbientOcclusion, false);
+    menuOptionsDisplayPolymost.Add(&itemOptionsDisplayRealtimeLighting, false);
     menuOptionsDisplayPolymost.Add(&itemBloodQAV, false);
 
     itemOptionsDisplayPolymostTexQuality.pPreDrawCallback = PreDrawDisplayPolymost;
@@ -1479,6 +1482,7 @@ void SetupOptionsMenu(void)
     itemOptionsDisplayPolymostDetailTex.pPreDrawCallback = PreDrawDisplayPolymost;
     itemOptionsDisplayPolymostGlowTex.pPreDrawCallback = PreDrawDisplayPolymost;
     itemOptionsDisplayAmbientOcclusion.pPreDrawCallback = PreDrawDisplayPolymost;
+    itemOptionsDisplayRealtimeLighting.pPreDrawCallback = PreDrawDisplayPolymost;
 #endif
 
     menuOptionsSound.Add(&itemOptionsSoundTitle, false);
@@ -2244,6 +2248,7 @@ void SetupVideoPolymostMenu(CGameMenuItemChain *pItem)
     itemOptionsDisplayPolymostDeliriumBlur.at20 = gDeliriumBlur;
     itemOptionsDisplayPolymostYShearing.at20 = r_yshearing;
     itemOptionsDisplayAmbientOcclusion.at20 = r_ambientocclusion;
+    itemOptionsDisplayRealtimeLighting.at20 = r_realtimelighting;
 }
 
 void UpdateTextureMode(CGameMenuItemZCycle *pItem)
@@ -2322,6 +2327,12 @@ void UpdateAmbientOcclusion(CGameMenuItemZBool *pItem)
         r_ambientocclusion = pItem->at20;
 }
 
+void UpdateRealtimeLighting(CGameMenuItemZBool *pItem)
+{
+    if (videoGetRenderMode() == REND_VULKAN)
+        r_realtimelighting = pItem->at20;
+}
+
 void PreDrawDisplayPolymost(CGameMenuItem *pItem)
 {
     if (pItem == &itemOptionsDisplayPolymostTexQuality)
@@ -2338,6 +2349,11 @@ void PreDrawDisplayPolymost(CGameMenuItem *pItem)
     {
         pItem->bEnable = videoUsesPolymost();
         itemOptionsDisplayAmbientOcclusion.at20 = r_ambientocclusion;
+    }
+    else if (pItem == &itemOptionsDisplayRealtimeLighting)
+    {
+        pItem->bEnable = videoGetRenderMode() == REND_VULKAN;
+        itemOptionsDisplayRealtimeLighting.at20 = r_realtimelighting;
     }
 }
 #endif

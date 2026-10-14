@@ -1101,6 +1101,299 @@ void ambientOcclusion(SDL_Window *window)
     }
 }
 
+// The receiver and caster have separate projections from the camera and point
+// light. In the offscreen case the complete caster lies outside the camera's
+// frustum, but still blocks rays to the visible wall. Screen-space occlusion
+// cannot satisfy this test.
+struct LightingScene
+{
+    bool apply = true, shadows = true, eligible = true, hud = false, inset = false;
+    bool offscreen = false, emptyMesh = false, zeroLights = false, zeroColor = false;
+    bool movedLight = false, translatedWorld = false;
+};
+
+void lightingFrame(int width, int height, LightingScene const &scene)
+{
+    VulkanDrawState state = defaults(width, height);
+    float const background[] = { 0.12f, 0.23f, 0.34f, 0.7f };
+    vulkanClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                background, 1.f, 0, state);
+    state.depthTest = true;
+    state.stencilTest = true;
+    state.stencilReference = scene.eligible ? 128 : 0;
+    state.stencilWriteMask = 128;
+    state.stencilPass = GL_REPLACE;
+    if (scene.inset)
+    {
+        state.viewport[0] = width / 8;
+        state.viewport[1] = height / 8;
+        state.viewport[2] = width * 3 / 4;
+        state.viewport[3] = height * 3 / 4;
+    }
+    std::fill(state.uniforms.projection, state.uniforms.projection + 16, 0.f);
+    state.uniforms.projection[0] = state.uniforms.projection[5] = 1.f;
+    state.uniforms.projection[10] = 17.f / 15.f;
+    state.uniforms.projection[11] = 1.f;
+    state.uniforms.projection[14] = -32.f / 15.f;
+    float eyeToWorld[16] = {};
+    for (unsigned i = 0; i < 4; ++i) eyeToWorld[i * 5] = 1.f;
+    if (scene.translatedWorld)
+    {
+        eyeToWorld[12] = 8.f;
+        eyeToWorld[13] = -3.f;
+        eyeToWorld[14] = 12.f;
+    }
+    std::vector<VulkanShadowVertex> shadowMesh;
+    auto quad = [&state, &shadowMesh, &eyeToWorld](float left, float right, float bottom, float top, float z)
+    {
+        float const positions[4][3] = { {left, bottom, z}, {right, bottom, z},
+                                         {right, top, z}, {left, top, z} };
+        unsigned const indices[] = {0, 2, 1, 0, 3, 2};
+        VulkanVertex vertices[6] = {};
+        for (unsigned i = 0; i < 6; ++i)
+        {
+            VulkanShadowVertex shadow = {};
+            for (unsigned axis = 0; axis < 3; ++axis)
+            {
+                vertices[i].position[axis] = positions[indices[i]][axis];
+                shadow.position[axis] = positions[indices[i]][axis] + eyeToWorld[12 + axis];
+            }
+            vertices[i].position[3] = 1.f;
+            vertices[i].color[0] = 0.35f;
+            vertices[i].color[1] = 0.45f;
+            vertices[i].color[2] = 0.55f;
+            vertices[i].color[3] = 0.7f;
+            shadowMesh.push_back(shadow);
+        }
+        vulkanDraw(vertices, 6, state);
+    };
+    quad(-4.f, 4.f, -4.f, 4.f, 4.f);
+    if (scene.offscreen) quad(-4.1f, -3.1f, -0.4f, 0.4f, 1.5f);
+    else quad(-0.75f, -0.25f, -0.5f, 0.5f, 2.f);
+    VulkanLight light = {};
+    light.positionRadius[0] = scene.offscreen ? -6.f : (scene.movedLight ? 1.f : -1.f);
+    light.positionRadius[2] = scene.offscreen ? 0.f : 1.f;
+    light.positionRadius[3] = scene.offscreen ? 16.f : 8.f;
+    for (unsigned axis = 0; axis < 3; ++axis) light.positionRadius[axis] += eyeToWorld[12 + axis];
+    light.color[0] = scene.zeroColor ? 0.f : 0.8f;
+    light.color[1] = scene.zeroColor ? 0.f : 0.5f;
+    light.color[2] = scene.zeroColor ? 0.f : 0.2f;
+    light.color[3] = 1.f;
+    if (scene.apply)
+        require(vulkanRealtimeLighting(state.uniforms.projection, eyeToWorld, state.viewport,
+                                       scene.zeroLights ? nullptr : &light, scene.zeroLights ? 0 : 1,
+                                       scene.emptyMesh ? nullptr : shadowMesh.data(),
+                                       scene.emptyMesh ? 0 : static_cast<unsigned>(shadowMesh.size()), scene.shadows),
+                "apply native point lighting and geometry shadows");
+    if (scene.hud)
+    {
+        state = defaults(width, height);
+        state.scissorTest = true;
+        state.scissor[0] = width / 4;
+        state.scissor[1] = height / 8;
+        state.scissor[2] = width / 2;
+        state.scissor[3] = height / 8;
+        triangle(state, 1.f, 1.f, 1.f);
+        state.scissor[1] += height / 8;
+        triangle(state, 1.f, 0.f, 1.f);
+    }
+}
+
+std::vector<unsigned char> lightingImage(int width, int height)
+{
+    std::vector<unsigned char> image(static_cast<size_t>(width) * height * 4);
+    require(vulkanReadPixels(0, 0, width, height, image.data()), "read lighting comparison image");
+    return image;
+}
+
+void lightingWriteImage(char const *label, int width, int height, std::vector<unsigned char> const &image)
+{
+    char const *directory = std::getenv("NBLOOD_LIGHTING_TEST_OUTPUT");
+    if (!directory || !*directory) return;
+    std::string const path = std::string(directory) + "/" + label + ".ppm";
+    FILE *file = std::fopen(path.c_str(), "wb");
+    require(file != nullptr, "open lighting evidence image in the supplied existing directory");
+    std::fprintf(file, "P6\n%d %d\n255\n", width, height);
+    for (int y = height - 1; y >= 0; --y)
+        for (int x = 0; x < width; ++x)
+            require(std::fwrite(&image[(size_t(y) * width + x) * 4], 1, 3, file) == 3,
+                    "write lighting evidence pixels");
+    require(std::fclose(file) == 0, "close lighting evidence image");
+}
+
+void lightingSceneChecks(int width, int height)
+{
+    auto capture = [width, height](LightingScene const &scene)
+    {
+        lightingFrame(width, height, scene);
+        return lightingImage(width, height);
+    };
+    LightingScene scene;
+    scene.apply = false;
+    auto const unlit = capture(scene);
+    scene.apply = true;
+    scene.shadows = false;
+    auto const lit = capture(scene);
+    scene.shadows = true;
+    auto const shadowed = capture(scene);
+    unsigned brightened = 0, blocked = 0, unaffected = 0;
+    for (size_t i = 0; i < unlit.size(); i += 4)
+    {
+        require(lit[i + 3] == unlit[i + 3] && shadowed[i + 3] == unlit[i + 3],
+                "lighting and shadows preserve destination alpha");
+        for (unsigned c = 0; c < 3; ++c)
+        {
+            require(lit[i + c] + 1 >= unlit[i + c], "point lighting never darkens the base material");
+            require(shadowed[i + c] <= lit[i + c] + 1, "shadows only reduce the added light");
+            require(shadowed[i + c] + 1 >= unlit[i + c], "shadows preserve the base material lighting");
+        }
+        if (lit[i] >= unlit[i] + 3) ++brightened;
+        if (shadowed[i] + 3 <= lit[i]) ++blocked;
+        if (lit[i] >= unlit[i] + 3 && std::abs(int(lit[i]) - int(shadowed[i])) <= 1) ++unaffected;
+    }
+    require(brightened > unsigned(width * height / 20), "point light visibly illuminates the receiver");
+    require(blocked > unsigned(width * height / 400), "geometry blocks point light on visible receiver pixels");
+    require(unaffected > unsigned(width * height / 20), "unblocked receiver retains its point lighting");
+    std::printf("PASS: lighting %dx%d: %u illuminated, %u shadowed, %u unblocked pixels\n",
+                width, height, brightened, blocked, unaffected);
+    if (width == 160)
+    {
+        lightingWriteImage("unlit", width, height, unlit);
+        lightingWriteImage("lit", width, height, lit);
+        lightingWriteImage("shadowed", width, height, shadowed);
+    }
+    scene.movedLight = true;
+    auto const moved = capture(scene);
+    unsigned movedPixels = 0;
+    for (size_t i = 0; i < moved.size(); i += 4)
+        if (std::abs(int(moved[i]) - int(shadowed[i])) >= 3) ++movedPixels;
+    require(movedPixels > unsigned(width * height / 20), "moving the point light updates illumination and shadows");
+    scene = LightingScene();
+    scene.shadows = false;
+    require(capture(scene) == lit, "disabling shadows removes the previous shadow atlas exactly");
+    scene.shadows = true;
+    scene.emptyMesh = true;
+    require(capture(scene) == lit, "an empty caster mesh does not reuse stale shadows");
+    scene = LightingScene();
+    scene.apply = false;
+    require(capture(scene) == unlit, "disabling lighting restores exact original pixels after prior use");
+    scene.apply = true;
+    scene.zeroLights = true;
+    require(capture(scene) == unlit, "zero lights is an exact bypass after prior use");
+    scene.zeroLights = false;
+    scene.zeroColor = true;
+    require(capture(scene) == unlit, "zero-intensity light leaves the base material unchanged");
+    scene.zeroColor = false;
+    scene.eligible = false;
+    require(capture(scene) == unlit, "stencil-ineligible content receives no point lighting or shadows");
+
+    scene = LightingScene();
+    scene.translatedWorld = true;
+    auto const translated = capture(scene);
+    unsigned translatedChanges = 0, translationError = 0;
+    for (size_t i = 0; i < translated.size(); ++i)
+    {
+        unsigned const error = unsigned(std::abs(int(translated[i]) - int(shadowed[i])));
+        translationError += error;
+        if (error > 1) ++translatedChanges;
+    }
+    std::printf("Lighting world translation: %u changed channels, aggregate error %u\n",
+                translatedChanges, translationError);
+    // Translating a shadow edge across floating-point coordinates can select
+    // an adjacent PCF texel. Bound that small edge variation, while rejecting a
+    // misplaced light or a camera/world reconstruction mismatch.
+    require(translatedChanges < translated.size() / 200 && translationError < translated.size() / 20,
+            "camera, light and shadow mesh world translation preserves the rendered scene");
+
+    scene = LightingScene();
+    scene.offscreen = true;
+    scene.shadows = false;
+    auto const offscreenLit = capture(scene);
+    scene.shadows = true;
+    auto const offscreenShadow = capture(scene);
+    unsigned offscreenBlocked = 0;
+    for (size_t i = 0; i < offscreenLit.size(); i += 4)
+        if (offscreenShadow[i] + 2 <= offscreenLit[i]) ++offscreenBlocked;
+    require(offscreenBlocked > unsigned(width * height / 200),
+            "a caster wholly outside the camera frustum shadows the visible receiver");
+    if (width == 160)
+    {
+        lightingWriteImage("offscreen-lit", width, height, offscreenLit);
+        lightingWriteImage("offscreen-shadowed", width, height, offscreenShadow);
+    }
+
+    scene = LightingScene();
+    scene.hud = true;
+    scene.apply = false;
+    auto const hudOff = capture(scene);
+    scene.apply = true;
+    auto const hudOn = capture(scene);
+    for (int y = height / 8; y < (height / 8) * 3; ++y)
+        for (int x = width / 4; x < width * 3 / 4; ++x)
+            for (unsigned c = 0; c < 4; ++c)
+                require(hudOn[(size_t(y) * width + x) * 4 + c] == hudOff[(size_t(y) * width + x) * 4 + c],
+                        "HUD drawn after lighting remains byte-for-byte unchanged");
+    scene = LightingScene();
+    scene.inset = true;
+    scene.apply = false;
+    auto const insetOff = capture(scene);
+    scene.apply = true;
+    auto const insetOn = capture(scene);
+    unsigned insetChanges = 0;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+        {
+            size_t const offset = (size_t(y) * width + x) * 4;
+            bool const outside = x < width / 8 || x >= width / 8 + width * 3 / 4 ||
+                                 y < height / 8 || y >= height / 8 + height * 3 / 4;
+            for (unsigned c = 0; c < 4; ++c)
+                if (outside)
+                    require(insetOn[offset + c] == insetOff[offset + c], "lighting respects the supplied world viewport");
+            if (!outside && insetOn[offset] >= insetOff[offset] + 3) ++insetChanges;
+        }
+    require(insetChanges > unsigned(width * height / 40), "offset viewport still receives point lighting");
+    std::puts("PASS: lighting motion, shadow bypass, offscreen caster, world transform, alpha, mask, HUD and viewport");
+}
+
+void realtimeLighting(SDL_Window *window)
+{
+    for (char const *slots : { "1", "2", "3" })
+    {
+        require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", slots, 1) == 0, "configure lighting submission slots");
+        require(SDL_setenv("NBLOOD_VULKAN_WORKERS", slots, 1) == 0, "configure lighting recording workers");
+        SDL_SetWindowSize(window, 160, 120);
+        SDL_PumpEvents();
+        require(vulkanCreate(window, 160, 120, 0), "create lighting renderer");
+        require(SDL_GL_GetCurrentContext() == nullptr, "native lighting uses no OpenGL context");
+        lightingSceneChecks(160, 120);
+        LightingScene scene;
+        scene.hud = true;
+        lightingFrame(160, 120, scene);
+        auto const expected = lightingImage(160, 120);
+        VulkanSubmissionStats before = {}, after = {};
+        vulkanGetSubmissionStats(&before);
+        for (unsigned frame = 0; frame < 12; ++frame)
+        {
+            // Alternate the light so resources copied into a pending frame
+            // cannot silently be overwritten by the next frame's uniforms.
+            scene.movedLight = (frame & 1) == 0;
+            lightingFrame(160, 120, scene);
+            require(vulkanPresent(), "present lighting frames without CPU readback or Finish");
+        }
+        vulkanGetSubmissionStats(&after);
+        require(before.queueIdleWaits == after.queueIdleWaits && before.deviceIdleWaits == after.deviceIdleWaits,
+                "steady-state lighting does not idle the queue or device");
+        require(lightingImage(160, 120) == expected, "lighting results remain exact across queued light changes");
+        SDL_SetWindowSize(window, 240, 180);
+        SDL_PumpEvents();
+        require(vulkanResize(240, 180), "recreate lighting targets after resize");
+        lightingSceneChecks(240, 180);
+        require(vulkanPresent(), "present resized lighting targets");
+        vulkanDestroy();
+        std::printf("PASS: native lighting with %s submission slots, queued frames, resize and teardown\n", slots);
+    }
+}
+
 void automaticWorkers(SDL_Window *window)
 {
     auto beginOverlapCheck = [](unsigned workers) {
@@ -1337,9 +1630,10 @@ int main(int argc, char **argv)
     bool const missingLoader = argc == 2 && std::strcmp(argv[1], "--missing-loader") == 0;
     bool const teardownOnly = argc == 2 && std::strcmp(argv[1], "--teardown-idle-only") == 0;
     bool const ambientOnly = argc == 2 && std::strcmp(argv[1], "--ambient-occlusion-only") == 0;
-    if (argc > 1 && !teardownOnly && !ambientOnly && !missingLoader)
+    bool const lightingOnly = argc == 2 && std::strcmp(argv[1], "--realtime-lighting-only") == 0;
+    if (argc > 1 && !teardownOnly && !ambientOnly && !lightingOnly && !missingLoader)
     {
-        std::fprintf(stderr, "Usage: %s [--teardown-idle-only|--ambient-occlusion-only|--missing-loader]\n", argv[0]);
+        std::fprintf(stderr, "Usage: %s [--teardown-idle-only|--ambient-occlusion-only|--realtime-lighting-only|--missing-loader]\n", argv[0]);
         return 2;
     }
     if (SDL_Init(SDL_INIT_VIDEO))
@@ -1388,6 +1682,14 @@ int main(int argc, char **argv)
         std::puts("PASS: targeted native Vulkan ambient occlusion checks");
         return 0;
     }
+    if (lightingOnly)
+    {
+        realtimeLighting(window);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::puts("PASS: targeted native Vulkan point lighting and shadow checks");
+        return 0;
+    }
     dispatchFailures(window);
     require(SDL_setenv("NBLOOD_VULKAN_WORKERS", "1", 1) == 0, "configure synchronous recording reference");
     require(SDL_setenv("NBLOOD_VULKAN_FRAMES_IN_FLIGHT", "1", 1) == 0, "configure one-slot submission reference");
@@ -1430,6 +1732,7 @@ int main(int argc, char **argv)
     submissionFailures(window);
     teardownIdleFailure(window);
     ambientOcclusion(window);
+    realtimeLighting(window);
     SDL_DestroyWindow(window);
     SDL_Quit();
     std::puts("PASS: all native Vulkan backend regression checks");

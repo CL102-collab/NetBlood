@@ -170,6 +170,9 @@
     <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\source\build\src\vulkan_lighting.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\source\build\src\wiibits.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -536,10 +539,19 @@
     <ClInclude Include="..\..\source\build\include\vulkan_renderer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\source\build\include\vulkan_lighting.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\source\build\src\vulkan_polymost_spv.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\source\build\src\ambient_occlusion_vk_spv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\build\src\realtime_lighting_vk_spv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\build\src\realtime_shadow_vk_spv.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <None Include="..\..\source\build\src\vulkan_polymost.vert">
@@ -552,6 +564,18 @@
       <Filter>Source Files</Filter>
     </None>
     <None Include="..\..\source\build\src\ambient_occlusion_vk.frag">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="..\..\source\build\src\realtime_lighting_vk.vert">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="..\..\source\build\src\realtime_lighting_vk.frag">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="..\..\source\build\src\realtime_shadow_vk.vert">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="..\..\source\build\src\realtime_shadow_vk.frag">
       <Filter>Source Files</Filter>
     </None>
   </ItemGroup>

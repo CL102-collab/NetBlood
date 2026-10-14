@@ -319,7 +319,7 @@ engine_excl := \
     $(engine_editor_objs) \
 
 ifeq (0,$(USE_VULKAN))
-    engine_excl += vulkan_renderer.cpp
+    engine_excl += vulkan_renderer.cpp vulkan_lighting.cpp
 endif
 ifeq (00,$(USE_VULKAN)$(USE_METAL))
     engine_excl += native_renderer.cpp native_frontend.cpp

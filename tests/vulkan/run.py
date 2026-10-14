@@ -196,7 +196,7 @@ def write_console_files(runtime, map_name, sequence, final_capture_only=False):
     # compression otherwise changes model skin colors before rasterization.
     (runtime / 'autoexec.cfg').write_text(
         'r_maxfps 60\nhud_showmaptitle 0\nr_models 1\nr_voxels 1\nr_hightile 1\n'
-        'r_texcompr 0\nr_texcache 0\n'
+        'r_texcompr 0\nr_texcache 0\nr_realtimelighting 0\n'
         'bind I norepeat "exec prepare.cfg"\n'
         'bind O norepeat "exec capture-0.cfg"\n'
         'bind P norepeat "exec capture-1.cfg"\n'

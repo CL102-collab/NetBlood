@@ -59,7 +59,8 @@ off again. The scene must visibly change when AO is enabled and return exactly
 to its original image when disabled. Both opaque status panels must stay unchanged.
 It restarts the game to verify the saved off setting is restored, and compares
 Polymost/Vulkan screenshots for all three states using the existing rendering
-suite's tolerances. Screenshots, difference images, isolated configurations,
+suite's tolerances. Vulkan's separate point lighting is disabled during these AO
+comparisons. Screenshots, difference images, isolated configurations,
 logs, the tested executable's hash, and `results.json` are retained.
 
 `--map E1M1` selects the scene, `--binary` selects the executable, and `--output`

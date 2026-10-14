@@ -117,7 +117,8 @@ blur also currently requires a framebuffer readback while active.
 
 Comparisons disable texture compression and its disk cache in both renderers
 (`r_texcompr 0`, `r_texcache 0`), so OpenGL DXT quantization does not alter source
-texels relative to Vulkan. They reject a mean RGB difference greater than 2 on the
+texels relative to Vulkan. They also disable Vulkan's additional point lighting
+(`r_realtimelighting 0`) to compare the shared base rendering. They reject a mean RGB difference greater than 2 on the
 0–255 channel scale, or more than 5% of pixels differing by over 16 in any channel.
 `--max-mean-error` and `--max-changed-fraction` expose these tolerances. Review
 the difference images as well: a passing aggregate threshold does not prove
@@ -221,3 +222,23 @@ injected submission/acquisition failures exercise resource ownership and recover
 `backend-test.sh --teardown-idle-only` isolates the exceptional device-idle error
 recovery test, which requires a queue-idle fallback before freeing resources.
 Healthy-path game checks continue to require zero queue-idle waits.
+
+`backend-test.sh --realtime-lighting-only` isolates point lighting and geometry
+shadow checks without game assets. It renders constant-colored receiving planes
+and shadow casters, including a caster entirely outside the camera frustum. It
+checks visible illumination, localized shadows, moving lights, camera/world
+translation, exact lighting and shadow bypass, empty light/caster lists, alpha
+and stencil preservation, post-pass HUD drawing, and inset viewports. Repeated
+frames with changing light positions run with one, two, and three submission
+slots, followed by resizing and teardown. The tests require no steady-state
+queue/device-idle waits and also run in the complete backend suite.
+
+```sh
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+    tests/vulkan/backend-test.sh --realtime-lighting-only
+```
+
+Set `NBLOOD_LIGHTING_TEST_OUTPUT` to an existing directory to retain lossless PPM
+images of the unlit, lit, shadowed, and offscreen-caster scenes. These synthetic
+checks cover the GPU passes; they do not establish game light selection,
+performance, or behavior across hardware vendors.

@@ -13,6 +13,21 @@ using VulkanUniforms = NativeUniforms;
 using VulkanSamplerState = NativeSamplerState;
 using VulkanDrawState = NativeDrawState;
 
+constexpr unsigned kVulkanMaxLights = 8;
+
+// Isotropic Build world coordinates: x, y, z / 16. RGB controls light color;
+// color.w scales intensity without changing the light's range.
+struct VulkanLight
+{
+    float positionRadius[4];
+    float color[4];
+};
+
+struct VulkanShadowVertex
+{
+    float position[3];
+};
+
 // Cumulative CPU recording diagnostics for the current backend lifetime.
 // Call vulkanFinish first to include draws still waiting in the current batch.
 // workerCount and NBLOOD_VULKAN_WORKERS both count TOTAL recorders, including
@@ -56,6 +71,13 @@ void vulkanFlush();
 // RGB without modifying alpha or depth; no CPU readback or queue-idle wait.
 bool vulkanAmbientOcclusion(const float projection[16], const int viewport[4],
                             float radius, float strength, float bias);
+// World-only point lighting and cubemap shadows from opaque map geometry.
+// eyeToWorld is column-major and maps the reconstructed Polymost eye position
+// to isotropic world coordinates. Zero lights is an exact, allocation-free bypass.
+bool vulkanRealtimeLighting(const float projection[16], const float eyeToWorld[16], const int viewport[4],
+                            const VulkanLight *lights, unsigned lightCount,
+                            const VulkanShadowVertex *shadowVertices, unsigned shadowVertexCount,
+                            bool shadows = true);
 void vulkanDraw(const VulkanVertex *vertices, unsigned count, const VulkanDrawState &state);
 void vulkanClear(uint32_t mask, const float color[4], float depth, uint32_t stencil,
                  const VulkanDrawState &state);

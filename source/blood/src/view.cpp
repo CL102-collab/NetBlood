@@ -69,6 +69,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "view.h"
 #include "warp.h"
 #include "weapon.h"
+#ifdef USE_VULKAN
+#include "vulkan_renderer.h"
+#endif
 #ifdef NOONE_EXTENSIONS
 #include "nnexts.h"
 #endif
@@ -3095,6 +3098,194 @@ tspritetype *viewAddEffect(int nTSprite, VIEW_EFFECT nViewEffect)
 LOCATION gPrevSpriteLoc[kMaxSprites];
 static LOCATION gViewSpritePredictLoc;
 
+#ifdef USE_VULKAN
+static unsigned viewCollectRealtimeLights(VulkanLight *lights, int32_t cX, int32_t cY, int32_t cZ)
+{
+    float scores[kVulkanMaxLights] = {};
+    unsigned count = 0;
+
+    // Original sprites include emitters outside the view, whose light can still
+    // reach visible surfaces. Iterating by index also gives ties a stable order.
+    for (int nSprite = 0; nSprite < kMaxSprites; ++nSprite)
+    {
+        spritetype const &source = sprite[nSprite];
+        if (source.sectnum < 0 || source.sectnum >= numsectors || (source.flags & kHitagFree)
+            || qsprite_filler[nSprite] > gDetail)
+            continue;
+        XSPRITE const *pXSprite = source.extra > 0 && source.extra < kMaxXSprites ? &xsprite[source.extra] : nullptr;
+        float radius = 0.f, intensity = 1.f;
+        float red = 1.f, green = .45f, blue = .12f;
+        bool flame = true, sourceOnly = false, atTop = false, atCenter = false;
+        bool muzzleFlash = false;
+
+        switch (source.statnum)
+        {
+        case kStatDecoration:
+            if ((source.type == kDecorationTorch || source.type == kDecorationCandle)
+                && (!pXSprite || pXSprite->state == 1))
+            {
+                bool const candle = source.type == kDecorationCandle;
+                radius = candle ? 1000.f : 1800.f;
+                intensity = candle ? .65f : 1.2f;
+                sourceOnly = atTop = true;
+            }
+            break;
+        case kStatProjectile:
+        case kStatFlare:
+            switch (source.type)
+            {
+            case kMissileFlareRegular:
+            case kMissileFlareAlt:
+                radius = 2200.f;
+                intensity = 1.4f;
+                green = .25f;
+                blue = .08f;
+                break;
+            case kMissileTeslaRegular:
+            case kMissileTeslaAlt:
+                radius = 2200.f;
+                intensity = 1.5f;
+                red = .25f;
+                green = .55f;
+                blue = 1.f;
+                flame = false;
+                break;
+            case kMissileFlameSpray:
+            case kMissileFlameHound:
+                radius = 1200.f;
+                break;
+            case kMissileFireball:
+            case kMissileFireballNapalm:
+            case kMissileFireballCerberus:
+            case kMissileFireballTchernobog:
+                radius = 1800.f;
+                intensity = 1.2f;
+                break;
+            }
+            break;
+        case kStatExplosion:
+            radius = 2800.f;
+            intensity = pXSprite ? .35f + 1.25f * ClipRange(pXSprite->data3 / 32.f, 0.f, 1.f) : 1.6f;
+            break;
+        case kStatTraps:
+            if (source.type == kTrapFlame && pXSprite && pXSprite->state)
+            {
+                radius = 1800.f;
+                sourceOnly = true;
+            }
+            break;
+        case kStatThing:
+            if (source.type == kThingNapalmBall || source.type == kThingPodFireBall)
+                radius = 1800.f;
+            fallthrough__;
+        case kStatDude:
+            if (pXSprite && pXSprite->burnTime > 0)
+            {
+                radius = 1400.f;
+                intensity = ClipRange(pXSprite->burnTime / 60.f, .1f, 1.f);
+                atCenter = true;
+            }
+            else if (IsPlayerSprite(&source) && gPlayer[source.type - kDudePlayer1].flashEffect)
+            {
+                radius = 1800.f;
+                intensity = 1.4f;
+                green = .65f;
+                blue = .3f;
+                muzzleFlash = true;
+                flame = false;
+            }
+            break;
+        case kStatFX:
+            // Flame particles also survive after their projectile or burning
+            // parent disappears. Their smaller radius keeps primary emitters
+            // ahead of distant particles when the light budget is full.
+            if (source.type == FX_32)
+            {
+                radius = 700.f;
+                intensity = .45f;
+            }
+            break;
+        }
+        if (radius == 0.f)
+            continue;
+        // Torch/candle and flame-trap markers can intentionally be invisible;
+        // their active state, rather than their marker art, controls emission.
+        if (!sourceOnly && ((source.cstat & CSTAT_SPRITE_INVISIBLE) || !source.xrepeat || !source.yrepeat))
+            continue;
+
+        // Tracked spritetype fields notify spritechanged[] on assignment and
+        // must only be modified inside the global sprite array. This local
+        // render-only copy uses the identical, untracked sprite layout.
+        uspritetype lightSprite;
+        Bmemcpy(&lightSprite, &source, sizeof(lightSprite));
+        if (gView && gView->pSprite == &source && IsPlayerSprite(&source) && gViewInterpolate && !VanillaMode())
+        {
+            lightSprite.x = gViewSpritePredictLoc.x;
+            lightSprite.y = gViewSpritePredictLoc.y;
+            lightSprite.z = gViewSpritePredictLoc.z;
+            lightSprite.ang = fix16_to_int(gViewSpritePredictLoc.ang);
+        }
+        else if (gViewInterpolate && TestBitString(gInterpolateSprite, nSprite) && !(source.flags & 512))
+        {
+            LOCATION const &previous = gPrevSpriteLoc[nSprite];
+            lightSprite.x = interpolate(previous.x, source.x, gInterpolate);
+            lightSprite.y = interpolate(previous.y, source.y, gInterpolate);
+            lightSprite.z = interpolate(previous.z, source.z, gInterpolate);
+            lightSprite.ang = previous.ang + mulscale16(((source.ang - previous.ang + 1024) & 2047) - 1024, gInterpolate);
+        }
+        if (atTop || atCenter)
+        {
+            if (source.type == kDecorationTorch && lightSprite.picnum + 1 < kMaxTiles)
+                ++lightSprite.picnum;
+            if (lightSprite.picnum >= 0 && lightSprite.picnum < kMaxTiles)
+            {
+                int top, bottom;
+                GetSpriteExtents(&lightSprite, &top, &bottom);
+                lightSprite.z = atTop ? top : top / 2 + bottom / 2;
+            }
+        }
+        if (muzzleFlash)
+        {
+            PLAYER const &player = gPlayer[source.type - kDudePlayer1];
+            POSTURE const &posture = player.pPosture[player.lifeMode][player.posture];
+            lightSprite.x += mulscale28(posture.zOffset, Cos(lightSprite.ang));
+            lightSprite.y += mulscale28(posture.zOffset, Sin(lightSprite.ang));
+            lightSprite.z -= posture.xOffset;
+        }
+
+        float const x = lightSprite.x, y = lightSprite.y, z = lightSprite.z / 16.f;
+        float const dx = x - cX, dy = y - cY, dz = z - cZ / 16.f;
+        float const distanceSquared = dx * dx + dy * dy + dz * dz;
+        float const maxDistance = 16384.f + radius;
+        if (distanceSquared > maxDistance * maxDistance)
+            continue;
+        float const score = intensity * radius * radius / (distanceSquared + radius * radius);
+        unsigned slot = 0;
+        while (slot < count && scores[slot] >= score)
+            ++slot;
+        if (slot == kVulkanMaxLights)
+            continue;
+        if (count < kVulkanMaxLights)
+            ++count;
+        for (unsigned i = count - 1; i > slot; --i)
+        {
+            lights[i] = lights[i - 1];
+            scores[i] = scores[i - 1];
+        }
+        scores[slot] = score;
+        // Visual flicker is deterministic and never advances the gameplay RNG.
+        // Keep it out of selection scores to avoid swapping equally near lights.
+        if (flame)
+        {
+            unsigned const phase = unsigned(gFrameClock) * 23u + unsigned(nSprite) * 137u;
+            intensity *= .94f + .06f * (Sin(phase & kAngMask) / 1073741824.f);
+        }
+        lights[slot] = { { x, y, z, radius }, { red, green, blue, intensity } };
+    }
+    return count;
+}
+#endif
+
 inline void viewApplyFloorPal(tspritetype *pTSprite, uint8_t nPal)
 {
     if (nPal == 0 && !VanillaMode()) // keep original sprite's palette when floors are using default palette (fixes tommy gun cultists in E3M2)
@@ -4354,6 +4545,14 @@ RORHACK:
         renderDrawMasks();
         gView->pSprite->cstat = bakCstat;
 
+#ifdef USE_VULKAN
+        if (r_realtimelighting && videoGetRenderMode() == REND_VULKAN)
+        {
+            VulkanLight lights[kVulkanMaxLights];
+            unsigned const lightCount = viewCollectRealtimeLights(lights, cX, cY, cZ);
+            polymost_applyRealtimeLighting(lights, lightCount);
+        }
+#endif
 #ifdef USE_OPENGL
         // Finish contact shading before blur, weapons, crosshair and HUD.
         polymost_applyAmbientOcclusion();

@@ -345,6 +345,9 @@
     <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">
       <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="..\..\source\build\src\vulkan_lighting.cpp">
+      <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="..\..\source\build\src\wiibits.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
@@ -444,6 +447,7 @@
     <ClInclude Include="..\..\source\build\include\vectormath.hpp" />
     <ClInclude Include="..\..\source\build\include\vfs.h" />
     <ClInclude Include="..\..\source\build\include\vulkan_renderer.h" />
+    <ClInclude Include="..\..\source\build\include\vulkan_lighting.h" />
     <ClInclude Include="..\..\source\build\include\winbits.h" />
     <ClInclude Include="..\..\source\build\include\windows_inc.h" />
     <ClInclude Include="..\..\source\build\include\winlayer.h" />
@@ -453,12 +457,18 @@
     <ClInclude Include="..\..\source\build\src\engine_priv.h" />
     <ClInclude Include="..\..\source\build\src\vulkan_polymost_spv.h" />
     <ClInclude Include="..\..\source\build\src\ambient_occlusion_vk_spv.h" />
+    <ClInclude Include="..\..\source\build\src\realtime_lighting_vk_spv.h" />
+    <ClInclude Include="..\..\source\build\src\realtime_shadow_vk_spv.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\source\build\src\vulkan_polymost.vert" />
     <None Include="..\..\source\build\src\ambient_occlusion_vk.vert" />
     <None Include="..\..\source\build\src\vulkan_polymost.frag" />
     <None Include="..\..\source\build\src\ambient_occlusion_vk.frag" />
+    <None Include="..\..\source\build\src\realtime_lighting_vk.vert" />
+    <None Include="..\..\source\build\src\realtime_lighting_vk.frag" />
+    <None Include="..\..\source\build\src\realtime_shadow_vk.vert" />
+    <None Include="..\..\source\build\src\realtime_shadow_vk.frag" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="..\..\source\build\src\a.masm">

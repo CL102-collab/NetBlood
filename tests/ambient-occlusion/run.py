@@ -60,7 +60,7 @@ def main():
                              for index, key in enumerate(('I', 'O', 'P', 'L')))
         (runtime / 'autoexec.cfg').write_text(
             'r_maxfps 60\nr_showfps 0\nhud_showmaptitle 0\nr_texcompr 0\nr_texcache 0\n'
-            'r_ambientocclusion 0\n' + bindings + '\n')
+            'r_ambientocclusion 0\nr_realtimelighting 0\n' + bindings + '\n')
         scripts = (f'map "{args.map}"\npause\necho AO_FROZEN\n',
                    'screenshot\nr_ambientocclusion 1\necho AO_OFF_CAPTURED\n',
                    'screenshot\nr_ambientocclusion 0\necho AO_ON_CAPTURED\n',

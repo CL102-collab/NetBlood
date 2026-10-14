@@ -8,6 +8,7 @@
 # Also compares one/three slots and the default two slots, consecutive presents without
 # readbacks, retirement fences, and injected submit/acquire/present failures.
 # Pass --teardown-idle-only to run just the device-idle failure/recovery check.
+# Pass --realtime-lighting-only for point-light and geometry shadow checks.
 # Example: VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./tests/vulkan/backend-test.sh
 set -eu
 

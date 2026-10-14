@@ -46,6 +46,10 @@ void polymost_beginAmbientOcclusion(void);
 void polymost_cancelAmbientOcclusion(void);
 void polymost_applyAmbientOcclusion(void);
 void polymost_ambientOcclusionDepthWrite(bool enabled);
+#ifdef USE_VULKAN
+struct VulkanLight;
+void polymost_applyRealtimeLighting(VulkanLight const *lights, unsigned lightCount);
+#endif
 void polymost_startBufferedDrawing(int nn);
 void polymost_bufferVert(vec3f_t const v, vec2f_t const t);
 void polymost_finishBufferedDrawing(int mode);
@@ -114,6 +118,7 @@ extern int32_t r_detailmapping;
 
 extern int32_t r_animsmoothing;
 extern int32_t r_ambientocclusion;
+extern int32_t r_realtimelighting;
 extern int32_t r_downsize;
 extern int32_t r_downsizevar;
 extern int32_t r_drawpolyVertsBufferLength;

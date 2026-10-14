@@ -11,6 +11,8 @@
 #include "glad/glad.h" // Enumerants only; this backend never calls OpenGL.
 #include "vulkan_polymost_spv.h"
 #include "ambient_occlusion_vk_spv.h"
+#include "realtime_lighting_vk_spv.h"
+#include "realtime_shadow_vk_spv.h"
 
 #include <algorithm>
 #include <array>
@@ -163,6 +165,37 @@ struct AmbientOcclusionUniforms
     float projection[4], depth[4], viewport[4], target[4];
 };
 
+constexpr uint32_t kShadowFaceSize = 256;
+constexpr uint32_t kShadowFaces = 6;
+struct RealtimeLighting
+{
+    VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE, shadowLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE, shadowPipeline = VK_NULL_HANDLE;
+    VkShaderModule vertexShader = VK_NULL_HANDLE, fragmentShader = VK_NULL_HANDLE;
+    VkShaderModule shadowVertexShader = VK_NULL_HANDLE, shadowFragmentShader = VK_NULL_HANDLE;
+    VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
+    VkFormat shadowFormat = VK_FORMAT_UNDEFINED;
+    Image atlas;
+    bool supported = false, warned = false, atlasInitialized = false;
+};
+
+struct RealtimeLightingUniforms
+{
+    float projection[4], depth[4], viewport[4], target[4];
+    float eyeToWorld[16], lightParams[4];
+    VulkanLight lights[kVulkanMaxLights];
+};
+static_assert(kVulkanMaxLights == 8 && sizeof(VulkanLight) == 32 && sizeof(RealtimeLightingUniforms) == 400,
+              "Keep realtime_lighting_vk.frag's std140 light block in sync");
+
+struct ShadowPush
+{
+    float light[4];
+    int32_t face[4];
+};
+
 struct Backend
 {
     SDL_Window *window = nullptr;
@@ -193,6 +226,7 @@ struct Backend
     VkShaderModule vertexShader = VK_NULL_HANDLE, fragmentShader = VK_NULL_HANDLE;
     Image color, depth;
     AmbientOcclusion ao;
+    RealtimeLighting lighting;
     std::map<uint32_t, Image> textures;
     std::map<PipelineKey, VkPipeline> pipelines;
     std::map<SamplerKey, VkSampler> samplers;
@@ -1371,6 +1405,197 @@ bool createAmbientOcclusionResources()
     return check(vkCreateSampler(g.device, &sampler, nullptr, &g.ao.sampler), "create AO sampler");
 }
 
+bool createRealtimeLightingResources()
+{
+    // Keep the scene's chosen depth format unchanged. Optional lighting must
+    // never change depth rounding on devices lacking sampled depth support.
+    if (!g.ao.supported) return true;
+    VkFormatFeatureFlags const required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    for (VkFormat format : { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM })
+    {
+        VkFormatProperties properties;
+        VkImageFormatProperties imageProperties;
+        vkGetPhysicalDeviceFormatProperties(g.physical, format, &properties);
+        if ((properties.optimalTilingFeatures & required) == required &&
+            vkGetPhysicalDeviceImageFormatProperties(g.physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &imageProperties) == VK_SUCCESS &&
+            imageProperties.maxExtent.width >= kShadowFaceSize * kVulkanMaxLights &&
+            imageProperties.maxExtent.height >= kShadowFaceSize * kShadowFaces)
+        {
+            g.lighting.shadowFormat = format;
+            break;
+        }
+    }
+    if (g.lighting.shadowFormat == VK_FORMAT_UNDEFINED) return true;
+
+    VkDescriptorSetLayoutBinding bindings[4] = {};
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        bindings[i].binding = i;
+        bindings[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo descriptor = {};
+    descriptor.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor.bindingCount = 4;
+    descriptor.pBindings = bindings;
+    if (!check(vkCreateDescriptorSetLayout(g.device, &descriptor, nullptr, &g.lighting.descriptorLayout), "create lighting descriptor layout")) return false;
+    VkPipelineLayoutCreateInfo layout = {};
+    layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &g.lighting.descriptorLayout;
+    if (!check(vkCreatePipelineLayout(g.device, &layout, nullptr, &g.lighting.pipelineLayout), "create lighting pipeline layout")) return false;
+    VkPushConstantRange push = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ShadowPush) };
+    layout.setLayoutCount = 0;
+    layout.pSetLayouts = nullptr;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &push;
+    if (!check(vkCreatePipelineLayout(g.device, &layout, nullptr, &g.lighting.shadowLayout), "create shadow pipeline layout")) return false;
+
+    VkAttachmentDescription attachment = {};
+    attachment.format = g.lighting.shadowFormat;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // Discard old texels, but the dependency still waits for preceding lighting
+    // reads before overwriting this shared atlas, including across submissions.
+    attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    VkAttachmentReference depthReference = { 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.pDepthStencilAttachment = &depthReference;
+    VkSubpassDependency dependencies[2] = {};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo renderPass = {};
+    renderPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPass.attachmentCount = 1;
+    renderPass.pAttachments = &attachment;
+    renderPass.subpassCount = 1;
+    renderPass.pSubpasses = &subpass;
+    renderPass.dependencyCount = 2;
+    renderPass.pDependencies = dependencies;
+    if (!check(vkCreateRenderPass(g.device, &renderPass, nullptr, &g.lighting.shadowRenderPass), "create shadow render pass")) return false;
+    if (!createImage(g.lighting.atlas, kShadowFaceSize * kVulkanMaxLights, kShadowFaceSize * kShadowFaces, 1,
+                     g.lighting.shadowFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT)) return false;
+    VkFramebufferCreateInfo framebuffer = {};
+    framebuffer.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer.renderPass = g.lighting.shadowRenderPass;
+    framebuffer.attachmentCount = 1;
+    framebuffer.pAttachments = &g.lighting.atlas.view;
+    framebuffer.width = g.lighting.atlas.width;
+    framebuffer.height = g.lighting.atlas.height;
+    framebuffer.layers = 1;
+    if (!check(vkCreateFramebuffer(g.device, &framebuffer, nullptr, &g.lighting.shadowFramebuffer), "create shadow framebuffer")) return false;
+
+    VkShaderModuleCreateInfo shader = {};
+    shader.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader.codeSize = sizeof(realtime_lighting_vk_vert_spv);
+    shader.pCode = realtime_lighting_vk_vert_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.lighting.vertexShader), "create lighting vertex shader")) return false;
+    shader.codeSize = sizeof(realtime_lighting_vk_frag_spv);
+    shader.pCode = realtime_lighting_vk_frag_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.lighting.fragmentShader), "create lighting fragment shader")) return false;
+    shader.codeSize = sizeof(realtime_shadow_vk_vert_spv);
+    shader.pCode = realtime_shadow_vk_vert_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.lighting.shadowVertexShader), "create shadow vertex shader")) return false;
+    shader.codeSize = sizeof(realtime_shadow_vk_frag_spv);
+    shader.pCode = realtime_shadow_vk_frag_spv;
+    if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.lighting.shadowFragmentShader), "create shadow fragment shader")) return false;
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = g.lighting.vertexShader;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = g.lighting.fragmentShader;
+    stages[0].pName = stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertex = {};
+    vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo assembly = {};
+    assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport = {};
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster = {};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.f;
+    VkPipelineMultisampleStateCreateInfo samples = {};
+    samples.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend = {};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+    VkPipelineColorBlendStateCreateInfo blending = {};
+    blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blending.attachmentCount = 1;
+    blending.pAttachments = &blend;
+    VkDynamicState dynamics[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic = {};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamics;
+    VkGraphicsPipelineCreateInfo pipeline = {};
+    pipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline.stageCount = 2;
+    pipeline.pStages = stages;
+    pipeline.pVertexInputState = &vertex;
+    pipeline.pInputAssemblyState = &assembly;
+    pipeline.pViewportState = &viewport;
+    pipeline.pRasterizationState = &raster;
+    pipeline.pMultisampleState = &samples;
+    pipeline.pColorBlendState = &blending;
+    pipeline.pDynamicState = &dynamic;
+    pipeline.layout = g.lighting.pipelineLayout;
+    pipeline.renderPass = g.ao.renderPass;
+    if (!check(vkCreateGraphicsPipelines(g.device, g.pipelineCache, 1, &pipeline, nullptr, &g.lighting.pipeline), "create lighting pipeline")) return false;
+
+    VkVertexInputBindingDescription binding = { 0, sizeof(VulkanShadowVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attribute = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 };
+    vertex.vertexBindingDescriptionCount = 1;
+    vertex.pVertexBindingDescriptions = &binding;
+    vertex.vertexAttributeDescriptionCount = 1;
+    vertex.pVertexAttributeDescriptions = &attribute;
+    stages[0].module = g.lighting.shadowVertexShader;
+    stages[1].module = g.lighting.shadowFragmentShader;
+    blending.attachmentCount = 0;
+    blending.pAttachments = nullptr;
+    VkPipelineDepthStencilStateCreateInfo depth = {};
+    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth.depthTestEnable = depth.depthWriteEnable = VK_TRUE;
+    depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    pipeline.pDepthStencilState = &depth;
+    pipeline.layout = g.lighting.shadowLayout;
+    pipeline.renderPass = g.lighting.shadowRenderPass;
+    if (!check(vkCreateGraphicsPipelines(g.device, g.pipelineCache, 1, &pipeline, nullptr, &g.lighting.shadowPipeline), "create shadow pipeline")) return false;
+    g.lighting.supported = true;
+    return true;
+}
+
 bool createSubmissionSlots()
 {
     unsigned count = 2;
@@ -1803,6 +2028,7 @@ bool initialize(SDL_Window *window, int width, int height, int vsync)
     if (!check(vkCreateShaderModule(g.device, &shader, nullptr, &g.fragmentShader), "create fragment shader")) return false;
     if (!createRenderPass()) return false;
     if (!createAmbientOcclusionResources()) return false;
+    if (!createRealtimeLightingResources()) return false;
     if (!createRecordingWorkers()) return false;
     if (!createSubmissionSlots()) return false;
     if (!createTargets(width, height)) return false;
@@ -1894,6 +2120,18 @@ void vulkanDestroy()
         for (auto const &sampler : g.samplers) vkDestroySampler(g.device, sampler.second, nullptr);
         for (auto &texture : g.textures) destroyImage(texture.second);
         destroyTargets();
+        if (g.lighting.shadowFramebuffer) vkDestroyFramebuffer(g.device, g.lighting.shadowFramebuffer, nullptr);
+        destroyImage(g.lighting.atlas);
+        if (g.lighting.pipeline) vkDestroyPipeline(g.device, g.lighting.pipeline, nullptr);
+        if (g.lighting.shadowPipeline) vkDestroyPipeline(g.device, g.lighting.shadowPipeline, nullptr);
+        if (g.lighting.vertexShader) vkDestroyShaderModule(g.device, g.lighting.vertexShader, nullptr);
+        if (g.lighting.fragmentShader) vkDestroyShaderModule(g.device, g.lighting.fragmentShader, nullptr);
+        if (g.lighting.shadowVertexShader) vkDestroyShaderModule(g.device, g.lighting.shadowVertexShader, nullptr);
+        if (g.lighting.shadowFragmentShader) vkDestroyShaderModule(g.device, g.lighting.shadowFragmentShader, nullptr);
+        if (g.lighting.pipelineLayout) vkDestroyPipelineLayout(g.device, g.lighting.pipelineLayout, nullptr);
+        if (g.lighting.shadowLayout) vkDestroyPipelineLayout(g.device, g.lighting.shadowLayout, nullptr);
+        if (g.lighting.shadowRenderPass) vkDestroyRenderPass(g.device, g.lighting.shadowRenderPass, nullptr);
+        if (g.lighting.descriptorLayout) vkDestroyDescriptorSetLayout(g.device, g.lighting.descriptorLayout, nullptr);
         if (g.ao.pipeline) vkDestroyPipeline(g.device, g.ao.pipeline, nullptr);
         if (g.ao.vertexShader) vkDestroyShaderModule(g.device, g.ao.vertexShader, nullptr);
         if (g.ao.fragmentShader) vkDestroyShaderModule(g.device, g.ao.fragmentShader, nullptr);
@@ -2062,6 +2300,156 @@ bool vulkanAmbientOcclusion(float const projection[16], int const worldViewport[
     vkCmdSetScissor(command, 0, 1, &scissor);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.ao.pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.ao.pipelineLayout, 0, 1, &set, 0, nullptr);
+    vkCmdDraw(command, 3, 1, 0, 0);
+    vkCmdEndRenderPass(command);
+    imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                 VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
+    return true;
+}
+
+bool vulkanRealtimeLighting(float const projection[16], float const eyeToWorld[16], int const worldViewport[4],
+                            VulkanLight const *lights, unsigned lightCount,
+                            VulkanShadowVertex const *shadowVertices, unsigned shadowVertexCount, bool shadows)
+{
+    if (!vulkanActive() || g.failed) return false;
+    // Disabling lighting, or visiting a sector without lights, leaves packet
+    // batching and submission exactly as they were before this feature.
+    if (!lightCount || g.suspended) return true;
+    if (!projection || !eyeToWorld || !worldViewport || !lights || lightCount > kVulkanMaxLights) return false;
+    if (shadows && (shadowVertexCount % 3 || (shadowVertexCount && !shadowVertices))) return false;
+    for (unsigned i = 0; i < 16; ++i)
+        if (!std::isfinite(projection[i]) || !std::isfinite(eyeToWorld[i])) return false;
+    for (unsigned i = 0; i < lightCount; ++i)
+    {
+        for (unsigned j = 0; j < 4; ++j)
+            if (!std::isfinite(lights[i].positionRadius[j]) || !std::isfinite(lights[i].color[j]) || lights[i].color[j] < 0.f) return false;
+        if (lights[i].positionRadius[3] <= 0.001f) return false;
+    }
+    if (worldViewport[2] <= 0 || worldViewport[3] <= 0) return true;
+    if (projection[0] <= 0.f || projection[5] <= 0.f ||
+        std::fabs(projection[11] - 1.f) > 0.00001f || std::fabs(projection[15]) > 0.00001f) return false;
+    if (!g.lighting.supported)
+    {
+        if (!g.lighting.warned)
+        {
+            std::fprintf(stderr, "Vulkan: realtime lighting disabled; sampled scene depth/stencil or shadow depth formats are unavailable\n");
+            g.lighting.warned = true;
+        }
+        return false;
+    }
+    int64_t const x0 = std::max<int64_t>(0, worldViewport[0]);
+    int64_t const y0 = std::max<int64_t>(0, worldViewport[1]);
+    int64_t const x1 = std::min<int64_t>(g.extent.width, int64_t(worldViewport[0]) + worldViewport[2]);
+    int64_t const y1 = std::min<int64_t>(g.extent.height, int64_t(worldViewport[1]) + worldViewport[3]);
+    if (x1 <= x0 || y1 <= y0) return true;
+    if (!endRenderPass()) return false;
+    // Reserve uniforms and the complete immutable shadow mesh together. A
+    // stream rollover may submit, so no per-call offsets may span two slots.
+    unsigned const vertexCount = shadows ? shadowVertexCount : 0;
+    VkDeviceSize const vertexBytes = VkDeviceSize(vertexCount) * sizeof(VulkanShadowVertex);
+    VkDeviceSize const alignment = std::max<VkDeviceSize>(16, g.properties.limits.minUniformBufferOffsetAlignment);
+    VkDeviceSize offset;
+    if (!reserveStream(sizeof(RealtimeLightingUniforms) + vertexBytes, alignment, offset) || !ensureRecordingWorkers(1)) return false;
+    VkDeviceSize const vertexOffset = offset + sizeof(RealtimeLightingUniforms);
+    RealtimeLightingUniforms uniforms = {};
+    uniforms.projection[0] = projection[0]; uniforms.projection[1] = projection[5];
+    uniforms.projection[2] = projection[8]; uniforms.projection[3] = projection[9];
+    uniforms.depth[0] = projection[10]; uniforms.depth[1] = projection[14];
+    for (unsigned i = 0; i < 4; ++i) uniforms.viewport[i] = float(worldViewport[i]);
+    uniforms.target[0] = 1.f / g.extent.width; uniforms.target[1] = 1.f / g.extent.height;
+    std::memcpy(uniforms.eyeToWorld, eyeToWorld, sizeof(uniforms.eyeToWorld));
+    uniforms.lightParams[0] = float(lightCount);
+    uniforms.lightParams[1] = shadows ? 1.f : 0.f;
+    uniforms.lightParams[2] = float(kShadowFaceSize);
+    uniforms.lightParams[3] = float(kVulkanMaxLights);
+    std::memcpy(uniforms.lights, lights, lightCount * sizeof(VulkanLight));
+    uint8_t *mapped = static_cast<uint8_t *>(currentSlot().stream.mapped);
+    std::memcpy(mapped + offset, &uniforms, sizeof(uniforms));
+    if (vertexBytes) std::memcpy(mapped + vertexOffset, shadowVertices, vertexBytes);
+
+    RecordingWorker allocator;
+    allocator.context.device = g.device;
+    allocator.context.descriptorLayout = g.lighting.descriptorLayout;
+    allocator.resources = currentSlot().recorders[0];
+    VkDescriptorSet set;
+    if (!allocateWorkerDescriptor(allocator, set)) return check(allocator.error, allocator.operation);
+    ++currentSlot().descriptorCount;
+    VkDescriptorBufferInfo uniform = { currentSlot().stream.handle, offset, sizeof(uniforms) };
+    VkDescriptorImageInfo images[3] = {
+        { g.ao.sampler, g.ao.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+        { g.ao.sampler, g.ao.stencilView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+        { g.ao.sampler, g.lighting.atlas.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+    };
+    VkWriteDescriptorSet writes[4] = {};
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (i) writes[i].pImageInfo = &images[i - 1];
+        else writes[i].pBufferInfo = &uniform;
+    }
+    vkUpdateDescriptorSets(g.device, 4, writes, 0, nullptr);
+
+    VkCommandBuffer const command = currentSlot().command;
+    if (shadows || !g.lighting.atlasInitialized)
+    {
+        VkClearValue clear = {};
+        clear.depthStencil.depth = 1.f;
+        VkRenderPassBeginInfo begin = {};
+        begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin.renderPass = g.lighting.shadowRenderPass;
+        begin.framebuffer = g.lighting.shadowFramebuffer;
+        begin.renderArea.extent = { g.lighting.atlas.width, g.lighting.atlas.height };
+        begin.clearValueCount = 1;
+        begin.pClearValues = &clear;
+        vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+        if (vertexCount)
+        {
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.lighting.shadowPipeline);
+            vkCmdBindVertexBuffers(command, 0, 1, &currentSlot().stream.handle, &vertexOffset);
+            for (unsigned i = 0; i < lightCount; ++i)
+                for (uint32_t face = 0; face < kShadowFaces; ++face)
+                {
+                    ShadowPush push = {};
+                    std::memcpy(push.light, lights[i].positionRadius, sizeof(push.light));
+                    push.face[0] = int32_t(face);
+                    VkViewport viewport = { float(i * kShadowFaceSize), float(face * kShadowFaceSize),
+                        float(kShadowFaceSize), float(kShadowFaceSize), 0.f, 1.f };
+                    VkRect2D scissor = { { int32_t(i * kShadowFaceSize), int32_t(face * kShadowFaceSize) }, { kShadowFaceSize, kShadowFaceSize } };
+                    vkCmdSetViewport(command, 0, 1, &viewport);
+                    vkCmdSetScissor(command, 0, 1, &scissor);
+                    vkCmdPushConstants(command, g.lighting.shadowLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(push), &push);
+                    vkCmdDraw(command, vertexCount, 1, 0, 0);
+                }
+        }
+        vkCmdEndRenderPass(command);
+        g.lighting.atlasInitialized = true;
+    }
+    VkImageAspectFlags const aspects = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    VkRenderPassBeginInfo begin = {};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin.renderPass = g.ao.renderPass;
+    begin.framebuffer = g.ao.framebuffer;
+    begin.renderArea.extent = g.extent;
+    vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport viewport = { 0.f, 0.f, float(g.extent.width), float(g.extent.height), 0.f, 1.f };
+    VkRect2D scissor = { { int32_t(x0), int32_t(g.extent.height - y1) }, { uint32_t(x1 - x0), uint32_t(y1 - y0) } };
+    vkCmdSetViewport(command, 0, 1, &viewport);
+    vkCmdSetScissor(command, 0, 1, &scissor);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.lighting.pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.lighting.pipelineLayout, 0, 1, &set, 0, nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
     vkCmdEndRenderPass(command);
     imageBarrier(g.depth.handle, aspects, 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
