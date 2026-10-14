@@ -342,6 +342,9 @@ USE_OPENGL := 1
 # Native Vulkan uses the shared Polymost scene frontend. Auto-enable when the
 # SDK is available; USE_VULKAN=0 preserves builds without Vulkan development files.
 USE_VULKAN ?= $(shell $(PKG_CONFIG) --exists vulkan 2>/dev/null && echo 1 || echo 0)
+# Metal uses the same scene frontend and the native Apple framework. No Vulkan
+# SDK or translation layer is required on macOS.
+USE_METAL ?= $(if $(filter DARWIN,$(PLATFORM)),1,0)
 SDL_STATIC ?= 0
 
 NOONE_EXTENSIONS ?= 1
@@ -408,13 +411,19 @@ ifeq (0,$(USE_OPENGL))
     override POLYMER := 0
     override USE_LIBVPX := 0
     override USE_VULKAN := 0
+    override USE_METAL := 0
 endif
 
 ifneq ($(RENDERTYPE),SDL)
     override USE_VULKAN := 0
+    override USE_METAL := 0
 endif
 ifeq ($(SDL_TARGET),1)
     override USE_VULKAN := 0
+    override USE_METAL := 0
+endif
+ifneq ($(PLATFORM),DARWIN)
+    override USE_METAL := 0
 endif
 
 ifeq ($(RELEASE),0)
@@ -866,6 +875,10 @@ ifneq (0,$(USE_VULKAN))
     # SDL loads the graphics driver's Vulkan runtime on demand. Only the
     # headers are needed at build time; software/OpenGL must work without it.
     COMPILERFLAGS += -DUSE_VULKAN $(VULKAN_CFLAGS)
+endif
+ifneq (0,$(USE_METAL))
+    COMPILERFLAGS += -DUSE_METAL
+    LIBS += -Wl,-framework,Metal -Wl,-framework,QuartzCore -Wl,-framework,Foundation
 endif
 ifneq (0,$(POLYMER))
     COMPILERFLAGS += -DPOLYMER

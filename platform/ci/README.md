@@ -100,8 +100,9 @@ recorded inside each package. Users must supply their Blood game data separately
 The no-SSE2 packages provide software rendering and Polymost; Vulkan is disabled
 for these legacy CPU targets. XP networking is IPv4-only because XP cannot create
 the dual-stack sockets used on newer systems. Unsupported IPv6 joins show an
-error. The macOS package provides software and Polymost rendering, as requested; it
-does not bundle MoltenVK. Other modern targets retain Vulkan support when an
+error. The macOS package provides software, Polymost OpenGL, and native Metal
+rendering. Metal uses Apple's system framework and requires a Metal-capable GPU;
+it does not use or bundle MoltenVK. Other modern targets retain Vulkan support when an
 appropriate system Vulkan runtime and GPU driver are installed.
 
 Windows dependencies are built from pinned source archives for each target.
@@ -120,6 +121,19 @@ libraries; graphics drivers and the Vulkan runtime come from the host. Its URI
 and Discord handlers refer to the persistent AppImage file, not a temporary mount.
 
 The macOS executable and bundled libraries are checked for both architectures.
+`USE_METAL=1` is the default for macOS SDL2 builds; `USE_METAL=0` disables it.
+Metal is disabled automatically on other platforms, SDL1, and software-only builds.
+Select **Metal** in the startup window or graphics menu, or use `setrendermode 6`
+in the game console. The selection is saved between launches.
+Its Objective-C++ backend uses ARC independently of the existing Cocoa sources.
+Before packaging, the macOS job compiles the Metal shader with Apple's compiler
+and builds the backend tests against the same SDL2 dependency as the game. The
+tests exercise rendering when the runner exposes a usable Metal device/display.
+Hosted runners without one record an explicit runtime skip in the uploaded Metal
+report; shader/backend compilation still has to pass. On a Mac with a GPU, run
+`tests/metal/backend-test.sh --require-device --output test-results/metal` to
+require the rendering checks as well. A hosted-runner skip does not establish
+visual parity or GPU runtime compatibility.
 The app is ad-hoc signed; notarization and a Developer ID are not configured.
 FreeBSD packages include runtime installation instructions. NetBSD uses official
 10.1 i386 release sets and a NetBSD cross toolchain, rebuilding its multimedia

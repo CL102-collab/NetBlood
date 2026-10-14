@@ -26,6 +26,7 @@
 #include "palette.h"
 #include "pragmas.h"
 #include "random.h"
+#include "renderer_types.h"
 
 #include "vfs.h"
 #include "cache1d.h"
@@ -33,13 +34,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-enum rendmode_t {
-    REND_CLASSIC,
-    REND_POLYMOST = 3,
-    REND_POLYMER,
-    REND_VULKAN
-};
 
 #define PI 3.14159265358979323846
 #define fPI 3.14159265358979323846f
@@ -1090,10 +1084,15 @@ static FORCE_INLINE int32_t videoGetRenderMode(void)
 #endif
 }
 
-// OpenGL and Vulkan share Polymost's scene traversal and material preparation.
+static FORCE_INLINE bool videoIsNativeRenderer(int32_t renderer)
+{
+    return renderer == REND_VULKAN || renderer == REND_METAL;
+}
+
+// OpenGL, Vulkan and Metal share Polymost's scene traversal and material preparation.
 static FORCE_INLINE bool videoUsesPolymost(void)
 {
-    return videoGetRenderMode() == REND_POLYMOST || videoGetRenderMode() == REND_VULKAN;
+    return videoGetRenderMode() == REND_POLYMOST || videoGetRenderMode() == REND_VULKAN || videoGetRenderMode() == REND_METAL;
 }
 
 extern int32_t bloodhack;

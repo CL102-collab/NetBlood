@@ -2,61 +2,16 @@
 // Copyright (C) 2026 NBlood contributors. GPL-2.0-only.
 #pragma once
 
-#include <stdint.h>
+#include "native_renderer.h"
 #include <vector>
 
 struct SDL_Window;
 
-struct VulkanVertex
-{
-    float position[4];
-    float color[4];
-    float texcoord[3][4]; // Polymost texture units 0, 3 and 4.
-};
-
-// vec4-aligned layout shared with vulkan_polymost.vert/.frag (std140).
-struct VulkanUniforms
-{
-    float modelView[16];
-    float projection[16]; // Polymost mode 1: precomposed projection * modelView; otherwise projection.
-    float textureMatrix[3][16];
-    float rotation[16];
-    float texturePosSize[4];
-    float halfTexelPalswapPos[4];
-    float palswapSizeClamp[4];
-    float shadeNumVis[4];
-    float fog[4]; // enabled, end, scale, alpha cutoff
-    float fogColor[4];
-    float effects[4]; // color only, palette, detail, glow
-    float npot[4];
-    float correction[4];
-    float misc[4]; // brightness, shade interpolation, alpha test, program mode
-    float fixed[4]; // texture enabled, fog enabled, alpha comparison, fog mode
-};
-
-struct VulkanSamplerState
-{
-    uint32_t texture;
-    uint32_t minFilter, magFilter, wrapS, wrapT;
-    float anisotropy;
-    float minLod, maxLod;
-};
-
-// State enumerants use the shared frontend's GL numeric constants, but are
-// translated into native VkPipeline state without calling an OpenGL driver.
-struct VulkanDrawState
-{
-    VulkanUniforms uniforms;
-    VulkanSamplerState samplers[5];
-    int viewport[4], scissor[4];
-    uint32_t topology, depthFunc, blendSrc, blendDst, blendEquation;
-    uint32_t cullFace, frontFace, polygonMode;
-    uint32_t stencilFunc, stencilFail, stencilDepthFail, stencilPass;
-    uint32_t stencilReference, stencilCompareMask, stencilWriteMask;
-    float depthRange[2], depthBiasFactor, depthBiasUnits, lineWidth;
-    bool depthTest, depthWrite, blend, cull, scissorTest, stencilTest, depthBias, depthClamp;
-    bool colorWrite[4];
-};
+// Retain the Vulkan API names for backend callers and diagnostic tests.
+using VulkanVertex = NativeVertex;
+using VulkanUniforms = NativeUniforms;
+using VulkanSamplerState = NativeSamplerState;
+using VulkanDrawState = NativeDrawState;
 
 // Cumulative CPU recording diagnostics for the current backend lifetime.
 // Call vulkanFinish first to include draws still waiting in the current batch.

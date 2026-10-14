@@ -161,7 +161,10 @@
     <ClCompile Include="..\..\source\build\src\voxmodel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\source\build\src\vulkan_frontend.cpp">
+    <ClCompile Include="..\..\source\build\src\native_frontend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\source\build\src\native_renderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">

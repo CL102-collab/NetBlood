@@ -133,6 +133,12 @@
 #define SDL_HAS_PER_MONITOR_DPI             SDL_VERSION_ATLEAST(2,0,4)
 #define SDL_HAS_VULKAN                      SDL_VERSION_ATLEAST(2,0,6)
 #define SDL_HAS_OPEN_URL                    SDL_VERSION_ATLEAST(2,0,14)
+#if defined(__APPLE__) && SDL_VERSION_ATLEAST(2,0,14)
+#define SDL_HAS_METAL                       1
+#include <SDL_metal.h>
+#else
+#define SDL_HAS_METAL                       0
+#endif
 #if SDL_HAS_VULKAN
 #include <SDL_vulkan.h>
 #endif
@@ -862,6 +868,10 @@ static void ImGui_ImplSDL2_GetWindowSizeAndFramebufferScale(SDL_Window* window, 
 #if SDL_HAS_VULKAN
     else if (SDL_GetWindowFlags(window) & SDL_WINDOW_VULKAN)
         SDL_Vulkan_GetDrawableSize(window, &display_w, &display_h);
+#endif
+#if SDL_HAS_METAL
+    else if (SDL_GetWindowFlags(window) & SDL_WINDOW_METAL)
+        SDL_Metal_GetDrawableSize(window, &display_w, &display_h);
 #endif
     else
         SDL_GL_GetDrawableSize(window, &display_w, &display_h);

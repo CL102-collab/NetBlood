@@ -1,7 +1,7 @@
-// Native Vulkan command adapter for the shared Polymost scene frontend.
+// Native command adapter for the shared Polymost scene frontend.
 // Copyright (C) 2026 NBlood contributors. GPL-2.0-only.
 // This file implements the engine's legacy graphics vocabulary, not an OpenGL
-// context. Every submitted primitive and image is owned by the Vulkan backend.
+// context. Every submitted primitive and image is owned by the selected native backend.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,16 +13,16 @@
 #include <vector>
 
 #include "glbuild.h"
-#include "vulkan_renderer.h"
+#include "native_renderer.h"
 
-#ifdef USE_VULKAN
+#if defined(USE_VULKAN) || defined(USE_METAL)
 namespace
 {
 using Matrix = std::array<float, 16>;
 
 [[noreturn]] void fail(const char *operation)
 {
-    LOG_F(ERROR, "Vulkan frontend: unsupported or invalid %s", operation);
+    LOG_F(ERROR, "Native frontend: unsupported or invalid %s", operation);
     Bexit(1);
 }
 
@@ -67,7 +67,7 @@ struct Shader { GLenum type = 0; std::string source; bool compiled = false; };
 struct Program
 {
     std::vector<GLuint> shaders;
-    VulkanUniforms uniforms = {};
+    NativeUniforms uniforms = {};
     int kind = 0;
     bool linked = false;
     int samplerUnits[5] = {0, 1, 2, 3, 4};
@@ -75,7 +75,7 @@ struct Program
 struct PixelStore { int alignment = 4, rowLength = 0, skipRows = 0, skipPixels = 0; };
 struct Frontend
 {
-    VulkanDrawState draw = {};
+    NativeDrawState draw = {};
     unsigned activeTexture = 0, clientTexture = 0;
     GLenum matrixMode = GL_MODELVIEW;
     std::vector<Matrix> modelView{identity()}, projection{identity()};
@@ -100,7 +100,7 @@ struct Frontend
     std::set<GLenum> enables;
     GLenum immediateMode = 0;
     bool immediate = false;
-    std::vector<VulkanVertex> immediateVertices;
+    std::vector<NativeVertex> immediateVertices;
     int width = 0, height = 0;
     Frontend()
     {
@@ -141,7 +141,7 @@ bool installed = false;
 std::vector<float> accumulation;
 GLuint accumulationTexture = 0;
 
-void materialDefaults(VulkanUniforms &u)
+void materialDefaults(NativeUniforms &u)
 {
     u = {};
     auto const one = identity();
@@ -155,9 +155,9 @@ void materialDefaults(VulkanUniforms &u)
     u.misc[0] = 1.f;
 }
 
-VulkanDrawState snapshot()
+NativeDrawState snapshot()
 {
-    VulkanDrawState out = state.draw;
+    NativeDrawState out = state.draw;
     materialDefaults(out.uniforms);
     int kind = 0;
     if (state.program)
@@ -234,11 +234,11 @@ std::vector<Matrix> &matrixStack()
     if (state.matrixMode == GL_TEXTURE) return state.textureMatrices[state.activeTexture];
     fail("matrix mode");
 }
-void submit(GLenum mode, const std::vector<VulkanVertex> &input)
+void submit(GLenum mode, const std::vector<NativeVertex> &input)
 {
     if (input.empty()) return;
     auto draw = snapshot();
-    std::vector<VulkanVertex> vertices;
+    std::vector<NativeVertex> vertices;
     auto triangle = [&](size_t a, size_t b, size_t c) { vertices.push_back(input[a]); vertices.push_back(input[b]); vertices.push_back(input[c]); };
     switch (mode)
     {
@@ -261,7 +261,7 @@ void submit(GLenum mode, const std::vector<VulkanVertex> &input)
             draw.topology = GL_LINES; break;
         default: fail("primitive topology");
     }
-    if (!vertices.empty()) vulkanDraw(vertices.data(), unsigned(vertices.size()), draw);
+    if (!vertices.empty()) nativeDraw(vertices.data(), unsigned(vertices.size()), draw);
 }
 
 size_t scalarSize(GLenum type)
@@ -314,9 +314,9 @@ void readArray(const Array &a, unsigned index, float out[4])
     out[0] = out[1] = out[2] = 0.f; out[3] = 1.f;
     for (int j = 0; j < a.size; ++j) out[j] = component(p + j * size, a.type, a.normalized);
 }
-VulkanVertex arrayVertex(unsigned index)
+NativeVertex arrayVertex(unsigned index)
 {
-    VulkanVertex v = {};
+    NativeVertex v = {};
     memcpy(v.color, state.color, sizeof(v.color));
     readArray(state.attributes[0].enabled ? state.attributes[0] : state.vertex, index, v.position);
     if (state.colorArray.enabled) readArray(state.colorArray, index, v.color);
@@ -335,7 +335,7 @@ void APIENTRY vkfEnd() { if (!state.immediate) fail("End without Begin"); state.
 void APIENTRY vkfVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 {
     if (!state.immediate) fail("immediate vertex outside Begin");
-    VulkanVertex v = {{x, y, z, w}, {}, {}};
+    NativeVertex v = {{x, y, z, w}, {}, {}};
     memcpy(v.color, state.color, sizeof(v.color));
     const int units[] = {0, 3, 4};
     for (int i = 0; i < 3; ++i) memcpy(v.texcoord[i], state.texcoords[units[i]].data(), sizeof(v.texcoord[i]));
@@ -355,7 +355,7 @@ void APIENTRY vkfMultiTexCoord2f(GLenum unit, GLfloat s, GLfloat t) { if (unit <
 void APIENTRY vkfDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     if (first < 0 || count < 0) fail("DrawArrays range");
-    std::vector<VulkanVertex> vertices; vertices.reserve(count);
+    std::vector<NativeVertex> vertices; vertices.reserve(count);
     for (int i = 0; i < count; ++i) vertices.push_back(arrayVertex(unsigned(first + i)));
     submit(mode, vertices);
 }
@@ -372,7 +372,7 @@ void APIENTRY vkfDrawElements(GLenum mode, GLsizei count, GLenum type, const voi
         p = b.data() + off;
     }
     if (!p && count) fail("null index buffer");
-    std::vector<VulkanVertex> vertices; vertices.reserve(count);
+    std::vector<NativeVertex> vertices; vertices.reserve(count);
     for (int i = 0; i < count; ++i)
     {
         unsigned index = type == GL_UNSIGNED_INT ? readScalar<uint32_t>(p + i * bytes) : type == GL_UNSIGNED_SHORT ? readScalar<uint16_t>(p + i * bytes) : p[i];
@@ -454,7 +454,7 @@ void enable(GLenum cap, bool on)
         // Quality hints do not change the frontend's geometry or materials.
         case GL_LINE_SMOOTH: case GL_POINT_SMOOTH: case GL_DITHER: case GL_MULTISAMPLE: break;
         case GL_DEPTH_CLAMP: state.draw.depthClamp = on; break;
-        default: LOG_F(ERROR, "Vulkan frontend capability: 0x%x", cap); fail("render capability");
+        default: LOG_F(ERROR, "Native frontend capability: 0x%x", cap); fail("render capability");
     }
 }
 void APIENTRY vkfEnable(GLenum cap) { enable(cap, true); }
@@ -628,10 +628,10 @@ void APIENTRY vkfClear(GLbitfield mask)
         accumulationComponents([](size_t i) { accumulation[i] = state.clearAccum[i & 3]; });
         mask &= ~GL_ACCUM_BUFFER_BIT;
     }
-    if (mask) vulkanClear(mask, state.clearColor, state.clearDepth, state.clearStencil, snapshot());
+    if (mask) nativeClear(mask, state.clearColor, state.clearDepth, state.clearStencil, snapshot());
 }
-void APIENTRY vkfFinish() { vulkanFinish(); }
-void APIENTRY vkfFlush() { vulkanFlush(); }
+void APIENTRY vkfFinish() { nativeFinish(); }
+void APIENTRY vkfFlush() { nativeFlush(); }
 
 GLuint &boundBuffer(GLenum target)
 {
@@ -677,7 +677,7 @@ GLboolean APIENTRY vkfUnmapBuffer(GLenum target) { if (!boundBuffer(target)) fai
 GLsync APIENTRY vkfFenceSync(GLenum, GLbitfield) { auto fence = reinterpret_cast<GLsync>(new uint8_t); fences.insert(fence); return fence; }
 void APIENTRY vkfDeleteSync(GLsync fence) { if (fences.erase(fence)) delete reinterpret_cast<uint8_t *>(fence); }
 GLboolean APIENTRY vkfIsSync(GLsync fence) { return fences.count(fence) != 0; }
-GLenum APIENTRY vkfClientWaitSync(GLsync fence, GLbitfield, GLuint64) { if (!fences.count(fence)) fail("sync object"); vulkanFinish(); return GL_ALREADY_SIGNALED; }
+GLenum APIENTRY vkfClientWaitSync(GLsync fence, GLbitfield, GLuint64) { if (!fences.count(fence)) fail("sync object"); nativeFinish(); return GL_ALREADY_SIGNALED; }
 
 size_t pixelComponents(GLenum format)
 {
@@ -766,7 +766,7 @@ void APIENTRY vkfDeleteTextures(GLsizei count, const GLuint *ids)
     for (int i = 0; i < count; ++i)
     {
         if (!ids[i]) continue;
-        if (textures.erase(ids[i])) vulkanDeleteTexture(ids[i]);
+        if (textures.erase(ids[i])) nativeDeleteTexture(ids[i]);
         for (auto &bound : state.textures) if (bound == ids[i]) bound = 0;
     }
 }
@@ -778,7 +778,7 @@ void APIENTRY vkfTexImage2D(GLenum target, GLint level, GLint internalFormat, GL
     image.rgba = decodePixels(width, height, format, type, data);
     if (internalFormat == GL_RGB || internalFormat == GL_RGB8 || internalFormat == 3)
         for (size_t i = 3; i < image.rgba.size(); i += 4) image.rgba[i] = 255;
-    vulkanUploadTexture(state.textures[state.activeTexture], level, width, height, image.rgba.data());
+    nativeUploadTexture(state.textures[state.activeTexture], level, width, height, image.rgba.data());
 }
 void APIENTRY vkfTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *data)
 {
@@ -786,7 +786,7 @@ void APIENTRY vkfTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLs
     auto it = t.levels.find(level);
     if (it == t.levels.end() || x < 0 || y < 0 || width < 0 || height < 0 || x > it->second.width - width || y > it->second.height - height)
     {
-        LOG_F(ERROR, "Vulkan texture %u, unit %u, mip %d: subimage (%d,%d) %dx%d exceeds image %dx%d (format 0x%x, type 0x%x)",
+        LOG_F(ERROR, "Native texture %u, unit %u, mip %d: subimage (%d,%d) %dx%d exceeds image %dx%d (format 0x%x, type 0x%x)",
               state.textures[state.activeTexture], state.activeTexture, level, x, y, width, height,
               it == t.levels.end() ? 0 : it->second.width, it == t.levels.end() ? 0 : it->second.height, format, type);
         fail("TexSubImage2D bounds");
@@ -795,7 +795,7 @@ void APIENTRY vkfTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLs
     auto &im = it->second;
     for (int row = 0; row < height; ++row)
         memcpy(im.rgba.data() + (size_t(y + row) * im.width + x) * 4, pixels.data() + size_t(row) * width * 4, size_t(width) * 4);
-    if (width && height) vulkanUploadTextureRegion(state.textures[state.activeTexture], level, x, y, width, height, pixels.data());
+    if (width && height) nativeUploadTextureRegion(state.textures[state.activeTexture], level, x, y, width, height, pixels.data());
 }
 void APIENTRY vkfTexParameterf(GLenum target, GLenum parameter, GLfloat value)
 {
@@ -806,11 +806,11 @@ void APIENTRY vkfTexParameterf(GLenum target, GLenum parameter, GLfloat value)
         case GL_TEXTURE_MAG_FILTER: t.magFilter = GLenum(value); break;
         case GL_TEXTURE_WRAP_S: t.wrapS = GLenum(value); break;
         case GL_TEXTURE_WRAP_T: t.wrapT = GLenum(value); break;
-        case GL_TEXTURE_MAX_ANISOTROPY_EXT: t.anisotropy = std::max(1.f, std::min(value, vulkanMaxAnisotropy())); break;
+        case GL_TEXTURE_MAX_ANISOTROPY_EXT: t.anisotropy = std::max(1.f, std::min(value, nativeMaxAnisotropy())); break;
         case GL_TEXTURE_BASE_LEVEL: t.baseLevel = int(value); break;
         case GL_TEXTURE_MAX_LEVEL: t.maxLevel = int(value); break;
         case GL_TEXTURE_PRIORITY: break; // Advisory residency hint.
-        default: LOG_F(ERROR, "Vulkan frontend texture parameter: 0x%x", parameter); fail("texture parameter");
+        default: LOG_F(ERROR, "Native frontend texture parameter: 0x%x", parameter); fail("texture parameter");
     }
 }
 void APIENTRY vkfTexParameteri(GLenum target, GLenum parameter, GLint value) { vkfTexParameterf(target, parameter, float(value)); }
@@ -871,7 +871,7 @@ void APIENTRY vkfGenerateMipmap(GLenum target)
             next.rgba[(size_t(y)*next.width+x)*4+c] = uint8_t((value+count/2)/count);
         }
         ++level;
-        vulkanUploadTexture(state.textures[state.activeTexture], level, next.width, next.height, next.rgba.data());
+        nativeUploadTexture(state.textures[state.activeTexture], level, next.width, next.height, next.rgba.data());
         texture.levels[level] = next; previous = std::move(next);
     }
 }
@@ -1009,7 +1009,7 @@ void APIENTRY vkfReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLe
 {
     if (width < 0 || height < 0 || type != GL_UNSIGNED_BYTE || !out) fail("ReadPixels arguments");
     std::vector<uint8_t> rgba(size_t(width) * height * 4);
-    if (!vulkanReadPixels(x, y, width, height, rgba.data())) fail("framebuffer readback");
+    if (!nativeReadPixels(x, y, width, height, rgba.data())) fail("framebuffer readback");
     size_t bytes = pixelComponents(format), stride = pixelStride(state.pack, width, bytes);
     auto *dest = static_cast<uint8_t *>(out) + state.pack.skipRows * stride + state.pack.skipPixels * bytes;
     for (int row = 0; row < height; ++row) for (int col = 0; col < width; ++col)
@@ -1029,7 +1029,7 @@ void APIENTRY vkfAccum(GLenum operation, GLfloat value)
     if (operation == GL_LOAD || operation == GL_ACCUM)
     {
         std::vector<uint8_t> rgba(size);
-        if (!vulkanReadPixels(0, 0, state.width, state.height, rgba.data())) fail("accumulation readback");
+        if (!nativeReadPixels(0, 0, state.width, state.height, rgba.data())) fail("accumulation readback");
         accumulationComponents([&](size_t i)
         {
             float f = rgba[i] * (value / 255.f);
@@ -1043,7 +1043,7 @@ void APIENTRY vkfAccum(GLenum operation, GLfloat value)
         std::vector<uint8_t> rgba(size);
         for (size_t i = 0; i < size; ++i) rgba[i] = uint8_t(std::max(0.f, std::min(255.f, accumulation[i] * value * 255.f)) + 0.5f);
         if (!accumulationTexture) accumulationTexture = nextTexture++;
-        vulkanUploadTexture(accumulationTexture, 0, state.width, state.height, rgba.data());
+        nativeUploadTexture(accumulationTexture, 0, state.width, state.height, rgba.data());
         auto draw = snapshot();
         materialDefaults(draw.uniforms);
         auto m = identity(); memcpy(draw.uniforms.modelView, m.data(), sizeof(draw.uniforms.modelView)); memcpy(draw.uniforms.projection, m.data(), sizeof(draw.uniforms.projection));
@@ -1057,7 +1057,7 @@ void APIENTRY vkfAccum(GLenum operation, GLfloat value)
         draw.samplers[0].wrapS = draw.samplers[0].wrapT = GL_CLAMP_TO_EDGE;
         draw.samplers[0].anisotropy = 1.f;
         draw.samplers[0].minLod = draw.samplers[0].maxLod = 0.f;
-        VulkanVertex corners[4] = {};
+        NativeVertex corners[4] = {};
         float const positions[4][2] = {{-1,-1},{1,-1},{1,1},{-1,1}};
         for (int i = 0; i < 4; ++i)
         {
@@ -1065,8 +1065,8 @@ void APIENTRY vkfAccum(GLenum operation, GLfloat value)
             for (float &c : corners[i].color) c = 1.f;
             corners[i].texcoord[0][0] = (positions[i][0]+1.f)*0.5f; corners[i].texcoord[0][1] = (positions[i][1]+1.f)*0.5f; corners[i].texcoord[0][3] = 1.f;
         }
-        VulkanVertex vertices[] = {corners[0],corners[1],corners[2],corners[0],corners[2],corners[3]};
-        vulkanDraw(vertices, 6, draw);
+        NativeVertex vertices[] = {corners[0],corners[1],corners[2],corners[0],corners[2],corners[3]};
+        nativeDraw(vertices, 6, draw);
     }
     else fail("accumulation operation");
 }
@@ -1076,10 +1076,11 @@ const GLubyte *APIENTRY vkfGetString(GLenum which)
 {
     switch (which)
     {
-        case GL_VENDOR: return reinterpret_cast<const GLubyte *>("NBlood native Vulkan");
-        case GL_RENDERER: return reinterpret_cast<const GLubyte *>(vulkanDeviceName());
-        case GL_VERSION: return reinterpret_cast<const GLubyte *>("2.1 NBlood native Vulkan frontend");
-        case GL_SHADING_LANGUAGE_VERSION: return reinterpret_cast<const GLubyte *>("1.20 built-in shaders translated to SPIR-V");
+        case GL_VENDOR: return reinterpret_cast<const GLubyte *>(nativeRendererMode() == REND_METAL ? "NBlood native Metal" : "NBlood native Vulkan");
+        case GL_RENDERER: return reinterpret_cast<const GLubyte *>(nativeDeviceName());
+        case GL_VERSION: return reinterpret_cast<const GLubyte *>(nativeRendererMode() == REND_METAL ? "2.1 NBlood native Metal frontend" : "2.1 NBlood native Vulkan frontend");
+        case GL_SHADING_LANGUAGE_VERSION: return reinterpret_cast<const GLubyte *>(nativeRendererMode() == REND_METAL
+            ? "1.20 built-in materials rendered with Metal shaders" : "1.20 built-in shaders translated to SPIR-V");
         case GL_EXTENSIONS: return reinterpret_cast<const GLubyte *>("GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_ARB_texture_non_power_of_two GL_EXT_texture_filter_anisotropic");
         default: fail("string query");
     }
@@ -1088,7 +1089,7 @@ void APIENTRY vkfGetIntegerv(GLenum which, GLint *out)
 {
     switch (which)
     {
-        case GL_MAX_TEXTURE_SIZE: case GL_MAX_RENDERBUFFER_SIZE: *out = vulkanMaxTextureSize(); break;
+        case GL_MAX_TEXTURE_SIZE: case GL_MAX_RENDERBUFFER_SIZE: *out = nativeMaxTextureSize(); break;
         case GL_MAX_TEXTURE_UNITS: case GL_MAX_TEXTURE_IMAGE_UNITS: case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: case GL_MAX_VERTEX_ATTRIBS: *out = 16; break;
         case GL_MAX_DRAW_BUFFERS: case GL_MAX_COLOR_ATTACHMENTS: *out = 1; break;
         case GL_ACTIVE_TEXTURE: *out = GL_TEXTURE0 + state.activeTexture; break;
@@ -1117,14 +1118,14 @@ void APIENTRY vkfGetIntegerv(GLenum which, GLint *out)
         case GL_DEPTH_BITS: *out = 24; break;
         case GL_STENCIL_BITS: *out = 8; break;
         case GL_RED_BITS: case GL_GREEN_BITS: case GL_BLUE_BITS: case GL_ALPHA_BITS: *out = 8; break;
-        default: LOG_F(ERROR, "Vulkan frontend: query enum 0x%x", which); fail("integer state query");
+        default: LOG_F(ERROR, "Native frontend: query enum 0x%x", which); fail("integer state query");
     }
 }
 void APIENTRY vkfGetFloatv(GLenum which, GLfloat *out)
 {
     switch (which)
     {
-        case GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT: *out = vulkanMaxAnisotropy(); break;
+        case GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT: *out = nativeMaxAnisotropy(); break;
         case GL_MODELVIEW_MATRIX: memcpy(out, state.modelView.back().data(), sizeof(Matrix)); break;
         case GL_PROJECTION_MATRIX: memcpy(out, state.projection.back().data(), sizeof(Matrix)); break;
         case GL_TEXTURE_MATRIX: memcpy(out, state.textureMatrices[state.activeTexture].back().data(), sizeof(Matrix)); break;
@@ -1312,7 +1313,7 @@ FRONTEND_DISPATCH(DECLARE_SAVED)
 #undef DECLARE_SAVED
 } // namespace
 
-void vulkanFrontendInstall(int width, int height)
+void nativeFrontendInstall(int width, int height)
 {
     if (installed) fail("duplicate frontend installation");
     state = Frontend{};
@@ -1327,12 +1328,12 @@ void vulkanFrontendInstall(int width, int height)
     installed = true;
 }
 
-void vulkanFrontendUninstall()
+void nativeFrontendUninstall()
 {
     if (!installed) return;
-    vulkanFinish();
-    for (auto const &t : textures) vulkanDeleteTexture(t.first);
-    if (accumulationTexture) vulkanDeleteTexture(accumulationTexture);
+    nativeFinish();
+    for (auto const &t : textures) nativeDeleteTexture(t.first);
+    if (accumulationTexture) nativeDeleteTexture(accumulationTexture);
     for (auto fence : fences) delete reinterpret_cast<uint8_t *>(fence);
     fences.clear(); buffers.clear(); textures.clear(); shaders.clear(); programs.clear();
     attributeStack.clear(); accumulation.clear(); accumulationTexture = 0;
@@ -1342,11 +1343,17 @@ void vulkanFrontendUninstall()
     installed = false;
 }
 
-void vulkanFrontendResize(int width, int height)
+void nativeFrontendResize(int width, int height)
 {
     state.width = width; state.height = height;
     vkfViewport(0, 0, width, height); vkfScissor(0, 0, width, height);
     accumulation.clear();
 }
+// Compatibility entry points for existing Vulkan frontend callers.
+#ifdef USE_VULKAN
+void vulkanFrontendInstall(int width, int height) { nativeFrontendInstall(width, height); }
+void vulkanFrontendUninstall() { nativeFrontendUninstall(); }
+void vulkanFrontendResize(int width, int height) { nativeFrontendResize(width, height); }
+#endif
 #undef FRONTEND_DISPATCH
-#endif // USE_VULKAN
+#endif // USE_VULKAN || USE_METAL

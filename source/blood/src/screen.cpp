@@ -319,7 +319,7 @@ void scrInit(void)
 {
     LOG_F(INFO, "Initializing engine");
 #ifdef USE_OPENGL
-    if (glrendmode != REND_VULKAN)
+    if (!videoIsNativeRenderer(glrendmode))
         glrendmode = REND_POLYMOST;
 #endif
     engineInit();

@@ -641,7 +641,7 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
 #else
         "software (x86 ASM)",
 #endif
-        nullptr, nullptr, "Polymost", "Polymer (for great justice)", "Vulkan"
+        nullptr, nullptr, "Polymost", "Polymer (for great justice)", "Vulkan", "Metal"
     };
 
     if (parm->numparms != 1)
@@ -652,6 +652,9 @@ static int osdfunc_setrendermode(osdcmdptr_t parm)
     if (m != REND_CLASSIC && m != REND_POLYMOST && m != REND_POLYMER
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
         && m != REND_VULKAN
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+        && m != REND_METAL
 #endif
        )
         return OSDCMD_SHOWHELP;
@@ -857,6 +860,9 @@ int32_t baselayer_init(void)
                          "   3 - Polygonal OpenGL\n"
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
                          "   5 - Native Vulkan\n"
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+                         "   6 - Native Metal\n"
 #endif
 #ifdef POLYMER
                          "   4 - Great justice renderer (Polymer)\n"

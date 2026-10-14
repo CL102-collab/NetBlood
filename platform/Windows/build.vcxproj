@@ -336,7 +336,10 @@
     <ClCompile Include="..\..\source\build\src\timer.cpp" />
     <ClCompile Include="..\..\source\build\src\vfs.cpp" />
     <ClCompile Include="..\..\source\build\src\voxmodel.cpp" />
-    <ClCompile Include="..\..\source\build\src\vulkan_frontend.cpp">
+    <ClCompile Include="..\..\source\build\src\native_frontend.cpp">
+      <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\source\build\src\native_renderer.cpp">
       <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">

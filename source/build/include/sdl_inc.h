@@ -43,7 +43,9 @@ Minimum required SDL versions:
 
 #define SDL2_MIN_X  2
 #define SDL2_MIN_Y  0
-#ifdef USE_VULKAN
+#ifdef USE_METAL
+#define SDL2_MIN_Z  14
+#elif defined(USE_VULKAN)
 #define SDL2_MIN_Z  6
 #else
 #define SDL2_MIN_Z  5

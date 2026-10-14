@@ -319,7 +319,10 @@ engine_excl := \
     $(engine_editor_objs) \
 
 ifeq (0,$(USE_VULKAN))
-    engine_excl += vulkan_renderer.cpp vulkan_frontend.cpp
+    engine_excl += vulkan_renderer.cpp
+endif
+ifeq (00,$(USE_VULKAN)$(USE_METAL))
+    engine_excl += native_renderer.cpp native_frontend.cpp
 endif
 
 ifeq (1,$(USE_OPENGL))
@@ -384,6 +387,12 @@ endif
 
 ifeq ($(PLATFORM),DARWIN)
     engine_objs += osxbits.mm
+    ifneq (0,$(USE_METAL))
+        engine_objs += metal_renderer.mm
+        # Existing Objective-C sources use manual retain/release. Enable ARC
+        # only for the Metal backend, which owns command and texture lifetimes.
+        $(engine_obj)/metal_renderer.$o: override CUSTOMOPT += -fobjc-arc
+    endif
     engine_tools_objs += osxbits.mm
     ifeq ($(STARTUP_WINDOW),1)
         engine_editor_objs += startosx.editor.mm

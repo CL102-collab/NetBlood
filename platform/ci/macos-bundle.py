@@ -12,8 +12,9 @@ def run(*args):
     return subprocess.check_output(args, text=True)
 
 
-def dependencies(path):
-    return {line.strip().split(" (", 1)[0] for line in run("otool", "-L", str(path)).splitlines()
+def dependencies(path, arch=None):
+    command = ["otool"] + (["-arch", arch] if arch else []) + ["-L", str(path)]
+    return {line.strip().split(" (", 1)[0] for line in run(*command).splitlines()
             if line.startswith("\t")}
 
 
@@ -38,6 +39,9 @@ def main():
         shutil.copy2(repo / "platform/Apple/bundles/NBlood.app/Contents/Resources" / name, resources)
     binary = executables / "NBlood"
     run("lipo", "-create", str(work / "x86_64/nblood"), str(work / "arm64/nblood"), "-output", str(binary))
+    for arch in ("x86_64", "arm64"):
+        if not any("/Metal.framework/" in dependency for dependency in dependencies(binary, arch)):
+            raise SystemExit(f"Native Metal framework missing from the {arch} executable")
 
     # FLAC and VPX are linked statically. SDL is the only bundled dylib; audit
     # its transitive dependencies instead of trusting the build environment.
@@ -83,7 +87,8 @@ def main():
     (resources / "INSTALL.txt").write_text(
         "Requires macOS 11 or later. Both Intel and Apple Silicon are included.\n"
         "Supply your own Blood 1.21 game files in the startup window.\n"
-        "This macOS package includes software and Polymost OpenGL rendering.\n"
+        "This macOS package includes software, Polymost OpenGL, and native Metal rendering.\n"
+        "Metal requires a Metal-capable GPU; no MoltenVK runtime is used.\n"
         "This development package is ad-hoc signed, not Apple-notarized.\n")
     for path in (*dylibs, binary, app):
         run("codesign", "--force", "--sign", "-", str(path))

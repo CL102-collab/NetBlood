@@ -828,6 +828,9 @@ int CONFIG_ReadSetup(void)
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
         case REND_VULKAN:
 #endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+        case REND_METAL:
+#endif
             glrendmode = renderer;
             gSetup.bpp = 32;
             break;

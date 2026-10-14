@@ -29,7 +29,7 @@
 #include "scriptfile.h"
 #include "softsurface.h"
 #include "vfs.h"
-#include "vulkan_renderer.h"
+#include "native_renderer.h"
 
 #ifdef USE_OPENGL
 # include "glad/glad.h"
@@ -9498,6 +9498,7 @@ int32_t renderDrawRoomsQ16(int32_t daposx, int32_t daposy, int32_t daposz,
 #ifdef USE_OPENGL
     case REND_POLYMOST:
     case REND_VULKAN:
+    case REND_METAL:
         // NOTE: In Polymost, the fragment depth depends on the x screen size!
         if (r_usenewshading == 4)
             globalvisibility = g_visibility * xdimen;
@@ -12002,9 +12003,9 @@ extern char videomodereset;
 int32_t videoSetGameMode(char davidoption, int32_t daupscaledxdim, int32_t daupscaledydim, int32_t dabpp, int32_t daupscalefactor)
 {
 #ifdef USE_OPENGL
-    if (nogl && glrendmode != REND_VULKAN) dabpp = 8;
-#ifdef USE_VULKAN
-    if ((dabpp > 8 && glrendmode == REND_VULKAN) != vulkanActive())
+    if (nogl && !nativeSupported(glrendmode)) dabpp = 8;
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if ((dabpp > 8 && videoIsNativeRenderer(glrendmode) ? glrendmode : REND_CLASSIC) != nativeRendererMode())
         videoResetMode();
 #endif
 #endif
@@ -15033,15 +15034,19 @@ int32_t videoSetRenderMode(int32_t renderer)
 #ifdef USE_VULKAN
         && renderer != REND_VULKAN
 #endif
+#ifdef USE_METAL
+        && renderer != REND_METAL
+#endif
     )
         return -1;
 
-#ifdef USE_VULKAN
-    if (renderer == REND_VULKAN && !vulkanSupported())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (videoIsNativeRenderer(renderer) && !nativeSupported(renderer))
         return -1;
     // Two accelerated backends can have identical resolution and pixel depth.
     // Changing the API still requires a new window, device and resource cache.
-    if (bpp > 8 && renderer != REND_CLASSIC && (renderer == REND_VULKAN) != vulkanActive())
+    if (bpp > 8 && renderer != REND_CLASSIC &&
+        (videoIsNativeRenderer(renderer) ? renderer : REND_CLASSIC) != nativeRendererMode())
     {
         int const previous = glrendmode;
         int const oldWidth = xres, oldHeight = yres, oldDepth = bpp, oldScale = upscalefactor;

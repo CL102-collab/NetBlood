@@ -93,7 +93,8 @@ def commands(args):
                 ["sh", str(ROOT / "platform/ci/enet-ipv4-test.sh")]] + standalone + [
             [python, str(ROOT / "tests/network/uri-registration.py")]]
     if args.suite == "shaders":
-        return [[python, str(ROOT / "tests/vulkan/generate-shaders.py"), "--check"]]
+        return [[python, str(ROOT / "platform/ci/embed-metal-shaders.py"), "--check"],
+                [python, str(ROOT / "tests/vulkan/generate-shaders.py"), "--check"]]
     if args.suite == "windows-runtime":
         return [["bash", str(ROOT / "platform/ci/validate-windows.sh"), str(output / "windows-work")]]
     if args.suite == "backend":

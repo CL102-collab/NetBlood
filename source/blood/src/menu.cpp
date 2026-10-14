@@ -498,6 +498,9 @@ const char *pzRendererStrings[] = {
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
     "VULKAN",
 #endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "METAL",
+#endif
 };
 
 const int nRendererValues[] = {
@@ -505,6 +508,9 @@ const int nRendererValues[] = {
     REND_POLYMOST,
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
     REND_VULKAN,
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_METAL,
 #endif
 };
 

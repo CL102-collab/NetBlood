@@ -20,7 +20,7 @@ Ken Silverman's official web site: http://www.advsys.net/ken
 #include "colmatch.h"
 #include "texcache.h"
 #include "hash.h"
-#include "vulkan_renderer.h"
+#include "native_renderer.h"
 
 #include <string>
 
@@ -650,10 +650,10 @@ void polymost_applyAmbientOcclusion()
     // textures. Both backends use these same parameters and the shader's
     // darkening cap, so flat surfaces retain their original lighting.
     float const radius = nearClip * 6.f, strength = 6.f, bias = 0.06f;
-#ifdef USE_VULKAN
-    if (videoGetRenderMode() == REND_VULKAN)
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (videoIsNativeRenderer(videoGetRenderMode()))
     {
-        vulkanAmbientOcclusion(projection, viewport, radius, strength, bias);
+        nativeAmbientOcclusion(projection, viewport, radius, strength, bias);
         return;
     }
 #endif
@@ -756,7 +756,7 @@ void polymost_glreset()
 {
     polymost_resetAmbientOcclusion();
     buildgl_resetStateAccounting();
-    if (!nogl || videoGetRenderMode() == REND_VULKAN)
+    if (!nogl || videoIsNativeRenderer(videoGetRenderMode()))
         buildgl_activeTexture(GL_TEXTURE0);
 
     for (bssize_t i=0; i<=MAXPALOOKUPS-1; i++)
@@ -815,7 +815,7 @@ void polymost_glreset()
     // texcache_freeptrs();
     texcache_syncmemcache();
 
-    if (!nogl || videoGetRenderMode() == REND_VULKAN)
+    if (!nogl || videoIsNativeRenderer(videoGetRenderMode()))
         polymost_initdrawpoly();
 
     DVLOG_F(LOG_DEBUG, "polymost_glreset()");
@@ -1340,10 +1340,10 @@ void polymost_glinit()
     //POGOTODO: require a max texture size >= 2048
     tilesheetSize = glinfo.maxTextureSize;
 
-#ifdef USE_VULKAN
+#if defined(USE_VULKAN) || defined(USE_METAL)
     // The native backend expands indexed texels to RGBA. Keep atlas memory
     // bounded without reducing the device limit for standalone/hires textures.
-    if (videoGetRenderMode() == REND_VULKAN)
+    if (videoIsNativeRenderer(videoGetRenderMode()))
         tilesheetSize = min(tilesheetSize, 4096);
 #endif
 
@@ -3727,7 +3727,7 @@ static void polymost_drawpoly(vec2f_t const* const dpxy, int32_t const n, int32_
 
     Bassert(pth);
 
-    // The Polymost scene frontend binds textures for both its OpenGL and Vulkan
+    // The Polymost scene frontend binds textures for its OpenGL, Vulkan and Metal
     // backends. Polymer uses this path only for rotatesprite and handles its
     // own materials.
     if (videoUsesPolymost())
@@ -10476,7 +10476,7 @@ void polymost_initosdfuncs(void)
         { "r_texcache","enable/disable OpenGL compressed texture cache",(void *) &glusetexcache, CVAR_INT, 0, 2 },
 #endif
         { "r_animsmoothing","enable/disable model animation smoothing",(void *) &r_animsmoothing, CVAR_BOOL, 0, 1 },
-        { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost and Vulkan", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
+        { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost, Vulkan and Metal", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
         { "r_anisotropy", "changes the OpenGL texture anisotropy setting (requires r_useindexedcolortextures to be off)", (void *) &glanisotropy, CVAR_INT|CVAR_FUNCPTR|CVAR_RESTARTVID, 1, 16 },
         { "r_downsize","controls downsizing factor (quality) for hires textures",(void *) &r_downsize, CVAR_INT|CVAR_FUNCPTR, 0, 5 },
         { "r_finishbeforeswap", "run glFinish() before swapping when 'r_glfinish' is 1 and when not using KMT vsync", (void *) &r_finishbeforeswap, CVAR_BOOL, 0, 1 },

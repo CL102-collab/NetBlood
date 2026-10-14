@@ -59,13 +59,28 @@ for arch in x86_64 arm64; do
     "$makecmd" -j"$jobs" "$work/$arch/nblood" PLATFORM=DARWIN ARCH="$arch" \
         CC=clang CXX=clang++ COBJC=clang COBJCXX=clang++ \
         obj="$work/$arch/obj" blood_game="$work/$arch/nblood" \
-        LTO=0 NOASM=1 HAVE_GTK2=0 USE_VULKAN=0 POLYMER=0 \
+        LTO=0 NOASM=1 HAVE_GTK2=0 USE_VULKAN=0 USE_METAL=1 POLYMER=0 \
         "DEPENDENCY_PREFIX=$prefix" \
         "SDLCONFIG=$prefix/bin/sdl2-config" \
         "LIBDIRS=-L$prefix/lib" \
         "CUSTOMOPT=-I$prefix/include -mmacosx-version-min=11.0" \
         LDFLAGS=-Wl,-headerpad_max_install_names
 done
+
+# Compile the Metal shader and backend on a real Apple SDK. Hosted macOS VMs
+# may expose no GPU; record that case rather than claiming a rendered result.
+metal_status=0
+metal_output=$work/metal-validation/run-$(date -u +%Y%m%dT%H%M%S)-$$
+SDL_CONFIG="$work/$(uname -m)/prefix/bin/sdl2-config" \
+    bash tests/metal/backend-test.sh --output "$metal_output" || metal_status=$?
+if [[ $metal_status -eq 77 ]]; then
+    echo 'Metal shader/backend compilation passed; runtime validation requires a Metal-capable Mac.'
+    if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+        echo 'Metal shader/backend compilation passed. Runtime validation was unavailable because this runner exposes no usable Metal device/display; see the Metal validation report.' >> "$GITHUB_STEP_SUMMARY"
+    fi
+elif [[ $metal_status -ne 0 ]]; then
+    exit "$metal_status"
+fi
 
 python3 platform/ci/macos-bundle.py --build-root "$work" --destination "$work/NetBlood.app"
 ditto -c -k --sequesterRsrc --keepParent "$work/NetBlood.app" "$repo/dist/netblood-macos-universal.zip"

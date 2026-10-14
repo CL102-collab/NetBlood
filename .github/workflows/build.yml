@@ -235,6 +235,16 @@ jobs:
           export NETBLOOD_REVISION="$(git rev-parse HEAD)"
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           bash platform/ci/macos.sh
+      - name: Upload native Metal validation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-metal-macos
+          path: |
+            .ci-build/macos/metal-validation/**/*.json
+            .ci-build/macos/metal-validation/**/*.log
+          include-hidden-files: true
+          if-no-files-found: warn
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-macos-universal

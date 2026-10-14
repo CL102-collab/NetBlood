@@ -109,6 +109,9 @@ static const struct { const char *name; int mode; } renderers[] = {
 #if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
     { "Vulkan", REND_VULKAN },
 #endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Metal", REND_METAL },
+#endif
 #ifdef POLYMER
     { "OpenGL (Polymer)", REND_POLYMER },
 #endif

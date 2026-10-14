@@ -14,7 +14,7 @@
 #include "renderlayer.h"
 #include "sdl_inc.h"
 #include "softsurface.h"
-#include "vulkan_renderer.h"
+#include "native_renderer.h"
 #include <vector>
 
 #if SDL_MAJOR_VERSION >= 2
@@ -656,10 +656,10 @@ static int sdlayer_checkvsync(int checkSync)
 
 int32_t videoSetVsync(int32_t newSync)
 {
-#ifdef USE_VULKAN
-    if (vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (nativeActive())
     {
-        vulkanSetVsync(newSync);
+        nativeSetVsync(newSync);
         vsync_renderlayer = newSync;
         return newSync;
     }
@@ -1479,7 +1479,7 @@ void videoGetModes(int display)
         // HACK: 8-bit == Software, 32-bit == OpenGL
         SDL_ADDMODE(dispmode.w, dispmode.h, 8, 1);
 #ifdef USE_OPENGL
-        if (!nogl || vulkanSupported())
+        if (!nogl || nativeSupported(REND_VULKAN) || nativeSupported(REND_METAL))
             SDL_ADDMODE(dispmode.w, dispmode.h, 32, 1);
 #endif
         if ((dispmode.w > maxx) || (dispmode.h > maxy))
@@ -1507,7 +1507,7 @@ void videoGetModes(int display)
         SDL_ADDMODE(mode.x, mode.y, 8, 0);
 
 #ifdef USE_OPENGL
-        if (nogl && !vulkanSupported())
+        if (nogl && !nativeSupported(REND_VULKAN) && !nativeSupported(REND_METAL))
             continue;
 
         SDL_ADDMODE(mode.x, mode.y, 32, 0);
@@ -1531,7 +1531,7 @@ int32_t videoCheckMode(int32_t *x, int32_t *y, int32_t c, int32_t fs, int32_t fo
 
     if (c>8
 #ifdef USE_OPENGL
-            && nogl && !(glrendmode == REND_VULKAN && vulkanSupported())
+            && nogl && !nativeSupported(glrendmode)
 #endif
        ) return -1;
 
@@ -1600,7 +1600,7 @@ static void destroy_window_resources()
     if (g_ImGui_IO)
     {
 #ifdef USE_OPENGL
-        if (!vulkanActive())
+        if (!nativeActive())
             ImGui_ImplOpenGL3_Shutdown();
 #endif
         ImGui_ImplSDL2_Shutdown();
@@ -1609,17 +1609,17 @@ static void destroy_window_resources()
     }
 
 #ifdef USE_OPENGL
-    if (vulkanActive() || (sdl_context && glinfo.filled))
+    if (nativeActive() || (sdl_context && glinfo.filled))
     {
         polymost_glreset();
         polymost_contextReset();
     }
 #endif
-#ifdef USE_VULKAN
-    if (vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (nativeActive())
     {
-        vulkanFrontendUninstall();
-        vulkanDestroy();
+        nativeFrontendUninstall();
+        nativeDestroy();
     }
 #endif
 
@@ -1642,10 +1642,15 @@ void engineBeginImGuiFrame(void)
     Bassert(g_ImGuiFrameActive == false);
 #if SDL_MAJOR_VERSION >= 2
 #ifdef USE_OPENGL
-    if (!vulkanActive())
+    if (!nativeActive())
         ImGui_ImplOpenGL3_NewFrame();
 #endif
     ImGui_ImplSDL2_NewFrame();
+    // Native backends render to the selected game resolution and scale only
+    // when presenting to the drawable. Keep GUI clip rectangles in that space
+    // on Retina displays instead of mixing window points and drawable pixels.
+    if (nativeActive() && g_ImGui_IO->DisplaySize.x > 0.f && g_ImGui_IO->DisplaySize.y > 0.f)
+        g_ImGui_IO->DisplayFramebufferScale = ImVec2(xres / g_ImGui_IO->DisplaySize.x, yres / g_ImGui_IO->DisplaySize.y);
     ImGui::NewFrame();
     g_ImGuiFrameActive = true;
 #endif
@@ -1685,8 +1690,13 @@ void engineSetupImGui(void)
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
 #ifdef USE_OPENGL
-    if (vulkanActive())
-        ImGui_ImplSDL2_InitForVulkan(sdl_window);
+    if (nativeActive())
+    {
+        if (nativeRendererMode() == REND_METAL)
+            ImGui_ImplSDL2_InitForMetal(sdl_window);
+        else
+            ImGui_ImplSDL2_InitForVulkan(sdl_window);
+    }
     else
     {
         ImGui_ImplSDL2_InitForOpenGL(sdl_window, sdl_context);
@@ -1695,8 +1705,8 @@ void engineSetupImGui(void)
 #endif
 
     g_ImGui_IO->Fonts->AddFontDefault();
-#ifdef USE_VULKAN
-    if (vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (nativeActive())
     {
         unsigned char *pixels;
         int width, height;
@@ -1706,7 +1716,7 @@ void engineSetupImGui(void)
         glBindTexture(GL_TEXTURE_2D, texture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         g_ImGui_IO->Fonts->SetTexID((ImTextureID)(uintptr_t)texture);
-        g_ImGui_IO->BackendRendererName = "NBlood native Vulkan";
+        g_ImGui_IO->BackendRendererName = nativeRendererMode() == REND_METAL ? "NBlood native Metal" : "NBlood native Vulkan";
         g_ImGui_IO->BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
     }
 #endif
@@ -1740,9 +1750,9 @@ void sdlayer_setvideomode_opengl(void)
 
 int32_t setvideomode_sdlcommon(int32_t *x, int32_t *y, int32_t c, int32_t fs, int32_t *regrab)
 {
-#ifdef USE_VULKAN
-    bool const wantVulkan = c > 8 && glrendmode == REND_VULKAN;
-    if (sdl_window && wantVulkan != vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    int const wantedNativeRenderer = c > 8 && videoIsNativeRenderer(glrendmode) ? glrendmode : REND_CLASSIC;
+    if (sdl_window && wantedNativeRenderer != nativeRendererMode())
     {
         while (lockcount) videoEndDrawing();
         if (bpp == 8 && sdl_context)
@@ -1774,12 +1784,12 @@ int32_t setvideomode_sdlcommon(int32_t *x, int32_t *y, int32_t c, int32_t fs, in
     while (lockcount) videoEndDrawing();
 
 #ifdef USE_OPENGL
-    if (sdl_surface || vulkanActive())
+    if (sdl_surface || nativeActive())
     {
         if (bpp > 8)
             polymost_glreset();
     }
-    if (!nogl || vulkanActive())
+    if (!nogl || nativeActive())
     {
         if (bpp == 8)
             glsurface_destroy();
@@ -1814,7 +1824,7 @@ int setvideomode_sdlcommonpost(int32_t x, int32_t y, int32_t c, int32_t fs, int3
     videomodereset = 0;
 
 #ifdef USE_OPENGL
-    if (!nogl && !vulkanActive())
+    if (!nogl && !nativeActive())
         sdlayer_setvideomode_opengl();
 #endif
 
@@ -1921,12 +1931,12 @@ int setvideomode_sdlcommonpost(int32_t x, int32_t y, int32_t c, int32_t fs, int3
     SDL_FlushEvent(SDL_WINDOWEVENT);
 #endif
 
-#ifdef USE_VULKAN
-    if (vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (nativeActive())
     {
-        if (!vulkanResize(x, y))
+        if (!nativeResize(x, y))
             return -1;
-        vulkanFrontendResize(x, y);
+        nativeFrontendResize(x, y);
     }
 #endif
 
@@ -1972,28 +1982,38 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
     int const matchedResolution = (desktopmode.w == x && desktopmode.h == y);
     int const borderless = (r_borderless == 1 || (r_borderless == 2 && matchedResolution)) ? SDL_WINDOW_BORDERLESS : 0;
 
-#ifdef USE_VULKAN
-    if (c > 8 && glrendmode == REND_VULKAN)
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (c > 8 && videoIsNativeRenderer(glrendmode))
     {
+        char const *const apiName = glrendmode == REND_METAL ? "Metal" : "Vulkan";
+        Uint32 apiFlags = 0;
+#ifdef USE_METAL
+        if (glrendmode == REND_METAL)
+            apiFlags = SDL_WINDOW_METAL | SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
+#ifdef USE_VULKAN
+        if (glrendmode == REND_VULKAN)
+            apiFlags = SDL_WINDOW_VULKAN;
+#endif
         sdl_window = SDL_CreateWindow("", g_windowPosValid ? g_windowPos.x : (int)SDL_WINDOWPOS_CENTERED_DISPLAY(display),
             g_windowPosValid ? g_windowPos.y : (int)SDL_WINDOWPOS_CENTERED_DISPLAY(display), x, y,
-            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | borderless);
-        if (!sdl_window || !vulkanCreate(sdl_window, x, y, vsync_renderlayer))
+            apiFlags | SDL_WINDOW_RESIZABLE | borderless);
+        if (!sdl_window || !nativeCreate(glrendmode, sdl_window, x, y, vsync_renderlayer))
         {
-            LOG_F(ERROR, "Unable to initialize the native Vulkan renderer: %s", SDL_GetError());
+            LOG_F(ERROR, "Unable to initialize the native %s renderer: %s", apiName, SDL_GetError());
             destroy_window_resources();
             return -1;
         }
-        vulkanFrontendInstall(x, y);
+        nativeFrontendInstall(x, y);
         glinfo = {};
-        glinfo.vendor = "Vulkan";
-        glinfo.renderer = vulkanDeviceName();
-        glinfo.version = "Native Vulkan";
+        glinfo.vendor = apiName;
+        glinfo.renderer = nativeDeviceName();
+        glinfo.version = glrendmode == REND_METAL ? "Native Metal" : "Native Vulkan";
         glinfo.extensions = "GL_ARB_multitexture GL_ARB_shader_objects GL_ARB_texture_non_power_of_two GL_EXT_bgra GL_ARB_shader_texture_lod";
         glinfo.glsl = glinfo.multitex = glinfo.texnpot = glinfo.bgra = 1;
-        glinfo.depthclamp = vulkanDepthClampSupported();
-        glinfo.maxTextureSize = vulkanMaxTextureSize();
-        glinfo.maxanisotropy = vulkanMaxAnisotropy();
+        glinfo.depthclamp = nativeDepthClampSupported();
+        glinfo.maxTextureSize = nativeMaxTextureSize();
+        glinfo.maxanisotropy = nativeMaxAnisotropy();
         glinfo.filled = 1;
         glinfo.vsync = 1;
         engineSetupImGui();
@@ -2088,7 +2108,7 @@ int32_t videoSetMode(int32_t x, int32_t y, int32_t c, int32_t fs)
         return -1;
 
 #if MICROPROFILE_ENABLED != 0
-    if (sdl_context && !vulkanActive())
+    if (sdl_context && !nativeActive())
         MicroProfileGpuInitGL();
 #endif
 
@@ -2212,12 +2232,12 @@ void videoEndDrawing(void)
 extern "C" void AndroidDrawControls();
 #endif
 
-#ifdef USE_VULKAN
-static void vulkanDrawImGui(ImDrawData const *data)
+#if defined(USE_VULKAN) || defined(USE_METAL)
+static void nativeDrawImGui(ImDrawData const *data)
 {
     if (!data || data->DisplaySize.x <= 0 || data->DisplaySize.y <= 0)
         return;
-    VulkanDrawState state = {};
+    NativeDrawState state = {};
     auto identity = [](float *m) { m[0] = m[5] = m[10] = m[15] = 1.f; };
     identity(state.uniforms.modelView);
     identity(state.uniforms.projection);
@@ -2246,7 +2266,7 @@ static void vulkanDrawImGui(ImDrawData const *data)
         sampler.wrapS = sampler.wrapT = GL_CLAMP_TO_EDGE;
         sampler.anisotropy = 1.f;
     }
-    std::vector<VulkanVertex> vertices;
+    std::vector<NativeVertex> vertices;
     for (int listIndex = 0; listIndex < data->CmdListsCount; ++listIndex)
     {
         auto const *list = data->CmdLists[listIndex];
@@ -2285,7 +2305,7 @@ static void vulkanDrawImGui(ImDrawData const *data)
                 vertex.color[2] = ((input.col >> IM_COL32_B_SHIFT) & 255) / 255.f;
                 vertex.color[3] = ((input.col >> IM_COL32_A_SHIFT) & 255) / 255.f;
             }
-            vulkanDraw(vertices.data(), (unsigned)vertices.size(), state);
+            nativeDraw(vertices.data(), (unsigned)vertices.size(), state);
         }
     }
 }
@@ -2303,8 +2323,8 @@ void videoShowFrame(int32_t w)
     if (mobile_halted) return;
 #endif
 
-#ifdef USE_VULKAN
-    if (vulkanActive())
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (nativeActive())
     {
         if (palfadedelta)
             fullscreen_tint_gl(palfadergb.r, palfadergb.g, palfadergb.b, palfadedelta);
@@ -2312,12 +2332,12 @@ void videoShowFrame(int32_t w)
         if (g_ImGuiFrameActive)
         {
             ImGui::Render();
-            vulkanDrawImGui(ImGui::GetDrawData());
+            nativeDrawImGui(ImGui::GetDrawData());
             g_ImGuiFrameActive = false;
         }
-        if (!vulkanPresent())
+        if (!nativePresent())
         {
-            LOG_F(ERROR, "Native Vulkan presentation failed.");
+            LOG_F(ERROR, "Native %s presentation failed.", nativeRendererMode() == REND_METAL ? "Metal" : "Vulkan");
             quitevent = 1;
         }
         if (w != -1)
@@ -2503,7 +2523,7 @@ int32_t videoSetGamma(void)
         return 0;
 
 #ifdef USE_OPENGL
-    if (!nogl || vulkanActive())
+    if (!nogl || nativeActive())
     {
         g_glColorCorrection = { g_videoGamma, g_videoContrast, g_videoSaturation, 0.f };
 
