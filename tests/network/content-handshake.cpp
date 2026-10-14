@@ -3,6 +3,7 @@
 #define ENET_IMPLEMENTATION
 #include "enet.h"
 #include "netassets.h"
+#include "netaddon.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -229,6 +230,31 @@ Bytes hello(uint32_t fingerprint, bool capable = true, uint8_t autoAim = 1, uint
     if (capable) writer.u32(netassets::ManifestVersion);
     return writer.data;
 }
+struct AddonOffer {
+    uint32_t fingerprint = 0;
+    std::string identity;
+};
+AddonOffer addonManifest(const Message &message) {
+    check(message.header.type == netwire::AddonManifest, "expected addon manifest before content manifest");
+    check(message.header.session != 0, "addon manifest session missing");
+    netwire::Reader reader(message.body.data(), message.body.size());
+    AddonOffer offer;
+    offer.fingerprint = reader.u32();
+    netaddon::Profile profile;
+    std::string error;
+    check(netaddon::decode(reader, profile, error), "server addon profile invalid");
+    offer.identity = netaddon::identity(profile);
+    check(offer.identity.size() == 32, "server addon identity invalid");
+    return offer;
+}
+Message approveAddon(Endpoint &client, const Message &offered, uint32_t fingerprint) {
+    const AddonOffer addon = addonManifest(offered);
+    netwire::Writer ready;
+    ready.text(addon.identity, 32);
+    ready.u32(fingerprint);
+    client.send(netwire::AddonReady, ready.data, offered.header.session, offered.header.generation);
+    return client.receive();
+}
 uint32_t manifest(const Message &message) {
     check(message.header.type == netwire::ContentManifest, "expected asset manifest");
     check(message.header.session != 0, "manifest session missing");
@@ -263,6 +289,8 @@ void passwordProbe(unsigned port, const std::string &mode, const std::string &pa
     }
     if (mode == "bypass") {
         netwire::Writer ready; ready.u32(0); ready.u32(0);
+        client.send(netwire::AddonReady, ready.data);
+        client.send(netwire::RequestAddon, ready.data);
         client.send(netwire::ContentReady, ready.data);
         client.send(netwire::Ready, ready.data);
         client.send(netwire::RequestMap, ready.data);
@@ -279,14 +307,16 @@ void passwordProbe(unsigned port, const std::string &mode, const std::string &pa
         correct.insert(correct.end(), extension.data.begin(), extension.data.end());
         client.send(netwire::Hello, correct);
         netwire::Writer ready; ready.u32(0); ready.u32(0);
+        client.send(netwire::AddonReady, ready.data);
+        client.send(netwire::RequestAddon, ready.data);
         client.send(netwire::ContentReady, ready.data);
         client.send(netwire::Ready, ready.data);
         client.send(netwire::RequestMap, ready.data);
     }
     const Message response = client.receive();
     if (mode == "accepted" || mode == "bypass" || mode == "open-empty" || mode == "open-missing") {
-        manifest(response);
-        std::printf("password_accepted=1 content_manifest=1 preauth_bypass=%u\n", mode == "bypass");
+        manifest(approveAddon(client, response, 0));
+        std::printf("password_accepted=1 addon_manifest=1 content_manifest=1 preauth_bypass=%u\n", mode == "bypass");
         return;
     }
     check(response.header.type == netwire::Reject, "password fault received content or gameplay instead of rejection");
@@ -304,13 +334,44 @@ void probe(unsigned port, const std::string &mode, uint32_t fingerprint, const c
     Endpoint client(port, false);
     client.send(netwire::Hello, hello(fingerprint, mode != "legacy", mode == "profile-hold" ? 3 : 1,
                                     mode == "profile-hold" ? 0 : 2));
-    const Message offered = client.receive();
+    const Message addonOffered = client.receive();
     if (mode == "legacy") {
-        check(offered.header.type == netwire::Welcome, "legacy CRC client was not admitted");
-        std::puts("legacy_admitted=1");
+        check(addonOffered.header.type == netwire::Reject, "client without mandatory manifest capability was admitted");
+        std::puts("legacy_rejected=1");
         return;
     }
+    if (mode == "invalid-addon-ready" || mode == "wrong-addon-ready" || mode == "addon-bypass") {
+        const AddonOffer addon = addonManifest(addonOffered);
+        netwire::Writer ready;
+        ready.text(mode == "wrong-addon-ready" ? std::string(32, '0') : addon.identity, 32);
+        if (mode != "invalid-addon-ready") ready.u32(fingerprint);
+        if (mode == "addon-bypass") {
+            // Neither a valid content reply nor a stale-session addon reply
+            // can skip the addon gate; retransmitted Hello is also ignored.
+            netwire::Writer content;
+            content.u32(fingerprint);
+            client.send(netwire::ContentReady, content.data, addonOffered.header.session, addonOffered.header.generation);
+            client.send(netwire::AddonReady, ready.data, addonOffered.header.session ^ 1u, addonOffered.header.generation);
+            client.send(netwire::Hello, hello(fingerprint));
+            client.silence(500);
+        } else {
+            client.send(netwire::AddonReady, ready.data, addonOffered.header.session, addonOffered.header.generation);
+            const Message rejected = client.receive();
+            check(rejected.header.type == netwire::Reject, "invalid addon acknowledgement was admitted");
+            netwire::Reader reason(rejected.body.data(), rejected.body.size());
+            check(reason.text(160).find("addon") != std::string::npos && reason.end(),
+                  "invalid addon acknowledgement rejection is unclear");
+            std::puts("invalid_addon_ready_rejected=1 content_manifest=0");
+            return;
+        }
+    }
+    const Message offered = approveAddon(client, addonOffered, fingerprint);
     const uint32_t expected = manifest(offered);
+    if (mode == "addon-bypass") {
+        check(expected == fingerprint, "probe supplied incorrect fingerprint");
+        std::puts("addon_gate_enforced=1 wrong_session_ignored=1 repeated_hello_suppressed=1");
+        return;
+    }
     if (mode == "inspect") {
         std::printf("fingerprint=%u generation=%u assets_manifest=1\n", expected, offered.header.generation);
         return;
@@ -398,6 +459,30 @@ void fakeServer(unsigned port, const std::string &mode) {
     const uint32_t fingerprint = helloReader.u32();
     helloReader.text(15); helloReader.u8(); helloReader.u8(); helloReader.u8();
     check(helloReader.u32() == netassets::ManifestVersion && helloReader.end(), "client omitted manifest capability");
+    // Faults in the content manifest are tested after the mandatory addon
+    // gate. A stock profile requires no download or process restart.
+    if (mode != "old-reject" && mode != "no-manifest") {
+        server.sendWire(advertisement(netwire::Version, "content-handshake-fixture"));
+        netaddon::Profile profile;
+        profile.name = "Blood";
+        netaddon::Selection ini;
+        ini.kind = netaddon::SelectionKind::Ini;
+        ini.path = "BLOOD.INI";
+        profile.selections.push_back(ini);
+        Bytes encoded;
+        std::string error;
+        check(netaddon::encode(profile, encoded, error), "could not encode stock addon profile");
+        netwire::Writer addon;
+        addon.u32(fingerprint);
+        addon.bytes(encoded.data(), encoded.size());
+        server.send(netwire::AddonManifest, addon.data, 0x73492811u, 1);
+        const Message approved = server.receive();
+        check(approved.header.type == netwire::AddonReady && approved.header.session == 0x73492811u,
+              "client did not approve stock addon profile");
+        netwire::Reader ready(approved.body.data(), approved.body.size());
+        check(ready.text(32) == netaddon::identity(profile) && ready.u32() == fingerprint && ready.end(),
+              "client approved wrong addon profile or content fingerprint");
+    }
     netwire::Writer response;
     uint32_t type = netwire::ContentManifest;
     if (mode == "old-reject") {

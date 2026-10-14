@@ -19,6 +19,9 @@ tests/network/map-storage-test.sh
 SANITIZE=1 tests/network/map-storage-test.sh
 tests/network/assets-test.sh
 SANITIZE=1 tests/network/assets-test.sh
+SANITIZE=1 tests/network/addon-test.sh
+SANITIZE=1 tests/network/addon-engine-test.sh
+SANITIZE=1 tests/network/addon-restart-test.sh
 SANITIZE=1 tests/network/server-settings-test.sh
 tests/network/teams-test.sh
 SANITIZE=1 tests/network/teams-test.sh
@@ -271,7 +274,7 @@ maps or restart games directly, start games, host another server, or change serv
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 7. Rebuild the server and all
+The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 8. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 
@@ -575,6 +578,29 @@ binary hash, download fixture hash and relay counters in `result.json`. This
 test requires the base game resources on both sides: automatic map downloading
 does not distribute the game's archives or custom art/sound resources.
 
+## Automatic addon activation
+
+The standalone addon tests exercise profile parsing, safe cache publication,
+checksums, archive loading order, installed-package discovery, and real process
+restart with a private password handoff. The engine inventory test also needs
+SDL2 development headers and `pkg-config`.
+
+Run the complete join flow with an isolated display:
+
+```sh
+python3 platform/ci/validate.py --suite addon-join \
+  --binary ./nblood --data-dir /path/to/blood-1.21 \
+  --output /tmp/netblood-addon-evidence
+```
+
+The generated addon includes a custom INI, map, nested definitions, loose data,
+and a PK3. Coverage includes URI downloads under packet loss, a visible restart
+notice, real process restart and reconnect, reuse of installed files, corrupt
+cache repair, INI mismatch, password entry before transfer, Discord joins and
+switching back to stock, ordinary stock joins, and a blocked cache. Archive
+console scripts must never execute, and local settings must survive activation.
+The fixture is generated locally and needs no commercial addon download.
+
 ## Missing or different mod assets
 
 Run the content diagnostic integration test under the same display and asset
@@ -587,22 +613,16 @@ python3 tests/network/content-mismatch.py \
   --output /tmp/netblood-content-mismatch-evidence
 ```
 
-The server's fixture registers three unused external DAT resources through
-`blood.def`, adds a valid ART containing one unused tile, and overrides a loose
-weapon sound. A joining client has the same definitions but lacks one DAT, the
-ART and the RAW sound. It has different bytes in a second DAT of the same
-length and an exact third DAT. The client must
-report the missing and different files individually in its log and saved
-`net-content-mismatch.txt`, including the server's expected filename, size in
-bytes and MD5 digest. The test calculates expected lengths and digests with
-Python independently of the game. Matching files must not be reported, no
-installed client files may change, and no map download or authoritative state
-installation may begin. A second client is missing only the loose RAW sound:
-the manifest must reject it even though that lazy sound override is outside
-the legacy aggregate CRC. A third client has exact asset bytes but definitions
-that do not register them; it must distinguish files that are present but not
-loaded from files that are missing. A client with every exact fixture file and
-the correct definitions must then join the same server successfully.
+The server fixture registers unused external DAT resources through `blood.def`,
+adds a valid ART containing one unused tile, and overrides a loose weapon sound.
+Missing or changed advertised DAT/RAW/DEF files must download into the separate
+addon cache and activate through restart. Original client files must remain
+unchanged. The unselected base-prefix ART remains outside this addon profile;
+missing and equal-size changed ART must still produce exact filename, size and
+MD5 diagnostics before any map or authoritative state loads. Expected lengths
+and digests are computed independently with Python. Matching assets must not be
+reported. Clients missing only a downloadable sound or its DEF registration
+must recover automatically, and an exact-match client must join directly.
 
 The evidence directory keeps the tested executable's hash, fixture sizes and
 MD5s, full logs, saved report, process exits and diagnostic rows in
@@ -621,11 +641,13 @@ python3 tests/network/content-handshake.py \
 ```
 
 A small ENet peer exchanges real UDP packets with the production dedicated
-server and graphical client. The checks cover repeated Hello suppression,
-wrong-session, truncated and wrong-CRC Ready messages, a server map change
-during manifest negotiation, compatibility with old CRC-only clients, malformed
-or truncated manifests, and actionable rejection when a server omits the
-required manifest.
+server and graphical client. The checks cover mandatory addon approval, invalid
+addon identities and truncated replies, repeated Hello suppression, wrong-session,
+truncated and wrong-CRC Ready messages, a server map change
+during manifest negotiation, rejection of CRC-only clients without the required
+addon capability, malformed or truncated manifests, and actionable rejection
+when a server omits the required manifest. Password probes also attempt addon
+requests and approval before authentication and after a rejected password.
 
 ## Connection version compatibility
 
@@ -652,7 +674,7 @@ client receives a rejection explaining the mismatch; current clients keep the
 error and update guidance visible after disconnecting, including when an older
 server sends only its historical rejection packet.
 
-The harness checks real-server connections advertising protocols 6, 7 and 8,
+The harness checks real-server connections advertising protocols 7, 8 and 9,
 verifies the version/build advertisement arrives first, and confirms mismatched
 peers never enter gameplay. A normal current client must still join. Small ENet
 server fixtures then require older/newer protocols or send an old-format

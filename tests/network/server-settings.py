@@ -147,7 +147,8 @@ def main():
     compile_command = shlex.split(os.environ.get("CXX", "c++")) + ["-std=c++11", "-O1", "-g", "-Wall", "-Wextra", "-Werror"]
     compile_command += shlex.split(os.environ.get("CPPFLAGS", "")) + shlex.split(os.environ.get("CXXFLAGS", ""))
     compile_command += [f"-I{repository / 'source/build/include'}", f"-I{repository / 'source/blood/src'}",
-                        str(Path(__file__).with_name("content-handshake.cpp")), "-pthread"]
+                        str(Path(__file__).with_name("content-handshake.cpp")),
+                        str(repository / "source/blood/src/netaddon.cpp"), "-pthread"]
     compile_command += shlex.split(os.environ.get("LDFLAGS", "")) + ["-o", str(peer)]
     subprocess.run(compile_command, check=True)
     result = {"passed": False, "source_binary": str(source_binary),

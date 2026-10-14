@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 7;
+constexpr uint32_t Version    = 8;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -42,6 +42,10 @@ enum Type : uint32_t
     PublicEndpoint, // Optional live discovery metadata; never recorded in demos.
     Intermission, // Final scoreboard and remaining match-end pause.
     TeamChat, // Private team channel; the payload retains the existing Chat layout.
+    AddonManifest, // Authenticated addon negotiation precedes content and map loading.
+    RequestAddon,
+    AddonData,
+    AddonReady,
     TypeCount
 };
 // Build angles wrap at 2048<<16. Normalize before signed game arithmetic.

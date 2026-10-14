@@ -16,7 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 NETWORK = (
     "server-settings", "map-download", "content-mismatch", "content-handshake",
-    "client-version", "player-names", "password", "scoreboard", "cinematics",
+    "client-version", "player-names", "password", "addon-join", "scoreboard", "cinematics",
     "team-balance", "team-shuffle", "team-chat", "coop-lives", "map-vote",
     "intermission", "uri-join", "discord-presence", "stun-live",
 )

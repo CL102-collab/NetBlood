@@ -248,6 +248,9 @@
     <ClCompile Include="..\..\source\blood\src\misc.cpp" />
     <ClCompile Include="..\..\source\blood\src\network.cpp" />
     <ClCompile Include="..\..\source\blood\src\netstun_client.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netaddon.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netaddon_engine.cpp" />
+    <ClCompile Include="..\..\source\blood\src\netaddon_restart.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontent.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcontentreport.cpp" />
     <ClCompile Include="..\..\source\blood\src\netcountry.cpp" />
@@ -390,6 +393,9 @@
     <ClInclude Include="..\..\source\blood\src\netintermission.h" />
     <ClInclude Include="..\..\source\blood\src\netstun.h" />
     <ClInclude Include="..\..\source\blood\src\netstun_client.h" />
+    <ClInclude Include="..\..\source\blood\src\netaddon.h" />
+    <ClInclude Include="..\..\source\blood\src\netaddon_engine.h" />
+    <ClInclude Include="..\..\source\blood\src\netaddon_restart.h" />
     <ClInclude Include="..\..\source\blood\src\netcontent.h" />
     <ClInclude Include="..\..\source\blood\src\netassets.h" />
     <ClInclude Include="..\..\source\blood\src\netcontentreport.h" />

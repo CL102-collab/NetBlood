@@ -70,7 +70,8 @@ def main():
     command = shlex.split(os.environ.get("CXX", "c++")) + ["-std=c++11", "-O1", "-g", "-Wall", "-Wextra", "-Werror"]
     command += shlex.split(os.environ.get("CPPFLAGS", "")) + shlex.split(os.environ.get("CXXFLAGS", ""))
     command += [f"-I{repository / 'source/build/include'}", f"-I{repository / 'source/blood/src'}",
-                str(Path(__file__).with_suffix(".cpp")), "-pthread"]
+                str(Path(__file__).with_suffix(".cpp")),
+                str(repository / "source/blood/src/netaddon.cpp"), "-pthread"]
     command += shlex.split(os.environ.get("LDFLAGS", "")) + ["-o", str(peer)]
     subprocess.run(command, check=True)
     source_binary = args.binary
@@ -97,6 +98,9 @@ def main():
                     "dedicated server", args.timeout)
         inspected = probe("inspect", server_port)
         fingerprint = int(re.search(r"fingerprint=(\d+)", inspected).group(1))
+        probe("addon-bypass", server_port, fingerprint)
+        probe("invalid-addon-ready", server_port, fingerprint)
+        probe("wrong-addon-ready", server_port, fingerprint)
         probe("invalid-ready", server_port, fingerprint)
         probe("wrong-ready", server_port, fingerprint)
         probe("legacy", server_port, fingerprint)

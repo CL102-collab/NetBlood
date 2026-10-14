@@ -42,7 +42,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 7,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 8,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -59,7 +59,7 @@ void framing()
         bad = encoded; field(bad, offset, 0xffffffffu); CHECK(!decode(bad));
     }
     bad = encoded; field(bad, 8, 0); CHECK(!decode(bad));
-    bad = encoded; field(bad, 4, 6); CHECK(!decode(bad)); // The previous protocol has no cooperative life budget.
+    bad = encoded; field(bad, 4, 7); CHECK(!decode(bad)); // Previous peers cannot negotiate required addons.
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
     static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
                   "Existing packet and demo message IDs must not change");
@@ -71,6 +71,9 @@ void framing()
     static_assert(netwire::Chat == 7 && netwire::PublicEndpoint == 22 &&
                   netwire::Intermission == 23 && netwire::TeamChat == 24,
                   "Team chat appends without changing public chat or existing packet-demo message IDs");
+    static_assert(netwire::AddonManifest == 25 && netwire::RequestAddon == 26 &&
+                  netwire::AddonData == 27 && netwire::AddonReady == 28,
+                  "Addon negotiation appends without changing gameplay or packet-demo message IDs");
     for (uint32_t type = netwire::Hello; type < netwire::TypeCount; ++type) {
         header.type = type;
         CHECK(decode(netwire::encode(header, payload)));

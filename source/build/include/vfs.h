@@ -266,6 +266,11 @@ extern int32_t numgroupfiles;
 int initgroupfile(const char *filename);
 void	uninitgroupfile(void);
 buildvfs_kfd	kopen4load(const char *filename, char searchfirst);	// searchfirst: 0 = anywhere, 1 = first group, 2 = any group
+// Optional read-only loose asset resolver. Return 1 with an Xmalloc-owned
+// absolute filename to override normal lookup, 2 to skip loose files but allow
+// archives, or 0 to use the normal VFS.
+// Writes and configuration/save paths do not use this callback.
+extern int32_t (*g_resolveReadPath)(const char *filename, char **resolved);
 buildvfs_kfd	kopen4loadfrommod(const char* filename, char searchfirst);
 int32_t	kread(buildvfs_kfd handle, void *buffer, int32_t leng);
 #define kread_and_test(handle, buffer, leng) EDUKE32_PREDICT_FALSE(kread((handle), (buffer), (leng)) != (int32_t)(leng))

@@ -727,10 +727,16 @@ static int32_t check_filename_mismatch(const char * const filename, int ofs)
 }
 #endif
 
+int32_t (*g_resolveReadPath)(const char *, char **) = nullptr;
+
 static int32_t kopen_internal(const char *filename, char **lastpfn, char searchfirst, char checkcase, char tryzip, int32_t newhandle, uint8_t *arraygrp, intptr_t *arrayhan, int32_t *arraypos)
 {
-    buildvfs_kfd fil;
-    if (searchfirst == 0 && (fil = openfrompath_internal(filename, lastpfn, BO_BINARY|BO_RDONLY, BS_IREAD)) >= 0)
+    buildvfs_kfd fil = buildvfs_kfd_invalid;
+    int const overrideMode = searchfirst == 0 && g_resolveReadPath ? g_resolveReadPath(filename, lastpfn) : 0;
+    if (searchfirst == 0 && overrideMode != 2)
+        fil = overrideMode == 1 ? Bopen(*lastpfn, BO_BINARY|BO_RDONLY, BS_IREAD)
+                         : openfrompath_internal(filename, lastpfn, BO_BINARY|BO_RDONLY, BS_IREAD);
+    if (fil >= 0)
     {
 #ifdef FILENAME_CASE_CHECK
         if (checkcase && check_filename_casing_fn && check_filename_casing_fn())
@@ -769,6 +775,9 @@ static int32_t kopen_internal(const char *filename, char **lastpfn, char searchf
         arraypos[newhandle] = 0;
         return newhandle;
     }
+    // A required activated file disappearing must not silently select an old
+    // addon with the same filename from the working directory or an archive.
+    if (overrideMode == 1) return -1;
 
     for (; toupperlookup[*filename] == '/'; filename++) { }
 

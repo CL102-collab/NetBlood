@@ -82,6 +82,7 @@ jobs:
           - client-version
           - player-names
           - password
+          - addon-join
           - scoreboard
           - cinematics
           - team-balance

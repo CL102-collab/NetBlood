@@ -41,6 +41,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "common.h"
 #include "common_game.h"
 
+// The game may restore an explicitly ordered addon profile before parsing DEF
+// files. The editor and ordinary startup leave this optional hook unset.
+bool (*g_preloadAddonArchives)(std::string &error) = nullptr;
+
 // g_grpNamePtr can ONLY point to a malloc'd block (length BMAX_PATH)
 char *g_grpNamePtr = NULL;
 
@@ -230,6 +234,13 @@ void G_LoadGroups(int32_t autoload)
 
     if (g_modDir[0] != '/')
         G_LoadGroupsInDir(g_modDir);
+
+    if (g_preloadAddonArchives)
+    {
+        std::string error;
+        if (!g_preloadAddonArchives(error))
+            ThrowError("Cannot activate addon archives: %s", error.c_str());
+    }
 
     if (g_defNamePtr == NULL)
     {

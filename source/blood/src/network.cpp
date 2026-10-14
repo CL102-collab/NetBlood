@@ -87,6 +87,8 @@ PKT_STARTGAME gPacketStartGame;
 #include "levels.h"
 #include "misc.h"
 #include "netcontent.h"
+#include "netaddon_engine.h"
+#include "netaddon_restart.h"
 #include "netcompat.h"
 #include "netcontentreport.h"
 #include "netdemo.h"
@@ -166,7 +168,11 @@ struct ClientSlot
     uint32_t              mapWindowEnd = 0;
     bool                  mapDownloadStarted = false;
     bool                  mapRequestPending = false;
-    bool                  contentOffered = false;
+    bool                  contentOffered = false, addonOffered = false, addonReady = false;
+    size_t                addonFile = netaddon::MaxFiles;
+    uint32_t              addonNext = 0, addonEnd = 0;
+    bool                  addonPending = false;
+    std::shared_ptr<MapWindow> addonWindow;
     bool                  authenticated = false, rejected = false;
     uint32_t              contentFingerprint = 0;
     std::shared_ptr<MapWindow> mapWindow;
@@ -208,6 +214,14 @@ size_t                       pendingClientBytes = 0;
 unsigned                     snapshotBudget     = 0;
 uint32_t                     contentCRC         = 0;
 bool                         clientContentChecked = false;
+std::string                  addonProfileError, serverAddonId, clientAddonId;
+Bytes                        serverAddonManifest;
+netaddon::Profile            clientAddonProfile;
+netaddon::Cache              clientAddonCache;
+bool                         clientAddonReceived = false, clientAddonReady = false, clientDownloadingAddon = false;
+size_t                       clientAddonFile = 0;
+uint32_t                     clientAddonNext = 0, clientAddonWindowEnd = 0, clientAddonProgressTime = 0;
+uint64_t                     clientAddonBytes = 0, clientAddonTotal = 0;
 NetDemoInfo                  replayInfo;
 bool                         replayFirstWelcome  = false;
 bool                         playbackEndReported = false;
@@ -1548,6 +1562,39 @@ void sendWelcome(int p)
     slots[p].mapRequestPending = false;
     slots[p].mapWindow.reset();
 }
+void pumpAddonDownloads()
+{
+    if (!netIsServer()) return;
+    for (auto &c : slots)
+    {
+        if (!c.peer || c.rejected || !c.addonPending || c.addonReady ||
+            (c.addonWindow && c.addonWindow->pendingPackets)) continue;
+        if (!c.addonWindow) c.addonWindow = std::make_shared<MapWindow>();
+        auto const& file = netAddonProfile().files[c.addonFile];
+        while (c.addonNext < c.addonEnd)
+        {
+            Bytes bytes;
+            std::string error;
+            if (!netaddon::readChunk(netAddonSource(c.addonFile), file, c.addonNext,
+                                    netaddon::ChunkBytes, bytes, error))
+            {
+                LOG_F(ERROR, "NET addon upload failed: %s", error.c_str());
+                sendReject(c.peer, "Server cannot read an addon file; ask its administrator to check the server log");
+                break;
+            }
+            netwire::Writer writer;
+            writer.text(serverAddonId, 32);
+            writer.u32(uint32_t(c.addonFile));
+            writer.u32(c.addonNext);
+            writer.u32(uint32_t(bytes.size()));
+            writer.bytes(bytes.data(), bytes.size());
+            if (!sendTo(c.peer, netwire::AddonData, writer.data, true, c.addonWindow))
+                break;
+            c.addonNext += uint32_t(bytes.size());
+        }
+        c.addonPending = !c.rejected && c.addonNext < c.addonEnd;
+    }
+}
 void pumpMapDownloads()
 {
     if (!netIsServer() || !gGameStarted || gStartNewGame)
@@ -1688,6 +1735,64 @@ void failClientPassword(const std::string& reason)
     viewSetErrorMessage(reason.c_str());
     NetworkPromptPassword(reason.c_str());
 }
+void failAddonDownload(std::string reason)
+{
+    LOG_F(ERROR, "NET addon activation failed: %s", reason.c_str());
+    netDisconnect();
+    gStartNewGame = false;
+    netContentReportShow({}, reason);
+    viewSetErrorMessage("Cannot activate the server's addon. See the details on screen or in the console.");
+}
+#ifndef NETCODE_DISABLE
+bool activateClientAddon(std::string const& directory)
+{
+    std::vector<std::string> arguments;
+    std::string error;
+    if (!netAddonResourceArguments(clientAddonProfile, directory, arguments, error) ||
+        !netAddonRestartRequest(arguments, gNetAddress, uint16_t(gNetPort), gNetPassword,
+                               clientAddonId, clientAddonProfile, directory, error))
+    {
+        failAddonDownload(error);
+        return false;
+    }
+    LOG_F(INFO, "NET addon restart required profile=%s name=%s", clientAddonId.c_str(), clientAddonProfile.name.c_str());
+    // Release the unaffiliated slot before reconnecting after the restart.
+    // The restart module retains its notice and private local handoff.
+    netDisconnect();
+    gStartNewGame = false;
+    return true;
+}
+bool requestAddonWindow()
+{
+    std::string error;
+    // Empty files need no network payload; their declared digest is still checked.
+    for (;;)
+    {
+        clientAddonFile = clientAddonCache.nextMissingFile();
+        if (clientAddonFile == clientAddonProfile.files.size())
+        {
+            if (!clientAddonCache.finish(error)) { failAddonDownload(error); return false; }
+            LOG_F(INFO, "NET addon download complete profile=%s bytes=%llu", clientAddonId.c_str(),
+                  static_cast<unsigned long long>(clientAddonTotal));
+            return activateClientAddon(clientAddonCache.directory());
+        }
+        if (clientAddonProfile.files[clientAddonFile].size) break;
+        if (!clientAddonCache.finishFile(clientAddonFile, error)) { failAddonDownload(error); return false; }
+    }
+    netwire::Writer writer;
+    writer.text(clientAddonId, 32);
+    writer.u32(uint32_t(clientAddonFile));
+    writer.u32(clientAddonNext);
+    clientAddonWindowEnd = uint32_t(std::min(clientAddonProfile.files[clientAddonFile].size,
+        uint64_t(clientAddonNext) + netaddon::ChunkBytes * netwire::MapWindowChunks));
+    if (!sendTo(serverPeer, netwire::RequestAddon, writer.data))
+    {
+        failAddonDownload("The server disconnected during addon transfer. Reconnect to try again.");
+        return false;
+    }
+    return true;
+}
+#endif
 bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
 {
     if (!replay && netcompat::isServerInfo(data, size))
@@ -1727,11 +1832,99 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
         malformedMessages++;
         return false;
     }
+    if (h.type == netwire::AddonManifest)
+    {
+        if (replay || clientAddonReceived || clientContentChecked || !clientVersionReceived ||
+            !h.session || (session && session != h.session)) return false;
+        uint32_t fingerprint = r.u32();
+        std::string error;
+        if (!netaddon::decode(r, clientAddonProfile, error))
+        {
+            ++malformedMessages;
+            failAddonDownload("Invalid server addon profile: " + error);
+            return false;
+        }
+#ifndef NETCODE_DISABLE
+        session = h.session;
+        clientAddonReceived = true;
+        clientAddonId = netaddon::identity(clientAddonProfile);
+        LOG_F(INFO, "NET addon profile received name=%s files=%u profile=%s", clientAddonProfile.name.c_str(),
+              unsigned(clientAddonProfile.files.size()), clientAddonId.c_str());
+        if (addonProfileError.empty() && clientAddonId == netaddon::identity(netAddonProfile()))
+        {
+            netwire::Writer writer;
+            writer.text(clientAddonId, 32);
+            writer.u32(contentCRC);
+            if (!sendTo(serverPeer, netwire::AddonReady, writer.data))
+            {
+                failAddonDownload("The server disconnected during addon negotiation.");
+                return false;
+            }
+            clientAddonReady = true;
+            LOG_F(INFO, "NET addon already active profile=%s local=%08x remote=%08x", clientAddonId.c_str(), contentCRC, fingerprint);
+            return true;
+        }
+        std::string directory;
+        if (netAddonFindInstalled(clientAddonProfile, directory, error))
+        {
+            LOG_F(INFO, "NET addon installed match directory=%s", directory.c_str());
+            return activateClientAddon(directory);
+        }
+        if (!clientAddonCache.begin(clientAddonProfile, error))
+        {
+            failAddonDownload(error);
+            return false;
+        }
+        clientAddonTotal = clientAddonBytes = 0;
+        for (size_t i = 0; i < clientAddonProfile.files.size(); ++i)
+        {
+            clientAddonTotal += clientAddonProfile.files[i].size;
+            if (clientAddonCache.hasFile(i)) clientAddonBytes += clientAddonProfile.files[i].size;
+        }
+        clientAddonNext = 0;
+        clientDownloadingAddon = true;
+        clientAddonProgressTime = timerGetTicks();
+        LOG_F(INFO, "NET addon download started profile=%s files=%u bytes=%llu cached=%llu", clientAddonId.c_str(),
+              unsigned(clientAddonProfile.files.size()), static_cast<unsigned long long>(clientAddonTotal),
+              static_cast<unsigned long long>(clientAddonBytes));
+        return requestAddonWindow();
+#else
+        return false;
+#endif
+    }
+    if (h.type == netwire::AddonData)
+    {
+        if (replay || !clientDownloadingAddon || h.session != session) return false;
+        std::string id = r.text(32);
+        uint32_t index = r.u32(), offset = r.u32(), length = r.u32();
+        std::string error;
+        if (!r.ok || id != clientAddonId || index != clientAddonFile || offset != clientAddonNext ||
+            !length || length > netaddon::ChunkBytes || length != r.size - r.pos ||
+            uint64_t(offset) + length > clientAddonWindowEnd ||
+            !clientAddonCache.write(index, offset, r.data + r.pos, length, error))
+        {
+            ++malformedMessages;
+            failAddonDownload(error.empty() ? "Invalid addon transfer chunk" : error);
+            return false;
+        }
+        clientAddonNext += length;
+        clientAddonBytes += length;
+        clientAddonProgressTime = timerGetTicks();
+        if (clientAddonNext == clientAddonProfile.files[index].size)
+        {
+            if (!clientAddonCache.finishFile(index, error)) { failAddonDownload(error); return false; }
+            clientAddonNext = 0;
+        }
+#ifndef NETCODE_DISABLE
+        if (!clientAddonNext || clientAddonNext == clientAddonWindowEnd) return requestAddonWindow();
+#endif
+        return true;
+    }
     if (h.type == netwire::ContentManifest)
     {
         // Content is checked before a map, snapshot, or download can start.
         // This control exchange is deliberately excluded from packet demos.
-        if (replay || clientContentChecked || (session && session != h.session))
+        if (replay || !clientAddonReady || clientContentChecked || (session && session != h.session))
             return false;
         uint32_t fingerprint = r.u32();
         std::vector<netassets::Asset> required;
@@ -1898,6 +2091,8 @@ bool acceptClientPacket(const uint8_t *data, size_t size, bool replay)
                 failClientPassword(reason);
             else if (!replay && !clientContentChecked && reason == "Invalid client profile")
                 failContentCheck({}, "The server rejected the join format. Update the server and client to compatible versions with mod asset checking.");
+            else if (!replay && clientAddonReceived && !clientContentChecked)
+                failAddonDownload(reason);
             else if (clientDownloadingMap)
                 failMapDownload(reason);
             else
@@ -2192,7 +2387,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
     }
     if (h.type == netwire::Hello)
     {
-        if (c.admitted || c.contentOffered)
+        if (c.admitted || c.addonOffered || c.contentOffered)
             return;
         uint32_t fingerprint = r.u32();
         std::string name = r.text(MAXPLAYERNAME - 1);
@@ -2231,50 +2426,82 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
         c.voteIdentity += voteName;
         for (auto const& entry : voteCooldowns)
             if (entry.identity == c.voteIdentity && !entry.cooldown.ready(timerGetTicks())) c.voteCooldown = entry.cooldown;
-        if (capability)
+        if (capability != netassets::ManifestVersion)
         {
-            if (capability != netassets::ManifestVersion)
-            {
-                sendReject(peer, "Unsupported asset manifest version; update client and server");
-                return;
-            }
-            Bytes manifest;
-            std::string error;
-            if (!netassets::encodeManifest(netContentManifest(), manifest, error))
-            {
-                LOG_F(ERROR, "NET cannot provide content manifest: %s", error.c_str());
-                sendReject(peer, "Server cannot describe its mod assets; check the server log");
-                return;
-            }
-            netwire::Writer w;
-            w.u32(contentCRC);
-            w.bytes(manifest.data(), manifest.size());
-            c.contentOffered = true;
-            c.contentFingerprint = fingerprint;
-            if (!sendTo(peer, netwire::ContentManifest, w.data))
-                sendReject(peer, "Server could not send the mod asset manifest");
+            sendReject(peer, "Unsupported asset manifest version; update client and server");
             return;
         }
-        // Older clients can still join with the original fingerprint check.
-        // Their protocol cannot display per-file diagnostics.
-        if (fingerprint != contentCRC)
+        if (!addonProfileError.empty() || serverAddonManifest.empty())
         {
-            LOG_F(ERROR, "NET game content mismatch local=%08x remote=%08x", contentCRC, fingerprint);
-            sendReject(peer, "Game content mismatch; install the server's mod or update the client for file details");
+            LOG_F(ERROR, "NET cannot provide addon profile: %s", addonProfileError.c_str());
+            sendReject(peer, "Server cannot package its addon; ask its administrator to check the server log");
             return;
         }
-        c.admitted                   = true;
-        initializeCoopLives(slot);
-        c.joinedAtMillis = static_cast<uint64_t>(timerGetFractionalTicks());
-        scoreboardDirty = true;
-        sendWelcome(slot);
+        netwire::Writer writer;
+        writer.u32(contentCRC);
+        writer.bytes(serverAddonManifest.data(), serverAddonManifest.size());
+        c.addonOffered = true;
+        c.contentFingerprint = fingerprint;
+        if (!sendTo(peer, netwire::AddonManifest, writer.data))
+            sendReject(peer, "Server could not send the addon profile");
+        return;
+    }
+    if (h.type == netwire::RequestAddon)
+    {
+        if (!c.authenticated || !c.addonOffered || c.addonReady || c.admitted || h.session != session) return;
+        std::string id = r.text(32);
+        uint32_t index = r.u32(), offset = r.u32();
+        if (!r.end() || id != serverAddonId || index >= netAddonProfile().files.size())
+        { ++malformedMessages; return; }
+        auto const& files = netAddonProfile().files;
+        // Only forward, bounded windows of advertised files are accessible.
+        // A peer cannot choose a path, restart a file, or accumulate queued data.
+        if (c.addonPending || offset >= files[index].size) return;
+        if (c.addonFile != index)
+        {
+            if (offset || (c.addonFile != netaddon::MaxFiles &&
+                (index <= c.addonFile || c.addonNext != files[c.addonFile].size))) return;
+            c.addonFile = index;
+            c.addonNext = 0;
+        }
+        if (offset != c.addonNext) return;
+        c.addonEnd = uint32_t(std::min(files[index].size,
+            uint64_t(offset) + netaddon::ChunkBytes * netwire::MapWindowChunks));
+        c.addonPending = true;
+        return;
+    }
+    if (h.type == netwire::AddonReady)
+    {
+        if (!c.authenticated || !c.addonOffered || c.addonReady || c.admitted || h.session != session) return;
+        std::string id = r.text(32);
+        uint32_t fingerprint = r.u32();
+        if (!r.end() || id != serverAddonId || fingerprint != c.contentFingerprint)
+        {
+            sendReject(peer, "Invalid addon activation acknowledgement; reconnect with a compatible client");
+            return;
+        }
+        Bytes manifest;
+        std::string error;
+        if (!netassets::encodeManifest(netContentManifest(), manifest, error))
+        {
+            LOG_F(ERROR, "NET cannot provide content manifest: %s", error.c_str());
+            sendReject(peer, "Server cannot describe its mod assets; check the server log");
+            return;
+        }
+        netwire::Writer writer;
+        writer.u32(contentCRC);
+        writer.bytes(manifest.data(), manifest.size());
+        c.addonReady = c.contentOffered = true;
+        c.addonPending = false;
+        if (!sendTo(peer, netwire::ContentManifest, writer.data))
+            sendReject(peer, "Server could not send the mod asset manifest");
         return;
     }
     if (h.type == netwire::ContentReady)
     {
         // The server can change maps while the client checks files. Admission
         // is session-scoped; sendWelcome describes the current map generation.
-        if (!c.authenticated || !c.contentOffered || c.admitted || h.session != session)
+        if (!c.authenticated || !c.addonReady || !c.contentOffered || c.admitted || h.session != session)
             return;
         uint32_t fingerprint = r.u32();
         if (!r.end() || fingerprint != contentCRC || c.contentFingerprint != contentCRC)
@@ -2760,6 +2987,14 @@ void netInitialize(bool bConsole)
     gNetMode           = mode;
     gInitialNetPlayers = maxPlayers;
     contentCRC         = netContentCRC();
+    addonProfileError.clear();
+    serverAddonManifest.clear();
+    serverAddonId.clear();
+    if (mode != NETWORK_NONE && netAddonFinalize(addonProfileError))
+    {
+        if (netaddon::encode(netAddonProfile(), serverAddonManifest, addonProfileError))
+            serverAddonId = netaddon::identity(netAddonProfile());
+    }
     netResetState();
     netLagReset();
     std::fill(std::begin(slots), std::end(slots), ClientSlot());
@@ -2877,6 +3112,12 @@ void netDeinitialize(void)
     clientMapSize = 0;
     mapDownloadError.clear();
     clientContentChecked = false;
+    clientAddonReceived = clientAddonReady = clientDownloadingAddon = false;
+    clientAddonProfile = {};
+    clientAddonId.clear();
+    clientAddonCache.cancel();
+    clientAddonFile = clientAddonNext = clientAddonWindowEnd = clientAddonProgressTime = 0;
+    clientAddonBytes = clientAddonTotal = 0;
     clientVersionReceived = false;
     clientVersionError.clear();
     clientPasswordError.clear();
@@ -3050,6 +3291,7 @@ void netUpdate(void)
                     connectionError = "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
                     LOG_F(ERROR, "NET connection failed: %s", connectionError.c_str());
                 }
+                clientTransportConnected = false;
                 stopLocalCinematic();
                 clientCinematic = {};
                 scoreboard = {};
@@ -3061,6 +3303,7 @@ void netUpdate(void)
             }
         }
     }
+    pumpAddonDownloads();
     pumpMapDownloads();
     netServerUpdateIntermission();
     publishIntermission();
@@ -3082,6 +3325,11 @@ void netClientPump()
     netUpdate();
     if (!netIsClient())
         return;
+    if (clientDownloadingAddon && (!clientTransportConnected || timerGetTicks() - clientAddonProgressTime > 30000))
+    {
+        failAddonDownload(!clientTransportConnected ? "Server disconnected during addon transfer" : "Addon transfer timed out");
+        return;
+    }
     if (clientDownloadingMap && (mapDownloadDisconnected || timerGetTicks() - clientMapProgressTime > 30000))
     {
         failMapDownload(mapDownloadDisconnected ? "Server disconnected during map transfer" : "Map transfer timed out");
@@ -3151,6 +3399,18 @@ void netDrawConnectionStatus()
             viewDrawText(3, line.c_str(), 160, y, -128, 0, 1, 1);
             y += 12;
         }
+        return;
+    }
+    if (clientDownloadingAddon)
+    {
+        char progress[96];
+        Bsnprintf(progress, sizeof(progress), "%u%% (%llu / %llu KB)",
+            clientAddonTotal ? unsigned(clientAddonBytes * 100 / clientAddonTotal) : 100u,
+            static_cast<unsigned long long>((clientAddonBytes + 1023) / 1024),
+            static_cast<unsigned long long>((clientAddonTotal + 1023) / 1024));
+        viewDrawText(3, "Downloading server addon", 160, 76, -128, 0, 1, 1);
+        viewDrawText(3, clientAddonProfile.name.c_str(), 160, 91, -128, 0, 1, 1);
+        viewDrawText(3, progress, 160, 106, -128, 0, 1, 1);
         return;
     }
     if (netContentReportDraw())

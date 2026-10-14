@@ -129,7 +129,8 @@ def main():
     command = shlex.split(os.environ.get("CXX", "c++")) + ["-std=c++11", "-O1", "-g", "-Wall", "-Wextra", "-Werror"]
     command += shlex.split(os.environ.get("CPPFLAGS", "")) + shlex.split(os.environ.get("CXXFLAGS", ""))
     command += [f"-I{repository / 'source/build/include'}", f"-I{repository / 'source/blood/src'}",
-                str(Path(__file__).with_name("content-handshake.cpp")), "-pthread"]
+                str(Path(__file__).with_name("content-handshake.cpp")),
+                str(repository / "source/blood/src/netaddon.cpp"), "-pthread"]
     command += shlex.split(os.environ.get("LDFLAGS", "")) + ["-o", str(peer)]
     subprocess.run(command, check=True)
     result = dict(passed=False, source_binary=str(source_binary),

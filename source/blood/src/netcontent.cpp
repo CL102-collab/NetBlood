@@ -279,8 +279,11 @@ uint32_t netContentCRC()
             return asset.key.compare(0, 7, "source:") == 0 && optionalCinematicFile(asset.name.c_str());
         }), contentManifest.end());
     uint32_t crc = 0;
-    addText(crc, "NBlood authoritative content v1");
+    addText(crc, "NBlood authoritative content v2");
     addNumber(crc, netwire::Version);
+    // The INI selects episode progression, map names and cinematics. Matching
+    // resource archives alone must not allow clients to use another campaign.
+    addFile(crc, BloodIniFile, "ini:episode");
     addFile(crc, pUserRFF ? pUserRFF : "BLOOD.RFF", "rff:system");
     addFile(crc, pUserSoundRFF ? pUserSoundRFF : "SOUNDS.RFF", "rff:sound");
     for (unsigned index = 0; index < MAXARTFILES_BASE; ++index)
@@ -338,7 +341,7 @@ std::vector<netassets::Issue> netContentDifferences(const std::vector<netassets:
         // keys. No bytes or hashes from these probes are returned to the server.
         auto const& key = issue.required.key;
         bool const source = key.compare(0, 7, "source:") == 0;
-        if (!source && key.compare(0, 4, "rff:") != 0 && key.compare(0, 4, "art:") != 0 &&
+        if (!source && key.compare(0, 4, "ini:") != 0 && key.compare(0, 4, "rff:") != 0 && key.compare(0, 4, "art:") != 0 &&
             key.compare(0, 9, "resource:") != 0) continue;
         if (!readAsset(issue.required.name.c_str(), !source, local)) continue;
         local.key = key;

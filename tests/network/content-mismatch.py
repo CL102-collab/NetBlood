@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Check actionable mod-content errors using a real server and joining clients.
 
-The fixture adds unused resources, without changing stock game assets: one
-missing DAT, one same-size changed DAT, one matching DAT, and missing ART/RAW.
-Expected file lengths and MD5s come from Python's hashlib, independently of the
-game's manifest. An exact-match client must still join the same running server.
+The fixture adds unused resources without changing stock game assets. Missing
+and changed loose DAT/RAW/DEF files activate automatically. An unselected ART
+file outside the advertised package still produces missing/different errors.
+Expected lengths and MD5s come from Python's hashlib, independently of the
+game's manifest. An exact-match client must join the same running server.
 """
 
 import argparse
@@ -71,6 +72,13 @@ def has_details(text, name, data, status):
                for line in text.splitlines())
 
 
+def cached(game, name, data):
+    matches = [path for path in (game.path / ".nblood-addon-cache").glob("*/" + name)
+               if path.read_bytes() == data]
+    require(len(matches) == 1, f"{game.name}: no byte-exact cached addon resource {name}")
+    return matches[0]
+
+
 def main():
     repository = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -106,8 +114,10 @@ def main():
     for name in ("NBMISS01.DAT", "TILES018.ART", "TOM_FIRE.RAW"):
         changed.pop(name)
     changed["NBCHANGE.DAT"] = bytes(range(255, -1, -1))*3
-    expected = [("NBMISS01.DAT", "missing"), ("TILES018.ART", "missing"),
-                ("TOM_FIRE.RAW", "missing"), ("NBCHANGE.DAT", "different")]
+    # The normal base-ART prefix is not a distributable addon selection here.
+    # Unlike loose DAT/RAW/DEF dependencies, this extra file stays outside the
+    # automatically advertised profile and tests the final admission check.
+    expected = [("TILES018.ART", "missing")]
     games = []
     result = {
         "passed": False, "source_binary": str(source_binary),
@@ -127,6 +137,8 @@ def main():
         mismatch.wait(lambda text: all(has_details(text, name, files[name], status)
                                       for name, status in expected),
                       "complete missing/different file diagnostics", args.timeout)
+        mismatch.wait(lambda text: "NET content mismatch report saved to" in text,
+                      "saved missing-file diagnostic", args.timeout)
         text = mismatch.text()
         require("NET client slot=" not in text and "NET client map loaded " not in text and
                 "NET map download started" not in text,
@@ -136,7 +148,16 @@ def main():
         require(all((mismatch.path / name).read_bytes() == data for name, data in changed.items()),
                 "content rejection modified the client's installed files")
         require(all(not (mismatch.path / name).exists() for name in ("NBMISS01.DAT", "TILES018.ART", "TOM_FIRE.RAW")),
-                "content rejection transferred a mod asset")
+                "activation wrote files outside its private addon cache")
+        require("NET addon download complete" in mismatch.console() and
+                mismatch.console().count("Started at ") == 2,
+                "missing loose addon resources were not activated before the final ART check")
+        for name in files:
+            if name != "TILES018.ART":
+                cached(mismatch, name, files[name])
+        require(not any(name in line and ("missing" in line.lower() or "different" in line.lower())
+                        for line in text.splitlines() for name in files if name != "TILES018.ART"),
+                "activated resources were still reported missing or different")
         result["diagnostics"] = [line for line in text.splitlines()
                                  if any(name in line for name, _ in expected)]
         require(len(result["diagnostics"]) == len(expected),
@@ -152,60 +173,75 @@ def main():
         result["saved_report"] = str(report)
         time.sleep(0.3)
         result["visible_error"] = screenshot(root, "content-error")
-        mismatch.key(78, True)  # SDL_SCANCODE_PAGEDOWN
-        time.sleep(0.2)
-        mismatch.key(78, False)
-        time.sleep(0.2)
-        result["visible_error_page_2"] = screenshot(root, "content-error-page-2")
         quit_before_map(mismatch)
 
-        # This client's old aggregate CRC matches: only the lazy RAW override
-        # is absent. Manifest negotiation must still catch the missing sound.
+        # Equal-size modified base ART must retain exact file/size/MD5 details.
+        # Its addon profile already matches, so this also exercises admission
+        # failure without a preceding activation/restart.
+        different_art_files = dict(files)
+        different_art_files["TILES018.ART"] = files["TILES018.ART"][:-1] + b"\x41"
+        different_art = Game("different-art-client", args, root, library, port, initial_files=different_art_files)
+        games.append(different_art)
+        different_art.wait(lambda text: has_details(text, "TILES018.ART", files["TILES018.ART"], "different"),
+                           "different ART file details", args.timeout)
+        different_art.wait(lambda text: "NET content mismatch report saved to" in text,
+                           "saved different-file diagnostic", args.timeout)
+        require("NET client map loaded " not in different_art.text() and
+                "NET addon download started" not in different_art.console(),
+                "different base artwork was downloaded or admitted")
+        different_report = different_art.path / "net-content-mismatch.txt"
+        require(different_report.is_file() and
+                has_details(different_report.read_text(), "TILES018.ART", files["TILES018.ART"], "different"),
+                "different ART report omitted filename, size or MD5")
+        require((different_art.path / "TILES018.ART").read_bytes() == different_art_files["TILES018.ART"],
+                "different ART admission check modified installed bytes")
+        result["different_art_report"] = str(different_report)
+        quit_before_map(different_art)
+
+        # The lazy RAW resource is outside the old aggregate fingerprint, but
+        # is included in the addon profile and must be fetched before joining.
         missing_raw_files = dict(files)
         missing_raw_files.pop("TOM_FIRE.RAW")
         missing_raw = Game("missing-raw-client", args, root, library, port, initial_files=missing_raw_files)
         games.append(missing_raw)
-        missing_raw.wait(lambda text: has_details(text, "TOM_FIRE.RAW", files["TOM_FIRE.RAW"], "missing"),
-                         "missing loose sound despite equal legacy fingerprint", args.timeout)
+        missing_raw.wait(lambda text: "NET content verified" in text and "NET client map loaded " in text
+                         and "NET client slot=" in text, "missing loose sound downloaded and activated", args.timeout)
         raw_text = missing_raw.text()
         raw_checks = records(raw_text, "NET content check ")
         require(len(raw_checks) == 1 and raw_checks[0]["local"] == raw_checks[0]["remote"],
-                "loose RAW fixture did not isolate the manifest from the legacy CRC")
+                "activated loose sound did not match the authoritative content fingerprint")
         result["missing_raw_content_check"] = raw_checks[0]
-        require("NET client slot=" not in raw_text and "NET client map loaded " not in raw_text,
-                "missing loose sound passed content validation")
-        raw_report = missing_raw.path / "net-content-mismatch.txt"
-        require(raw_report.is_file() and
-                has_details(raw_report.read_text(), "TOM_FIRE.RAW", files["TOM_FIRE.RAW"], "missing"),
-                "loose sound missing from the saved report")
-        require(not any(name in line and ("missing" in line.lower() or "different" in line.lower())
-                        for line in raw_text.splitlines() for name in files if name != "TOM_FIRE.RAW"),
-                "loose sound rejection misidentified an exact matching asset")
-        result["missing_raw_report"] = str(raw_report)
-        quit_before_map(missing_raw)
+        require("NET addon download complete" in missing_raw.console() and
+                missing_raw.console().count("Started at ") == 2,
+                "missing loose sound did not cause automatic activation")
+        result["downloaded_raw"] = str(cached(missing_raw, "TOM_FIRE.RAW", files["TOM_FIRE.RAW"]))
+        require(not (missing_raw.path / "TOM_FIRE.RAW").exists() and
+                not (missing_raw.path / "net-content-mismatch.txt").exists(),
+                "activated loose sound overwrote local files or left a false mismatch report")
+        missing_raw.command_text("net_status")
+        missing_raw.stop()
 
-        # Exact files that were not registered by the selected definitions are
-        # not missing. The error should tell the player to load the right mod.
+        # The resources are already installed, but the local default definition
+        # does not register them. The advertised definition is downloadable:
+        # activate it after one restart instead of asking for manual setup.
+        # Its original local replacement must remain untouched.
         unloaded_files = dict(files)
         unloaded_files["blood.def"] = b"// Mod resource definitions intentionally absent.\n"
         unloaded = Game("unloaded-mod-client", args, root, library, port, initial_files=unloaded_files)
         games.append(unloaded)
-        unloaded_names = ("NBMISS01.DAT", "NBCHANGE.DAT", "NBMATCH1.DAT")
-        unloaded.wait(lambda text: all(has_details(text, name, files[name], "not loaded")
-                                      for name in unloaded_names), "assets present but mod not loaded", args.timeout)
-        unloaded_text = unloaded.text()
-        require("NET client slot=" not in unloaded_text and "NET client map loaded " not in unloaded_text,
-                "client joined without registering its mod resources")
-        unloaded_report = unloaded.path / "net-content-mismatch.txt"
-        require(unloaded_report.is_file(), "unloaded mod did not save its file inventory")
-        require(all(has_details(unloaded_report.read_text(), name, files[name], "not loaded")
-                    for name in unloaded_names), "unloaded mod report lost required asset details")
-        result["unloaded_mod_report"] = str(unloaded_report)
-        result["unloaded_mod_diagnostics"] = [line for line in unloaded_text.splitlines()
-                                              if any(name in line for name in unloaded_names)]
-        time.sleep(0.3)
-        result["unloaded_mod_visible_error"] = screenshot(root, "unloaded-mod-error")
-        quit_before_map(unloaded)
+        unloaded.wait(lambda text: "NET content verified" in text and "NET client map loaded " in text
+                      and "NET client slot=" in text, "automatic registration of installed resources", args.timeout)
+        history = unloaded.console()  # Unlike nblood.log, stdout survives exec.
+        require("NET addon download complete" in history and "NET addon restart required" in history,
+                "unloaded definition was not downloaded and activated automatically")
+        require(history.count("Started at ") == 2, "unloaded definition activation did not restart exactly once")
+        require(all((unloaded.path / name).read_bytes() == data for name, data in unloaded_files.items()),
+                "activation overwrote an installed resource or the original definition")
+        require(not (unloaded.path / "net-content-mismatch.txt").exists(),
+                "successfully activated definition still produced an asset mismatch")
+        unloaded.command_text("net_status")
+        result["unloaded_definition_activated"] = dict(restarts=1, original_files_preserved=True)
+        unloaded.stop()
 
         matched = Game("matching-client", args, root, library, port, initial_files=files)
         games.append(matched)

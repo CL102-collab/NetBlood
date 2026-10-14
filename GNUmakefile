@@ -825,6 +825,9 @@ blood_game_objs := \
 	misc.cpp \
 	network.cpp \
 	netstun_client.cpp \
+	netaddon.cpp \
+	netaddon_engine.cpp \
+	netaddon_restart.cpp \
 	netcontent.cpp \
 	netcontentreport.cpp \
 	netcountry.cpp \

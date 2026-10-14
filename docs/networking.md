@@ -206,7 +206,7 @@ reachability through restrictive NAT/CGNAT.
 
 On connection, the server advertises its required network protocol version and
 build label before admitting a player or transferring game content. The current
-required protocol is **7**. Build labels identify the executable for diagnostics;
+required protocol is **8**. Build labels identify the executable for diagnostics;
 compatibility is determined by the network protocol, not by Git revision age.
 
 An older client receives an error showing its version and the server requirement,
@@ -242,10 +242,58 @@ overwritten. The cache is checked again before reuse; corrupted files trigger a
 fresh download. If downloading or saving fails, joining stops with an error in
 the console. The cache can be removed while the game is closed to reclaim space.
 
-Only the `.MAP` file is transferred. Base game archives, artwork, sounds, and
-other mod assets must already match. Optional companion files such as map
-metadata (`.DEF`), music and map hacks are not downloaded. Maps that require
-these resources should be distributed with their mod as usual.
+This map-transfer step sends only the `.MAP` file. An addon server advertises
+its resource package separately, before map loading, as described below.
+
+### Automatic addon activation and downloads
+
+Start an addon server with the same resource options used to play that addon
+locally. For example, if Death Wish is installed in `addons/DeathWish`:
+
+```sh
+./nblood -dedicated -game_dir addons/DeathWish -ini DW.INI \
+  -gametype coop -episode 1 -port 23513
+```
+
+Use the INI filename supplied by the installed package. Keep additional
+`-g`, `-h`, `-mh`, `-rff`, `-snd` or `-art` options required by its launcher.
+The server advertises the selected files and their loading order automatically;
+there is no addon-specific information to put into an invitation. A normal
+`netblood://server.example:23513` link, Discord invitation, or in-game connection
+uses the same activation process.
+
+After any required password is accepted, the client checks for an exact matching
+addon in its installation/search directories and their `addons/` and `mods/`
+subdirectories. A matching installed package is reused without downloading it.
+Otherwise, the client downloads the required addon files directly from the game
+server over the existing reliable UDP connection, displaying progress. File
+sizes and MD5 checksums must match before the package can be used. Players still
+need their own installed base Blood game data; base archives are not supplied
+by the server. Files explicitly placed in an addon directory, including
+replacement archives, are treated as addon content.
+
+When different resources must be activated, the game displays **"NetBlood has
+to restart to activate the server's addon"**, then automatically restarts and
+reconnects. The accepted server password and normal local configuration are
+retained, so no second password entry or manually edited launcher is necessary.
+The server keeps running during the download and restart. An already active
+matching addon joins without restarting.
+
+Downloaded packages are kept in `.nblood-addon-cache/` in the game's working
+configuration directory. Files remain inside an addon-specific directory, with
+their original relative layout; installed addons and configuration files are
+not overwritten. Archive files stay packed. The cache is rechecked before
+reuse, and missing or corrupted files are downloaded again. A complete package
+is published only after all its files verify. A failed transfer or activation
+stops joining with a diagnostic instead of loading a partial package or
+repeatedly restarting. The cache can be removed while the game is closed to
+reclaim space.
+
+The transferable package contains game resources such as the selected INI,
+archives, definition scripts, maps, artwork, models, sounds and cinematics.
+It does not install or run addon executables or shell scripts. Addons that need
+an external installer, custom executable, or files outside their resource
+package still need manual installation.
 
 ## Missing or different mod assets
 
@@ -263,9 +311,12 @@ NET asset missing: EXAMPLE.DAT | size=0 bytes | md5=d41d8cd98f00b204e9800998ecf8
 ```
 
 The values describe the server's required file, so they can be compared with
-the mod package using `md5sum` or another MD5 utility. Install and select the
-same mod on both machines, then restart; the game freezes its content inventory
-at startup. Mod assets are not downloaded automatically.
+the mod package using `md5sum` or another MD5 utility. Automatic addon activation
+runs before this check. If the final check still fails, verify the base game
+installation and the server's addon setup; files outside the advertised addon
+package may need to be installed manually. Resource selections are fixed at
+startup, which is why activating a different addon requires the automatic
+restart above.
 
 The inventory covers selected RFF archives, ART files, external resource
 overrides, loaded definition scripts and their tracked asset dependencies.
@@ -412,7 +463,7 @@ full-state recovery. Map generations separate sessions across level changes,
 and sprite generations prevent interpolation or sounds attaching to a reused
 sprite slot. Server AI pointers and event queues remain server-private.
 
-The current wire protocol is version 7; clients and servers must use the same
+The current wire protocol is version 8; clients and servers must use the same
 version. Scoreboard metadata is independent of the deterministic game state.
 
 Relevant code is in `source/blood/src/network.cpp`, `netprotocol.h`,

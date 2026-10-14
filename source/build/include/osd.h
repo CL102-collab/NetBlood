@@ -245,6 +245,9 @@ int OSD_GetTextMode(void);
 void OSD_SetTextMode(int mode);
 
 int OSD_Exec(const char *szScript);
+// Downloaded game archives may contain arbitrary console scripts. Activated
+// network addons restrict exec (including nested exec) to local user files.
+void OSD_SetLocalScriptsOnly(bool enabled);
 
 // Get shade and pal index from the OSD format buffer.
 void OSD_GetShadePal(const char *ch, int *shd, int *pal);

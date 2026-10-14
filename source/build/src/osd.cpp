@@ -40,6 +40,7 @@ const char *osdlogfn;
 
 static uint32_t osdkeytime = 0;
 static uint32_t osdscrtime = 0;
+static bool osdLocalScriptsOnly = false;
 
 #define OSD_EDIT_LINE_WIDTH (osd->draw.cols - 1 - 3)
 #define OSDMAXERRORS 4096
@@ -174,36 +175,55 @@ void OSD_HandleClipboard(char* const text)
     g_mouseBits &= ~2;
 }
 
+void OSD_SetLocalScriptsOnly(bool enabled) { osdLocalScriptsOnly = enabled; }
+
 int OSD_Exec(const char *szScript)
 {
     int err = 0;
     int32_t len = 0;
-    buildvfs_kfd handle;
+    buildvfs_kfd handle = buildvfs_kfd_invalid;
+    FILE *local = nullptr;
     char *remainingBuf = NULL;
 
-    if ((handle = kopen4load(szScript, 0)) == buildvfs_kfd_invalid)
+    if (osdLocalScriptsOnly)
+    {
+        // Preserve the user's bindings/settings without searching mod paths or
+        // archives for executable console commands. This restriction also
+        // applies to exec commands contained in a trusted local script.
+        local = Bfopen(szScript, "rb");
+        if (!local || Bfseek(local, 0, SEEK_END)) err = 1;
+        else
+        {
+            long const length = Bftell(local);
+            if (length <= 0 || length >= INT32_MAX || Bfseek(local, 0, SEEK_SET)) err = 2;
+            else len = int32_t(length);
+        }
+    }
+    else if ((handle = kopen4load(szScript, 0)) == buildvfs_kfd_invalid)
         err = 1;
     else if ((len = kfilelength(handle)) <= 0)
+    {
         err = 2; // blank file
+        len = 0;
+    }
 
     if (!err)
         LOG_F(INFO, "Executing %s", szScript);
 
-    auto buf = (char *) Xmalloc(len + 1);
+    auto buf = (char *) Xmalloc(size_t(len) + 1);
+    bool const read = !err && (local ? Bfread(buf, 1, size_t(len), local) == size_t(len) : kread(handle, buf, len) == len);
+    if (local) Bfclose(local);
+    if (handle != buildvfs_kfd_invalid) kclose(handle);
 
-    if (err || kread(handle, buf, len) != len)
+    if (!read)
     {
         if (!err) // no error message for blank file
             LOG_F(ERROR, "Error reading '%s'!", szScript);
-
-        if (handle != buildvfs_kfd_invalid)
-            kclose(handle);
 
         Xfree(buf);
         return 1;
     }
 
-    kclose(handle);
     buf[len] = '\0';
 
     char const *cp = Bstrtoken(buf, "\r\n", &remainingBuf, 1);

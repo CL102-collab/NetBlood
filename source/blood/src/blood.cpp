@@ -58,6 +58,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "music.h"
 #include "network.h"
 #include "netcontent.h"
+#include "netaddon_engine.h"
+#include "netaddon_restart.h"
 #include "netserver.h"
 #include "neturi.h"
 #include "neturireg.h"
@@ -2056,8 +2058,14 @@ static int HandleUriCommandLine(int& argc, char const * const * argv)
 int app_main(int argc, char const * const * argv)
 {
     char buffer[BMAX_PATH];
+    std::string addonError;
+    if (!netAddonRestartInitialize(argc, argv, addonError))
+        return UriCommandError(addonError);
+    OSD_SetLocalScriptsOnly(netAddonRestartActive());
     int const uriResult = HandleUriCommandLine(argc, argv);
     if (uriResult >= 0) return uriResult;
+    netAddonRestartRememberStartup(argc, argv);
+    netAddonCaptureArguments(argc, argv);
     margc = argc;
     margv = argv;
 #ifdef _WIN32
@@ -2242,6 +2250,8 @@ int app_main(int argc, char const * const * argv)
 
     // Freeze content identity before dynamic fire/view initialization changes tiles.
     netContentCRC();
+    if (!netAddonFinalize(addonError))
+        LOG_F(WARNING, "Addon profile: %s", addonError.c_str());
     powerupInit();
     LOG_F(INFO, "Loading cosine table");
     trigInit(gSysRes);
@@ -2400,6 +2410,12 @@ RESTART:
     while (!gQuitGame)
     {
         bool bDraw;
+        if (netAddonRestartReady())
+        {
+            gRestartGame = false;
+            gQuitGame = true;
+            break;
+        }
         discordPresencePump();
         discordPresenceApplyPendingJoin();
         if (netIsLive())
@@ -2586,6 +2602,13 @@ RESTART:
             }
             frameJustDrawn = true;
             netDrawConnectionStatus();
+            if (netAddonRestartPending())
+            {
+                videoClearScreen(0);
+                viewDrawText(3, "NetBlood has to restart", 160, 82, -128, 0, 1, 1);
+                viewDrawText(3, "to activate the server's addon.", 160, 96, -128, 0, 1, 1);
+                viewDrawText(3, "Restarting and reconnecting automatically...", 160, 116, -128, 0, 1, 1);
+            }
             videoNextPage();
         }
         //scrNextPage();
@@ -2643,6 +2666,9 @@ RESTART:
         goto RESTART;
     }
     ShutDown();
+
+    if (netAddonRestartPending() && !netAddonRestartLaunch(addonError))
+        return UriCommandError(addonError);
 
     return gDemoRunValidation && !gDemoValidationPassed ? 1 : 0;
 }
