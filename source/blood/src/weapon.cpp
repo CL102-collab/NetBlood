@@ -274,15 +274,15 @@ void predictedWeaponSounds(int qavIndex, int start, int end, bool replay)
     if (replay || qavIndex < 0 || qavIndex >= kQAVEnd) return;
     QAV const *qav = weaponQAV[qavIndex];
     if (!qav || qav->ticksPerFrame <= 0) return;
-    // Sound variation is cosmetic, so use the first variant without calling
-    // the simulation RNG. Replay of old input never emits sound a second time.
+    // Use private cosmetic randomness; sound playback must not advance the
+    // simulation RNG. Replay of old input never emits or rerolls a sound.
     for (int i = max(0, start / qav->ticksPerFrame + 1); i < qav->nFrames && i * qav->ticksPerFrame <= end; ++i)
         if (qav->frames[i].sound.sound > 0)
         {
             SOUNDINFO const &sound = qav->frames[i].sound;
             const int variants = !VanillaMode() && sound.sndRange > 0 ? (sound.sndRange == 1 ? 2 : sound.sndRange) : 1;
-            netPredictLocalSound(sound.sound, variants, 16 + sound.priority);
-            sndStartSample(qav->frames[i].sound.sound, -1, -1, 0);
+            const int sample = netPredictLocalSound(sound.sound, variants, 16 + sound.priority);
+            sndStartSample(sample, -1, -1, 0);
         }
 }
 
@@ -470,7 +470,10 @@ void WeaponPredictCommand(PLAYER *player, GINPUT const &input, bool replay)
         // The authoritative hit selection uses RNG; the prediction shows a
         // fixed stab and will reconcile to the selected animation on receipt.
         predictedWeaponStart(secondary ? 110 : (player->aimTarget < 0 ? 107 : 103), replay); break;
-    case kWeaponBeast: predictedWeaponStart(95, replay); break;
+    case kWeaponBeast:
+        // The local attack pose may vary, but replay must reuse the same
+        // command's choice. Hit detection and damage remain authoritative.
+        predictedWeaponStart(95 + netPredictCosmeticRandom(4), replay); break;
     }
 }
 

@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <string.h>
 #include "build.h"
 #include "common_game.h"
+#include "cosmeticrandom.h"
 #include "blood.h"
 #include "fire.h"
 #include "globals.h"
@@ -46,7 +47,7 @@ void InitSeedBuffers(void)
 {
     for (int i = 0; i < 16; i++)
         for (int j = 0; j < fireSize; j += 2)
-            SeedBuffer[i][j] = SeedBuffer[i][j+1] = wrand();
+            SeedBuffer[i][j] = SeedBuffer[i][j+1] = CosmeticRandom(256);
 }
 
 void BuildCoolTable(void)
@@ -57,7 +58,7 @@ void BuildCoolTable(void)
 
 void DoFireFrame(void)
 {
-    int nRand = qrand()&15;
+    int nRand = CosmeticRandom(16);
     for (int i = 0; i < 3; i++)
     {
         memcpy(FrameBuffer+16896+i*128, SeedBuffer[nRand], 128);

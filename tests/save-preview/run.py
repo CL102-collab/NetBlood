@@ -316,12 +316,36 @@ def main():
         game.command_text("echo SAVE_PREVIEW_WORLD_READY", args.timeout)
         time.sleep(0.6)
 
-    def position(game):
+    def position(game, include_tick=False):
         offset = len(game.text())
         game.command_text("net_status")
-        rows = records(game.text()[offset:], "NET player ")
+        text = game.text()[offset:]
+        rows = records(text, "NET player ")
         require(len(rows) == 1, "offline player state missing")
-        return {key: int(rows[0][key]) for key in ("x", "y", "z", "health", "weapon")}
+        state = {key: int(rows[0][key]) for key in ("x", "y", "z", "health", "weapon")}
+        if include_tick:
+            ticks = records(text, "NET intermission ")
+            require(len(ticks) == 1, "offline level time missing")
+            state["tick"] = int(ticks[0]["level_ticks"])
+        return state
+
+    def settled_position(game):
+        # Key release stops acceleration; friction still moves the player.
+        # Observe half a second of unchanged simulation state before saving,
+        # even when a busy worker advances fewer ticks per wall-clock second.
+        deadline = time.monotonic() + args.timeout
+        previous = position(game, include_tick=True)
+        stable_tick = previous.pop("tick")
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            current = position(game, include_tick=True)
+            tick = current.pop("tick")
+            if any(current[key] != previous[key] for key in ("x", "y", "z")):
+                stable_tick = tick
+            elif tick - stable_tick >= 15:
+                return current
+            previous = current
+        raise Failure(f"player movement did not settle before saving: {previous}")
 
     def level_seconds(game):
         offset = len(game.text())
@@ -470,15 +494,13 @@ def main():
                 game.command_text("r_size 2")
                 tap(game, 15, 0.6)  # L turns the real camera to another wall pattern.
                 tap(game, 26, 0.3)  # W moves the player through normal movement.
-                time.sleep(0.6)
-                changed_position = position(game)
+                changed_position = settled_position(game)
                 save(game, 0)
                 overwrite_meta, overwrite_pixels = preview(first, palette, root / (name + "-preview-overwrite.png"))
                 require(overwrite_pixels != clean_pixels, f"{name}: overwrite retained the previous preview")
                 tap(game, 15, 0.5)
                 tap(game, 26, 0.3)
-                time.sleep(0.6)
-                saved_position = position(game)
+                saved_position = settled_position(game)
                 before_quicksave = dict(utc=int(time.time()), elapsed=level_seconds(game), game=game)
                 offset = len(game.text())
                 tap(game, 63)  # F6 quicksave overwrites the selected normal save.

@@ -33,6 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "mmulti.h"
 #include "osd.h"
 #include "common_game.h"
+#include "cosmeticrandom.h"
 
 #include "aihand.h"
 #include "blood.h"
@@ -2508,9 +2509,9 @@ void viewInit(void)
 
     for (int i = 0; i < 16; i++)
     {
-        dword_172CE0[i][0] = mulscale16(wrand(), 2048);
-        dword_172CE0[i][1] = mulscale16(wrand(), 2048);
-        dword_172CE0[i][2] = mulscale16(wrand(), 2048);
+        dword_172CE0[i][0] = CosmeticRandom(1024);
+        dword_172CE0[i][1] = CosmeticRandom(1024);
+        dword_172CE0[i][2] = CosmeticRandom(1024);
     }
     gViewMap.Init(0, 0, gZoom, 0, gFollowMap);
 
@@ -3340,7 +3341,7 @@ void viewProcessSprites(int32_t cX, int32_t cY, int32_t cZ, int32_t cA, int32_t 
         if (spritesortcnt >= kMaxViewSprites) continue;
         if (pTXSprite && pTXSprite->burnTime > 0)
         {
-            pTSprite->shade = ClipRange(pTSprite->shade-16-QRandom(8), -128, 127);
+            pTSprite->shade = ClipRange(pTSprite->shade-16-CosmeticRandom(8), -128, 127);
         }
         if (pTSprite->flags&256)
         {
@@ -3940,24 +3941,24 @@ void viewUpdateShake(void)
     if (gView->flickerEffect)
     {
         int nValue = ClipHigh(gView->flickerEffect * 8, 2000);
-        shakeHoriz += QRandom2(nValue >> 8);
-        shakeAngle += QRandom2(nValue >> 8);
-        shakeX += QRandom2(nValue >> 4);
-        shakeY += QRandom2(nValue >> 4);
-        shakeZ += QRandom2(nValue);
-        shakeBobX += QRandom2(nValue);
-        shakeBobY += QRandom2(nValue);
+        shakeHoriz += CosmeticRandom2(nValue >> 8);
+        shakeAngle += CosmeticRandom2(nValue >> 8);
+        shakeX += CosmeticRandom2(nValue >> 4);
+        shakeY += CosmeticRandom2(nValue >> 4);
+        shakeZ += CosmeticRandom2(nValue);
+        shakeBobX += CosmeticRandom2(nValue);
+        shakeBobY += CosmeticRandom2(nValue);
     }
     if (gView->quakeEffect)
     {
         int nValue = ClipHigh(gView->quakeEffect * 8, 2000);
-        shakeHoriz += QRandom2(nValue >> 8);
-        shakeAngle += QRandom2(nValue >> 8);
-        shakeX += QRandom2(nValue >> 4);
-        shakeY += QRandom2(nValue >> 4);
-        shakeZ += QRandom2(nValue);
-        shakeBobX += QRandom2(nValue);
-        shakeBobY += QRandom2(nValue);
+        shakeHoriz += CosmeticRandom2(nValue >> 8);
+        shakeAngle += CosmeticRandom2(nValue >> 8);
+        shakeX += CosmeticRandom2(nValue >> 4);
+        shakeY += CosmeticRandom2(nValue >> 4);
+        shakeZ += CosmeticRandom2(nValue);
+        shakeBobX += CosmeticRandom2(nValue);
+        shakeBobY += CosmeticRandom2(nValue);
     }
 }
 
@@ -4184,20 +4185,20 @@ void viewDrawScreen(bool worldOnly)
             if (pOther->flickerEffect)
             {
                 int nValue = ClipHigh(pOther->flickerEffect*8, 2000);
-                v54 += QRandom2(nValue>>8);
-                v50 += QRandom2(nValue>>8);
-                vd8 += QRandom2(nValue>>4);
-                vd4 += QRandom2(nValue>>4);
-                vd0 += QRandom2(nValue);
+                v54 += CosmeticRandom2(nValue>>8);
+                v50 += CosmeticRandom2(nValue>>8);
+                vd8 += CosmeticRandom2(nValue>>4);
+                vd4 += CosmeticRandom2(nValue>>4);
+                vd0 += CosmeticRandom2(nValue);
             }
             if (pOther->quakeEffect)
             {
                 int nValue = ClipHigh(pOther->quakeEffect*8, 2000);
-                v54 += QRandom2(nValue >> 8);
-                v50 += QRandom2(nValue >> 8);
-                vd8 += QRandom2(nValue >> 4);
-                vd4 += QRandom2(nValue >> 4);
-                vd0 += QRandom2(nValue);
+                v54 += CosmeticRandom2(nValue >> 8);
+                v50 += CosmeticRandom2(nValue >> 8);
+                vd8 += CosmeticRandom2(nValue >> 4);
+                vd4 += CosmeticRandom2(nValue >> 4);
+                vd0 += CosmeticRandom2(nValue);
             }
             CalcOtherPosition(pOther->pSprite, &vd8, &vd4, &vd0, &vcc, v50, 0);
             CheckLink(&vd8, &vd4, &vd0, &vcc);
@@ -4633,6 +4634,7 @@ bool viewCaptureSavePreview(uint8_t *pixels, int width, int height)
     auto const oldWRandomSeed = wrandomseed;
     extern unsigned int randSeed;
     auto const oldQRandomSeed = randSeed;
+    auto const oldCosmeticRandomSeed = cosmeticRandomGenerator().state();
     uint8_t oldGotPic[sizeof(gotpic)], oldGotSector[sizeof(gotsector)], oldGotSectorROR[sizeof(gotsectorROR)];
     Bmemcpy(oldGotPic, gotpic, sizeof(gotpic));
     Bmemcpy(oldGotSector, gotsector, sizeof(gotsector));
@@ -4694,6 +4696,7 @@ bool viewCaptureSavePreview(uint8_t *pixels, int width, int height)
     randomseed = oldRandomSeed;
     wrandomseed = oldWRandomSeed;
     randSeed = oldQRandomSeed;
+    cosmeticRandomGenerator().seed(oldCosmeticRandomSeed);
     automapping = oldAutomapping;
     gViewMode = oldViewMode;
     gOverlayMap = oldOverlay;

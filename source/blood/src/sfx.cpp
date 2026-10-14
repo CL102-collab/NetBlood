@@ -24,6 +24,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "build.h"
 #include "compat.h"
 #include "common_game.h"
+#include "cosmeticrandom.h"
 #include "fx_man.h"
 
 #include "config.h"
@@ -287,7 +288,7 @@ void sfxPlay3DSoundCP(spritetype* pSprite, int soundId, int chanId, int nFlags, 
     if (size <= 0) return;
     
     if (pitch <= 0) pitch = pEffect->pitch;
-    else pitch -= QRandom(pEffect->pitchRange);
+    else pitch -= CosmeticRandom(pEffect->pitchRange);
 
     int v14;
     v14 = mulscale16(pitch, sndGetRate(pEffect->format));

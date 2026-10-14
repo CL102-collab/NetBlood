@@ -14,5 +14,6 @@ fi
     -I"$repo/source/blood/src" -I"$repo/source/build/include" \
     -I"$repo/source/mact/include" -I"$repo/source/audiolib/include" -I"$repo/source/glad/include" \
     "$repo/tests/network/prediction.cpp" "$repo/source/blood/src/netpredict.cpp" \
+    "$repo/source/blood/src/cosmeticrandom.cpp" \
     ${LDFLAGS:-} -o "$build_dir/prediction-test"
 "$build_dir/prediction-test"

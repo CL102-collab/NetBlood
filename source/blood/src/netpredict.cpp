@@ -3,6 +3,7 @@
 #include "compat.h"
 #include "build.h"
 #include "common_game.h"
+#include "cosmeticrandom.h"
 #include "db.h"
 #include "globals.h"
 #include "netdemo.h"
@@ -26,7 +27,7 @@ extern bool gPrediction;
 
 namespace
 {
-struct Command { uint32_t sequence; GINPUT input; };
+struct Command { uint32_t sequence; GINPUT input; uint32_t cosmeticSeed; };
 struct Entity
 {
     int32_t x, y, z;
@@ -39,6 +40,7 @@ std::deque<Command> commands;
 struct PredictedSound { uint32_t sequence, time; int sprite, sound, variants, channel; };
 std::deque<PredictedSound> sounds;
 uint32_t predictingSequence = 0;
+CosmeticRandomGenerator commandCosmetics;
 std::array<Entity, kMaxSprites> previousEntities;
 std::vector<SectorPosition> previousSectors, savedSectors;
 std::vector<WallPosition> previousWalls, savedWalls;
@@ -93,6 +95,9 @@ void predict(Command const &command, bool replay)
         viewUpdatePrediction(&input);
     }
     predictingSequence = command.sequence;
+    // Recreate the same visual choices on every replay, independently of
+    // one-shot sounds (which are deliberately not emitted during replay).
+    commandCosmetics.seed(command.cosmeticSeed);
     WeaponPredictCommand(gMe, command.input, replay);
 }
 }
@@ -132,7 +137,7 @@ void netPredictCommand(uint32_t sequence, GINPUT const &input)
         overflowed = true;
         ++stats.historyOverflows;
     }
-    commands.push_back({sequence, input});
+    commands.push_back({sequence, input, cosmeticRandomGenerator().next()});
     stats.pendingCommands = uint32_t(commands.size());
     if (!overflowed) predict(commands.back(), false);
 }
@@ -196,12 +201,23 @@ void netPredictSnapshot(uint32_t acknowledgedCommand, uint32_t serverTick, bool 
     stats.pendingCommands = uint32_t(commands.size());
 }
 
-void netPredictLocalSound(int soundId, int variantCount, int channel)
+int netPredictLocalSound(int soundId, int variantCount, int channel)
 {
-    if (!netPredictActive() || !localPlayerValid()) return;
+    if (!netPredictActive() || !localPlayerValid()) return soundId;
+    // Track the entire original range even when the local cosmetic choice is
+    // different from the authoritative variant received a moment later.
+    int const variants = int(std::min<int64_t>(std::max(1, variantCount),
+        int64_t(std::numeric_limits<int>::max()) - soundId + 1));
     if (sounds.size() == 256) sounds.pop_front();
-    sounds.push_back({predictingSequence, timerGetTicks(), gMe->pSprite->index, soundId, std::max(1, variantCount), channel});
+    sounds.push_back({predictingSequence, timerGetTicks(), gMe->pSprite->index, soundId, variants, channel});
     ++stats.predictedSounds;
+    return soundId + CosmeticRandom(variants);
+}
+
+int netPredictCosmeticRandom(int upperExclusive)
+{
+    if (!netPredictActive() || !localPlayerValid() || !haveCommand || upperExclusive <= 1) return 0;
+    return int(commandCosmetics.bounded(uint32_t(upperExclusive)));
 }
 
 bool netPredictSuppressSound(int spriteIndex, int soundId, uint32_t commandSequence, int channel)

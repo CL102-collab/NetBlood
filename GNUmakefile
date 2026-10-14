@@ -794,6 +794,7 @@ blood_game_objs := \
 	choke.cpp \
 	common.cpp \
 	config.cpp \
+	cosmeticrandom.cpp \
 	controls.cpp \
 	cinematic_ogv.cpp \
 	credits.cpp \

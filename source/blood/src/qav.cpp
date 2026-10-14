@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "build.h"
 #include "compat.h"
 #include "common_game.h"
+#include "cosmeticrandom.h"
 #include "qav.h"
 #include "tile.h"
 #include "sfx.h"
@@ -127,9 +128,15 @@ void QAV::Play(int start, int end, int nCallback, void *pData)
             if (pSound->sound > 0) {
                 int sound = pSound->sound;
                 
-                // by NoOne: add random rage sound feature
-                if (pSound->sndRange > 0 && !VanillaMode()) 
-                    sound += Random((pSound->sndRange == 1) ? 2 : pSound->sndRange);
+                if (pSound->sndRange > 0 && !VanillaMode())
+                {
+                    int const variants = pSound->sndRange == 1 ? 2 : pSound->sndRange;
+                    // Menu and choke animations play from Draw and must not
+                    // advance the simulation RNG. Gameplay QAVs retain their
+                    // original draws for legacy demo synchronization.
+                    sound += nCallback == -1 && pData == nullptr
+                        ? CosmeticRandom(variants) : Random(variants);
+                }
                 
                 if (nSprite == -1) PlaySound(sound);
                 else PlaySound3D(&sprite[nSprite], sound, 16+pSound->priority, 6);

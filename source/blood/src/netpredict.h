@@ -32,5 +32,9 @@ void netPredictInterpolateSprite(int spriteIndex, tspritetype *renderSprite);
 
 // Weapon presentation marks a sound before playing it. Authoritative sound
 // events tagged with the generating command consume exactly one local match.
-void netPredictLocalSound(int soundId, int variantCount = 1, int channel = -1);
+// Returns a cosmetic sound choice while tracking the full variant range.
+// Call only for fresh feedback: replay must not emit or choose a new sound.
+int netPredictLocalSound(int soundId, int variantCount = 1, int channel = -1);
+// Use inside WeaponPredictCommand for visual choices that must survive replay.
+int netPredictCosmeticRandom(int upperExclusive);
 bool netPredictSuppressSound(int spriteIndex, int soundId, uint32_t commandSequence, int channel = -1);

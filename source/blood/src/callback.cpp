@@ -37,6 +37,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "gameutil.h"
 #include "globals.h"
 #include "levels.h"
+#include "mmulti.h"
+#include "netevents.h"
 #include "player.h"
 #include "seq.h"
 #include "sfx.h"
@@ -394,11 +396,20 @@ void CounterCheck(int nSector) // 12
 
 void FinishHim(int nSprite) // 13
 {
+    if (nSprite < 0 || nSprite >= kMaxSprites) return;
     spritetype* pSprite = &sprite[nSprite];
-    int nXSprite = pSprite->extra;
-    XSPRITE* pXSprite = &xsprite[nXSprite];
-    if (gMe && IsPlayerSprite(pSprite) && playerSeqPlaying(&gPlayer[pSprite->type - kDudePlayer1], 16) && pXSprite->target == gMe->nSprite)
-        sndStartSample(3313, -1, 1, 0);
+    if (!IsPlayerSprite(pSprite) || pSprite->extra <= 0 || pSprite->extra >= kMaxXSprites
+        || !playerSeqPlaying(&gPlayer[pSprite->type - kDudePlayer1], 16)) return;
+    int const target = xsprite[pSprite->extra].target;
+    if (target < 0 || target >= kMaxSprites) return;
+    // The attacker may be a remote player, and dedicated servers have no gMe.
+    // Keep this cue private, including when the listen host is the attacker.
+    for (int player = connecthead; player >= 0; player = connectpoint2[player])
+        if (gPlayer[player].nSprite == target)
+        {
+            netSoundForPlayer(player, 3313, -1, 1);
+            break;
+        }
 }
 
 void fxBloodBits(int nSprite) // 14
