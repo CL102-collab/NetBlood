@@ -49,6 +49,7 @@
     X(vkCmdEndRenderPass) \
     X(vkCmdExecuteCommands) \
     X(vkCmdPipelineBarrier) \
+    X(vkCmdPushConstants) \
     X(vkCmdSetDepthBias) \
     X(vkCmdSetLineWidth) \
     X(vkCmdSetScissor) \
