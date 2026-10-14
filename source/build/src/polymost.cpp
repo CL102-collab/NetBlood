@@ -21,10 +21,8 @@ Ken Silverman's official web site: http://www.advsys.net/ken
 #include "texcache.h"
 #include "hash.h"
 #include "native_renderer.h"
-#include "vulkan_renderer.h"
-#ifdef USE_VULKAN
-#include "vulkan_lighting.h"
-#endif
+#include "realtime_lighting.h"
+#include "polymost_lighting.h"
 
 #include <string>
 #include <cmath>
@@ -200,11 +198,9 @@ static GLuint polymost1CurrentShaderProgramID = 0;
 static GLuint polymost1BasicShaderProgramID = 0;
 static GLuint polymost1ExtendedShaderProgramID = 0;
 static bool ambientOcclusionWorld = false;
-#ifdef USE_VULKAN
 static bool realtimeLightingView = false;
 static float realtimeLightingEyeToWorld[16], realtimeLightingProjection[16];
 static int realtimeLightingViewport[4];
-#endif
 static bool ambientOcclusionFailed = false;
 static GLuint ambientOcclusionTexture = 0, ambientOcclusionFramebuffer = 0, ambientOcclusionProgram = 0;
 static int ambientOcclusionWidth = 0, ambientOcclusionHeight = 0;
@@ -532,9 +528,7 @@ static void polymost_resetAmbientOcclusion()
 
 void polymost_cancelAmbientOcclusion()
 {
-#ifdef USE_VULKAN
     realtimeLightingView = false;
-#endif
     if (!ambientOcclusionWorld) return;
     ambientOcclusionWorld = false;
     buildgl_setDisabled(GL_STENCIL_TEST);
@@ -546,10 +540,7 @@ void polymost_cancelAmbientOcclusion()
 void polymost_beginAmbientOcclusion()
 {
     polymost_cancelAmbientOcclusion();
-    bool lighting = false;
-#ifdef USE_VULKAN
-    lighting = r_realtimelighting && videoGetRenderMode() == REND_VULKAN;
-#endif
+    bool const lighting = r_realtimelighting && videoUsesPolymost();
     // The high stencil bit is also the lighting mask. Keep recording it with
     // AO disabled, so lighting never reaches skies, portals or the HUD.
     if ((!r_ambientocclusion && !lighting) || !videoUsesPolymost() || (ambientOcclusionFailed && !lighting)) return;
@@ -570,10 +561,9 @@ void polymost_ambientOcclusionDepthWrite(bool enabled)
     if (ambientOcclusionWorld) glStencilMask(enabled ? 128 : 0);
 }
 
-#ifdef USE_VULKAN
 static void polymost_captureLightingView()
 {
-    if (!ambientOcclusionWorld || !r_realtimelighting || videoGetRenderMode() != REND_VULKAN || inpreparemirror) return;
+    if (!ambientOcclusionWorld || !r_realtimelighting || !videoUsesPolymost() || inpreparemirror) return;
 #ifdef YAX_ENABLE
     if (yax_globallev != YAX_MAXDRAWS) return;
 #endif
@@ -621,16 +611,24 @@ static void polymost_captureLightingView()
     realtimeLightingView = true;
 }
 
-void polymost_applyRealtimeLighting(VulkanLight const *lights, unsigned lightCount)
+void polymost_applyRealtimeLighting(RealtimeLight const *lights, unsigned lightCount)
 {
-    if (!realtimeLightingView || !r_realtimelighting || videoGetRenderMode() != REND_VULKAN || !lightCount) return;
-    lightCount = min(lightCount, kVulkanMaxLights);
-    static std::vector<VulkanShadowVertex> shadowVertices;
-    vulkanBuildShadowMesh(lights, lightCount, shadowVertices);
-    vulkanRealtimeLighting(realtimeLightingProjection, realtimeLightingEyeToWorld, realtimeLightingViewport,
-                           lights, lightCount, shadowVertices.data(), unsigned(shadowVertices.size()));
-}
+    if (!realtimeLightingView || !r_realtimelighting || !videoUsesPolymost() || !lightCount) return;
+    if (!videoIsNativeRenderer(videoGetRenderMode()) && !polymostRealtimeLightingAvailable()) return;
+    lightCount = min(lightCount, kMaxRealtimeLights);
+    static std::vector<RealtimeShadowVertex> shadowVertices;
+    buildRealtimeShadowMesh(lights, lightCount, shadowVertices);
+#if defined(USE_VULKAN) || defined(USE_METAL)
+    if (videoIsNativeRenderer(videoGetRenderMode()))
+    {
+        nativeRealtimeLighting(realtimeLightingProjection, realtimeLightingEyeToWorld, realtimeLightingViewport,
+                               lights, lightCount, shadowVertices.data(), unsigned(shadowVertices.size()));
+        return;
+    }
 #endif
+    polymostRealtimeLighting(realtimeLightingProjection, realtimeLightingEyeToWorld, realtimeLightingViewport,
+                             lights, lightCount, shadowVertices.data(), unsigned(shadowVertices.size()));
+}
 
 #ifndef EDUKE32_GLES
 static bool polymost_ambientOcclusionFramebufferSupported()
@@ -836,6 +834,10 @@ void polymost_applyAmbientOcclusion()
 
 void polymost_glreset()
 {
+    // During a renderer switch, rendmode already names the destination. The
+    // current backend still owns the dispatch and must delete its own resources.
+    if (!nativeActive()) polymostResetRealtimeLighting();
+    realtimeLightingView = false;
     polymost_resetAmbientOcclusion();
     buildgl_resetStateAccounting();
     if (!nogl || videoIsNativeRenderer(videoGetRenderMode()))
@@ -7612,9 +7614,7 @@ void polymost_drawrooms()
 
     grhalfxdown10x = grhalfxdown10;
 
-#ifdef USE_VULKAN
     polymost_captureLightingView();
-#endif
     if (inpreparemirror)
     {
         // see engine.c: INPREPAREMIRROR_NO_BUNCHES
@@ -10562,7 +10562,7 @@ void polymost_initosdfuncs(void)
 #endif
         { "r_animsmoothing","enable/disable model animation smoothing",(void *) &r_animsmoothing, CVAR_BOOL, 0, 1 },
         { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost, Vulkan and Metal", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
-        { "r_realtimelighting", "enable/disable Vulkan realtime lighting and shadows", (void *) &r_realtimelighting, CVAR_BOOL, 0, 1 },
+        { "r_realtimelighting", "enable/disable Polymost and Vulkan realtime lighting and shadows", (void *) &r_realtimelighting, CVAR_BOOL, 0, 1 },
         { "r_anisotropy", "changes the OpenGL texture anisotropy setting (requires r_useindexedcolortextures to be off)", (void *) &glanisotropy, CVAR_INT|CVAR_FUNCPTR|CVAR_RESTARTVID, 1, 16 },
         { "r_downsize","controls downsizing factor (quality) for hires textures",(void *) &r_downsize, CVAR_INT|CVAR_FUNCPTR, 0, 5 },
         { "r_finishbeforeswap", "run glFinish() before swapping when 'r_glfinish' is 1 and when not using KMT vsync", (void *) &r_finishbeforeswap, CVAR_BOOL, 0, 1 },

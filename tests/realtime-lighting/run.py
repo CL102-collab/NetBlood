@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Vulkan game lighting, exact toggle restoration, HUD and saved settings.
+"""Check OpenGL/Vulkan lighting, live toggles, renderer switching and persistence.
 
 The default scene is an original room with a live torch and a solid pillar.
 Requires DISPLAY, SDL2 development files, Pillow and supplied Blood 1.21 assets.
@@ -80,7 +80,7 @@ def difference(first, second):
     return {'mean_rgb': sum(ImageStat.Stat(image).mean) / 3, 'bbox': image.getbbox()}
 
 
-def run_game(command, runtime, env, log_path, timeout):
+def run_game(command, runtime, env, log_path, timeout, renderer):
     errors = []
     with log_path.open('w') as log:
         try:
@@ -90,55 +90,40 @@ def run_game(command, runtime, env, log_path, timeout):
                 errors.append(f'exit status {completed.returncode}')
         except subprocess.TimeoutExpired:
             errors.append('timed out')
+        except OSError as error:
+            errors.append(str(error))
     log = log_path.read_text(errors='replace')
     errors += [line for line in log.splitlines() if re.search(
-        r'\b(?:ERROR|FATAL)\||VUID-|Validation Error|SYNC-HAZARD|unknown (?:command|symbol)', line, re.I)]
+        r'\b(?:ERROR|FATAL)\||VUID-|Validation Error|SYNC-HAZARD|GL_INVALID_|unknown (?:command|symbol)', line, re.I)]
     contexts = re.search(r'RENDER_TEST_CONTEXTS: gl_attempts=(\d+) gl_contexts=(\d+) vulkan_surfaces=(\d+)', log)
-    if not contexts or int(contexts[1]) != 0 or int(contexts[3]) < 1:
+    if not contexts:
+        errors.append('missing renderer context evidence')
+    elif renderer == 'vulkan' and (int(contexts[1]) != 0 or int(contexts[3]) < 1):
         errors.append('expected a native Vulkan surface and no OpenGL context attempts')
+    elif renderer == 'opengl' and (int(contexts[2]) < 1 or int(contexts[3]) != 0):
+        errors.append('expected an OpenGL context without Vulkan surfaces')
+    elif renderer == 'switch' and (int(contexts[2]) < 2 or int(contexts[3]) < 1):
+        errors.append('switching did not create both OpenGL contexts and a Vulkan surface')
     return log, errors
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, default=ROOT / 'nblood')
-    parser.add_argument('--assets', type=Path, required=True)
-    parser.add_argument('--output', type=Path)
-    parser.add_argument('--map', help='Use an existing scene such as E1M1 instead of the generated torch fixture')
-    parser.add_argument('--expect-unlit', action='store_true',
-                        help='Require an unchanged image for a scene without visible light contributions')
-    parser.add_argument('--validation', action='store_true')
-    parser.add_argument('--initial-delay-ms', type=int, default=20000)
-    parser.add_argument('--timeout', type=int, default=120)
-    args = parser.parse_args()
-    output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='netblood-lighting-'))
-    if args.output:
-        output.mkdir(parents=True, exist_ok=False)
-    binary = output / 'nblood-tested'
-    shutil.copy2(args.binary.resolve(), binary)
-    library = render_checks.build_input_driver(output)
-    runtime = output / 'vulkan'
+def prepare_runtime(args, output, binary, library, renderer, lighting):
+    runtime = output / renderer
     runtime.mkdir()
     (runtime / 'lighting.cfg').write_text(
         '[Setup]\nForceSetup = 0\nNoAutoLoad = 1\n[Screen Setup]\n'
-        'Renderer = 5\nScreenMode = 0\nScreenBPP = 32\nScreenWidth = 800\nScreenHeight = 600\n')
+        f'Renderer = {5 if renderer == "vulkan" else 3}\n'
+        'ScreenMode = 0\nScreenBPP = 32\nScreenWidth = 800\nScreenHeight = 600\n')
     map_name = args.map or 'VFLIGHT'
     bindings = '\n'.join(f'bind {key} norepeat "exec step-{index}.cfg"'
                          for index, key in enumerate(('I', 'O', 'P', 'L')))
     (runtime / 'autoexec.cfg').write_text(
         'r_maxfps 60\nr_showfps 0\nhud_showmaptitle 0\nr_texcompr 0\nr_texcache 0\n'
-        'r_ambientocclusion 0\nr_realtimelighting 0\n' + bindings + '\n')
-    scripts = (f'map "{map_name}"\npause\necho LIGHTING_FROZEN\n',
-               'screenshot\nr_realtimelighting 1\necho LIGHTING_OFF_CAPTURED\n',
-               'screenshot\nr_realtimelighting 0\necho LIGHTING_ON_CAPTURED\n',
-               'screenshot\necho LIGHTING_RESTORED_CAPTURED\nquit\n')
-    for index, script in enumerate(scripts):
-        (runtime / f'step-{index}.cfg').write_text(script)
+        f'r_ambientocclusion {int(args.ambient_occlusion)}\nr_realtimelighting {lighting}\n' + bindings + '\n')
     command = [str(binary), '-usecwd', '-nosetup', '-noautoload', '-quick', '-nodemo',
                '-cfg', 'lighting.cfg', '-j=' + str(args.assets.resolve()), '-j=' + str(ROOT), '-map', map_name]
     if not args.map:
         fixture_path = output / 'fixture'
-        generate_fixture(fixture_path)
         command += ['-j=' + str(fixture_path), '-h=lighting.def']
     env = os.environ.copy()
     env.update(SDL_VIDEODRIVER='x11', SDL_AUDIODRIVER='dummy',
@@ -148,8 +133,20 @@ def main():
     if args.validation:
         env['VK_INSTANCE_LAYERS'] = 'VK_LAYER_KHRONOS_validation'
         env['VK_LAYER_ENABLES'] = 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT'
-    print('Checking Vulkan lighting: off / on / off', flush=True)
-    log, errors = run_game(command, runtime, env, runtime / 'console.log', args.timeout)
+    return runtime, command, env
+
+
+def toggle_case(args, output, binary, library, renderer):
+    runtime, command, env = prepare_runtime(args, output, binary, library, renderer, 0)
+    map_name = args.map or 'VFLIGHT'
+    scripts = (f'map "{map_name}"\npause\necho LIGHTING_FROZEN\n',
+               'screenshot\nr_realtimelighting 1\necho LIGHTING_OFF_CAPTURED\n',
+               'screenshot\nr_realtimelighting 0\necho LIGHTING_ON_CAPTURED\n',
+               'screenshot\necho LIGHTING_RESTORED_CAPTURED\nquit\n')
+    for index, script in enumerate(scripts):
+        (runtime / f'step-{index}.cfg').write_text(script)
+    print(f'Checking {renderer} lighting: off / on / off', flush=True)
+    log, errors = run_game(command, runtime, env, runtime / 'console.log', args.timeout, renderer)
     for marker in ('Paused at simulation frame 0.', 'LIGHTING_FROZEN', 'LIGHTING_OFF_CAPTURED',
                    'LIGHTING_ON_CAPTURED', 'LIGHTING_RESTORED_CAPTURED'):
         if marker not in log:
@@ -157,8 +154,7 @@ def main():
     if not args.map and 'Definitions file "lighting.def" loaded' not in log:
         errors.append('fixture definitions were not loaded')
     paths = sorted((runtime / 'screenshots').glob('*.png'))
-    result = {'map': map_name, 'expect_unlit': args.expect_unlit,
-              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(), 'errors': errors}
+    result = {'renderer': renderer, 'errors': errors}
     if len(paths) != 3:
         errors.append(f'expected 3 screenshots, found {len(paths)}')
     else:
@@ -183,12 +179,96 @@ def main():
     (runtime / 'autoexec.cfg').write_text('bind I norepeat "exec restart.cfg"\n')
     (runtime / 'restart.cfg').write_text('r_realtimelighting\necho LIGHTING_RESTARTED\nquit\n')
     env['RENDER_TEST_PRESSES'] = '1'
-    print('Checking saved lighting preference after restart', flush=True)
-    restart_log, restart_errors = run_game(command, runtime, env, runtime / 'restart.log', args.timeout)
+    print(f'Checking saved {renderer} lighting preference after restart', flush=True)
+    restart_log, restart_errors = run_game(command, runtime, env, runtime / 'restart.log', args.timeout, renderer)
     errors += ['restart: ' + error for error in restart_errors]
     if 'LIGHTING_RESTARTED' not in restart_log or "'r_realtimelighting' is '0'" not in restart_log:
         errors.append('lighting-off preference did not survive restart')
     result['passed'] = not errors
+    (runtime / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result, paths
+
+
+def switch_case(args, output, binary, library, captures):
+    runtime, command, env = prepare_runtime(args, output, binary, library, 'switch', 1)
+    map_name = args.map or 'VFLIGHT'
+    scripts = (f'map "{map_name}"\npause\necho LIGHTING_FROZEN\n',
+               'screenshot\nsetrendermode 5\necho LIGHTING_SWITCH_0\n',
+               'screenshot\nsetrendermode 3\necho LIGHTING_SWITCH_1\n',
+               'screenshot\necho LIGHTING_SWITCH_2\nquit\n')
+    for index, script in enumerate(scripts):
+        (runtime / f'step-{index}.cfg').write_text(script)
+    print('Checking lit renderer switching: OpenGL / Vulkan / OpenGL', flush=True)
+    log, errors = run_game(command, runtime, env, runtime / 'console.log', args.timeout, 'switch')
+    for marker in ('Paused at simulation frame 0.', 'LIGHTING_FROZEN', 'LIGHTING_SWITCH_0',
+                   'LIGHTING_SWITCH_1', 'LIGHTING_SWITCH_2'):
+        if marker not in log:
+            errors.append('missing marker: ' + marker)
+    paths = sorted((runtime / 'screenshots').glob('*.png'))
+    comparisons = []
+    if len(paths) != 3:
+        errors.append(f'expected 3 switching screenshots, found {len(paths)}')
+    else:
+        for index, renderer in enumerate(('opengl', 'vulkan', 'opengl')):
+            render_checks.inspect_image(paths[index], (800, 600))
+            if len(captures[renderer]) == 3:
+                comparison = render_checks.compare_images(
+                    captures[renderer][1], paths[index], runtime / f'difference-{index}.png', 2.0)
+                comparisons.append(dict(renderer=renderer, **comparison))
+                if not comparison['passed']:
+                    errors.append(f'{renderer} switching frame {index} differs from standalone lit scene')
+        restoration = render_checks.compare_images(paths[0], paths[2], runtime / 'restoration.png', 0.0, 0.0)
+        comparisons.append(dict(renderer='opengl restoration', **restoration))
+        if not restoration['passed']:
+            errors.append('returning to OpenGL did not restore its lit image exactly')
+    result = {'renderer': 'switch', 'errors': errors, 'comparisons': comparisons, 'passed': not errors}
+    (runtime / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary', type=Path, default=ROOT / 'nblood')
+    parser.add_argument('--assets', type=Path, required=True)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--mode', choices=('opengl', 'vulkan', 'compare', 'all'), default='all',
+                        help='all also checks switching with lighting enabled (default)')
+    parser.add_argument('--map', help='Use an existing scene instead of the generated torch fixture')
+    parser.add_argument('--expect-unlit', action='store_true',
+                        help='Require an unchanged image for a scene without visible light contributions')
+    parser.add_argument('--ambient-occlusion', action='store_true',
+                        help='Also enable ambient occlusion to check both effects together')
+    parser.add_argument('--validation', action='store_true')
+    parser.add_argument('--initial-delay-ms', type=int, default=20000)
+    parser.add_argument('--timeout', type=int, default=120)
+    args = parser.parse_args()
+    output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='netblood-lighting-'))
+    if args.output:
+        output.mkdir(parents=True, exist_ok=False)
+    binary = output / 'nblood-tested'
+    shutil.copy2(args.binary.resolve(), binary)
+    library = render_checks.build_input_driver(output)
+    if not args.map:
+        generate_fixture(output / 'fixture')
+    renderers = ('opengl', 'vulkan') if args.mode in ('compare', 'all') else (args.mode,)
+    cases, captures, parity = [], {}, []
+    for renderer in renderers:
+        case, captures[renderer] = toggle_case(args, output, binary, library, renderer)
+        cases.append(case)
+    if len(renderers) == 2 and all(len(captures[renderer]) == 3 for renderer in renderers):
+        for index, setting in enumerate(('off', 'on', 'restored')):
+            comparison = render_checks.compare_images(
+                captures['opengl'][index], captures['vulkan'][index], output / f'parity-{setting}.png', 2.0)
+            parity.append(dict(setting=setting, **comparison))
+    if args.mode == 'all':
+        cases.append(switch_case(args, output, binary, library, captures))
+    result = {'map': args.map or 'VFLIGHT', 'mode': args.mode, 'expect_unlit': args.expect_unlit,
+              'ambient_occlusion': args.ambient_occlusion,
+              'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+              'cases': cases, 'parity': parity,
+              'passed': all(case['passed'] for case in cases)
+                        and (len(renderers) == 1 or len(parity) == 3)
+                        and all(comparison['passed'] for comparison in parity)}
     (output / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
     print(f'Evidence: {output}')

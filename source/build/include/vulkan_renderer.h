@@ -4,6 +4,7 @@
 
 #include "native_renderer.h"
 #include <vector>
+#include "realtime_lighting.h"
 
 struct SDL_Window;
 
@@ -13,20 +14,10 @@ using VulkanUniforms = NativeUniforms;
 using VulkanSamplerState = NativeSamplerState;
 using VulkanDrawState = NativeDrawState;
 
-constexpr unsigned kVulkanMaxLights = 8;
-
-// Isotropic Build world coordinates: x, y, z / 16. RGB controls light color;
-// color.w scales intensity without changing the light's range.
-struct VulkanLight
-{
-    float positionRadius[4];
-    float color[4];
-};
-
-struct VulkanShadowVertex
-{
-    float position[3];
-};
+// Preserve the native backend's API names while sharing scene data with GL.
+constexpr unsigned kVulkanMaxLights = kMaxRealtimeLights;
+using VulkanLight = RealtimeLight;
+using VulkanShadowVertex = RealtimeShadowVertex;
 
 // Cumulative CPU recording diagnostics for the current backend lifetime.
 // Call vulkanFinish first to include draws still waiting in the current batch.

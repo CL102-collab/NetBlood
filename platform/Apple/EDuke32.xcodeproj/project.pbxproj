@@ -76,6 +76,8 @@
 		0008E93D19F1AC540091588D /* osxbits.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8BC19F1AC530091588D /* osxbits.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0008E93F19F1AC540091588D /* polymer.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8BE19F1AC530091588D /* polymer.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0008E94019F1AC540091588D /* polymost.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8BF19F1AC530091588D /* polymost.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		1C0C35ACBC804451CD26F588 /* realtime_lighting.h in Headers */ = {isa = PBXBuildFile; fileRef = E96CD077F30A376B4B5226E2 /* realtime_lighting.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B99CF3A8686E4745866A9CDD /* polymost_lighting.h in Headers */ = {isa = PBXBuildFile; fileRef = BB1BD7A8491ECA53E216FBCB /* polymost_lighting.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0008E94119F1AC540091588D /* pragmas.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8C019F1AC530091588D /* pragmas.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0008E94219F1AC540091588D /* pragmas_arm.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8C119F1AC530091588D /* pragmas_arm.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0008E94319F1AC540091588D /* pragmas_ppc.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8C219F1AC530091588D /* pragmas_ppc.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -111,6 +113,8 @@
 		0008E97519F1AC540091588D /* osxbits.mm in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8F919F1AC540091588D /* osxbits.mm */; };
 		0008E97619F1AC540091588D /* polymer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FA19F1AC540091588D /* polymer.cpp */; };
 		0008E97719F1AC540091588D /* polymost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FB19F1AC540091588D /* polymost.cpp */; };
+		08711F563A6246921DC3F741 /* realtime_lighting_mesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5D8081727EFC74F575C3072E /* realtime_lighting_mesh.cpp */; };
+		610B446D9FEA6841BCF6D79D /* polymost_lighting.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2ED4C66832BBB9D75833885A /* polymost_lighting.cpp */; };
 		0008E97819F1AC540091588D /* pragmas.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FC19F1AC540091588D /* pragmas.cpp */; };
 		0008E97A19F1AC540091588D /* scriptfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FE19F1AC540091588D /* scriptfile.cpp */; };
 		0008E97B19F1AC540091588D /* sdlayer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FF19F1AC540091588D /* sdlayer.cpp */; };
@@ -235,6 +239,8 @@
 		001382A119F361B60007DA6C /* xxhash.c in Sources */ = {isa = PBXBuildFile; fileRef = 0008E92219F1AC540091588D /* xxhash.c */; };
 		001382A219F361B60007DA6C /* scriptfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FE19F1AC540091588D /* scriptfile.cpp */; };
 		001382A319F361B60007DA6C /* polymost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8FB19F1AC540091588D /* polymost.cpp */; };
+		76AC86D4BEACCC302E5F1723 /* realtime_lighting_mesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5D8081727EFC74F575C3072E /* realtime_lighting_mesh.cpp */; };
+		AA4AE2BBC17899FD79E7A2DC /* polymost_lighting.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2ED4C66832BBB9D75833885A /* polymost_lighting.cpp */; };
 		001382A419F361B60007DA6C /* hightile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8EB19F1AC540091588D /* hightile.cpp */; };
 		001382A519F361B60007DA6C /* dxtfilter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8E419F1AC530091588D /* dxtfilter.cpp */; };
 		001382A619F361B60007DA6C /* lz4.c in Sources */ = {isa = PBXBuildFile; fileRef = 0008E8EE19F1AC540091588D /* lz4.c */; };
@@ -274,6 +280,8 @@
 		001382D519F361B60007DA6C /* xxhash.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8D519F1AC530091588D /* xxhash.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		001382D619F361B60007DA6C /* pragmas_ppc.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8C219F1AC530091588D /* pragmas_ppc.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		001382D719F361B60007DA6C /* polymost.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8BF19F1AC530091588D /* polymost.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		5FDB490178D0E80B8DB82FF0 /* realtime_lighting.h in Headers */ = {isa = PBXBuildFile; fileRef = E96CD077F30A376B4B5226E2 /* realtime_lighting.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		FA9B3955A8C4DA6034F45BCB /* polymost_lighting.h in Headers */ = {isa = PBXBuildFile; fileRef = BB1BD7A8491ECA53E216FBCB /* polymost_lighting.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		001382D819F361B60007DA6C /* sdlayer.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8CC19F1AC530091588D /* sdlayer.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		001382D919F361B60007DA6C /* cache1d.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8A419F1AC530091588D /* cache1d.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		001382DA19F361B60007DA6C /* mmulti.h in Headers */ = {isa = PBXBuildFile; fileRef = 0008E8B619F1AC530091588D /* mmulti.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -592,8 +600,10 @@
 		20E014DB23BF366100CC954F /* polymost1Frag.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */; };
 		20E014DC23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */; };
 		96E0923C1956130549CEC87D /* ambient_occlusion.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */; };
+		E544D00C05B4B690FC507049 /* realtime_lighting.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4AFD82AFB39C2ECE4FB864B8 /* realtime_lighting.glsl.cpp */; };
 		20E014DD23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */; };
 		57F41F260F93ACC7B6412BBB /* ambient_occlusion.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */; };
+		FCBDEE96A6E3CF2339FEDDF2 /* realtime_lighting.glsl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4AFD82AFB39C2ECE4FB864B8 /* realtime_lighting.glsl.cpp */; };
 		20E16CE11C7022C300EE8446 /* cmdline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CDF1C7022C300EE8446 /* cmdline.cpp */; };
 		20E16CE21C7022C300EE8446 /* cmdline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CDF1C7022C300EE8446 /* cmdline.cpp */; };
 		20E16CE81C7022DE00EE8446 /* screens.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20E16CE61C7022DE00EE8446 /* screens.cpp */; };
@@ -775,6 +785,8 @@
 		0008E8BC19F1AC530091588D /* osxbits.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = osxbits.h; sourceTree = "<group>"; };
 		0008E8BE19F1AC530091588D /* polymer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = polymer.h; sourceTree = "<group>"; };
 		0008E8BF19F1AC530091588D /* polymost.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = polymost.h; sourceTree = "<group>"; };
+		E96CD077F30A376B4B5226E2 /* realtime_lighting.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = realtime_lighting.h; sourceTree = "<group>"; };
+		BB1BD7A8491ECA53E216FBCB /* polymost_lighting.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = polymost_lighting.h; sourceTree = "<group>"; };
 		0008E8C019F1AC530091588D /* pragmas.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = pragmas.h; sourceTree = "<group>"; };
 		0008E8C119F1AC530091588D /* pragmas_arm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = pragmas_arm.h; sourceTree = "<group>"; };
 		0008E8C219F1AC530091588D /* pragmas_ppc.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = pragmas_ppc.h; sourceTree = "<group>"; };
@@ -812,6 +824,8 @@
 		0008E8F919F1AC540091588D /* osxbits.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = osxbits.mm; sourceTree = "<group>"; };
 		0008E8FA19F1AC540091588D /* polymer.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = polymer.cpp; sourceTree = "<group>"; };
 		0008E8FB19F1AC540091588D /* polymost.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = polymost.cpp; sourceTree = "<group>"; };
+		5D8081727EFC74F575C3072E /* realtime_lighting_mesh.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = realtime_lighting_mesh.cpp; sourceTree = "<group>"; };
+		2ED4C66832BBB9D75833885A /* polymost_lighting.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = polymost_lighting.cpp; sourceTree = "<group>"; };
 		0008E8FC19F1AC540091588D /* pragmas.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = pragmas.cpp; sourceTree = "<group>"; };
 		0008E8FE19F1AC540091588D /* scriptfile.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = scriptfile.cpp; sourceTree = "<group>"; };
 		0008E8FF19F1AC540091588D /* sdlayer.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = sdlayer.cpp; sourceTree = "<group>"; };
@@ -1074,9 +1088,11 @@
 		20E014D623BF362200CC954F /* polymost1Frag.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = polymost1Frag.glsl; sourceTree = "<group>"; };
 		20E014D723BF362200CC954F /* polymost1Vert.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = polymost1Vert.glsl; sourceTree = "<group>"; };
 		54F96C39CD43302BB6325862 /* ambient_occlusion.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = ambient_occlusion.glsl; sourceTree = "<group>"; };
+		FEA304DD745DFBEE8854E0FC /* realtime_lighting.glsl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = realtime_lighting.glsl; sourceTree = "<group>"; };
 		20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = polymost1Frag.glsl.cpp; path = ../../obj/build/polymost1Frag.glsl.cpp; sourceTree = SOURCE_ROOT; };
 		20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = polymost1Vert.glsl.cpp; path = ../../obj/build/polymost1Vert.glsl.cpp; sourceTree = SOURCE_ROOT; };
 		44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ambient_occlusion.glsl.cpp; path = ../../obj/build/ambient_occlusion.glsl.cpp; sourceTree = SOURCE_ROOT; };
+		4AFD82AFB39C2ECE4FB864B8 /* realtime_lighting.glsl.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = realtime_lighting.glsl.cpp; path = ../../obj/build/realtime_lighting.glsl.cpp; sourceTree = SOURCE_ROOT; };
 		20E16CDF1C7022C300EE8446 /* cmdline.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = cmdline.cpp; sourceTree = "<group>"; };
 		20E16CE01C7022C300EE8446 /* cmdline.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = cmdline.h; sourceTree = "<group>"; };
 		20E16CE61C7022DE00EE8446 /* screens.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = screens.cpp; sourceTree = "<group>"; };
@@ -1420,6 +1436,8 @@
 				20C6091A23BF210C00672309 /* pngwrite.h */,
 				0008E8BE19F1AC530091588D /* polymer.h */,
 				0008E8BF19F1AC530091588D /* polymost.h */,
+				E96CD077F30A376B4B5226E2 /* realtime_lighting.h */,
+				BB1BD7A8491ECA53E216FBCB /* polymost_lighting.h */,
 				0008E8C019F1AC530091588D /* pragmas.h */,
 				0008E8C119F1AC530091588D /* pragmas_arm.h */,
 				0008E8C219F1AC530091588D /* pragmas_ppc.h */,
@@ -1492,12 +1510,16 @@
 				20A63CCD23BF23420007D142 /* pngwrite.cpp */,
 				0008E8FA19F1AC540091588D /* polymer.cpp */,
 				0008E8FB19F1AC540091588D /* polymost.cpp */,
+				5D8081727EFC74F575C3072E /* realtime_lighting_mesh.cpp */,
+				2ED4C66832BBB9D75833885A /* polymost_lighting.cpp */,
 				20E014D623BF362200CC954F /* polymost1Frag.glsl */,
 				20E014D723BF362200CC954F /* polymost1Vert.glsl */,
 				54F96C39CD43302BB6325862 /* ambient_occlusion.glsl */,
+				FEA304DD745DFBEE8854E0FC /* realtime_lighting.glsl */,
 				20E014D823BF366100CC954F /* polymost1Frag.glsl.cpp */,
 				20E014D923BF366100CC954F /* polymost1Vert.glsl.cpp */,
 				44129537D9DCAB6F5C12D160 /* ambient_occlusion.glsl.cpp */,
+				4AFD82AFB39C2ECE4FB864B8 /* realtime_lighting.glsl.cpp */,
 				0008E8FC19F1AC540091588D /* pragmas.cpp */,
 				0008E9D219F1AD9B0091588D /* rev.cpp */,
 				2044C98F1E08A6BC00A8C543 /* screenshot.cpp */,
@@ -1921,6 +1943,8 @@
 				20C6091823BF20F500672309 /* miniz_tinfl.h in Headers */,
 				0008E94319F1AC540091588D /* pragmas_ppc.h in Headers */,
 				0008E94019F1AC540091588D /* polymost.h in Headers */,
+				1C0C35ACBC804451CD26F588 /* realtime_lighting.h in Headers */,
+				B99CF3A8686E4745866A9CDD /* polymost_lighting.h in Headers */,
 				20CEFB211E08A9130077879C /* buildtypes.h in Headers */,
 				0008E94D19F1AC540091588D /* sdlayer.h in Headers */,
 				2038AE961A8F122D0093B7B2 /* libdivide.h in Headers */,
@@ -2055,6 +2079,8 @@
 				001382D519F361B60007DA6C /* xxhash.h in Headers */,
 				001382D619F361B60007DA6C /* pragmas_ppc.h in Headers */,
 				001382D719F361B60007DA6C /* polymost.h in Headers */,
+				5FDB490178D0E80B8DB82FF0 /* realtime_lighting.h in Headers */,
+				FA9B3955A8C4DA6034F45BCB /* polymost_lighting.h in Headers */,
 				20C608FB23BF209100672309 /* debugbreak.h in Headers */,
 				001382D819F361B60007DA6C /* sdlayer.h in Headers */,
 				20C6091F23BF213500672309 /* print.h in Headers */,
@@ -2179,6 +2205,7 @@
 				20E014D523BF35B800CC954F /* Run Script - Process polymost1Frag.glsl */,
 				20FBE49A23BF37A80039029B /* Run Script - Process polymost1Vert.glsl */,
 				3B7ACA05A7ECBE7980D3FC7B /* Run Script - Process ambient_occlusion.glsl */,
+				C12563DE99D1A10C6FBB85C5 /* Run Script - Process realtime_lighting.glsl */,
 				0008E6B319F1A9260091588D /* Sources */,
 				0008E6B419F1A9260091588D /* Frameworks */,
 				0008E6B519F1A9260091588D /* Headers */,
@@ -2250,6 +2277,7 @@
 				205B242F23BF4805003F7BB8 /* Run Script - Process polymost1Frag.glsl */,
 				205B243023BF4842003F7BB8 /* Run Script - Process polymost1Vert.glsl */,
 				79323BB074760C7A46896DB4 /* Run Script - Process ambient_occlusion.glsl */,
+				7054DBEEBA4DB78392F80101 /* Run Script - Process realtime_lighting.glsl */,
 				0013828A19F361B60007DA6C /* Sources */,
 				001382A919F361B60007DA6C /* Frameworks */,
 				001382AD19F361B60007DA6C /* Headers */,
@@ -2483,6 +2511,26 @@
 			shellPath = /bin/sh;
 			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
 		};
+		7054DBEEBA4DB78392F80101 /* Run Script - Process realtime_lighting.glsl */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../source/build/src/realtime_lighting.glsl",
+			);
+			name = "Run Script - Process realtime_lighting.glsl";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/../../obj/build/realtime_lighting.glsl.cpp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
 		20E014D523BF35B800CC954F /* Run Script - Process polymost1Frag.glsl */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -2538,6 +2586,26 @@
 			);
 			outputPaths = (
 				"$(SRCROOT)/../../obj/build/ambient_occlusion.glsl.cpp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "./process_shader.sh \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
+		C12563DE99D1A10C6FBB85C5 /* Run Script - Process realtime_lighting.glsl */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../source/build/src/realtime_lighting.glsl",
+			);
+			name = "Run Script - Process realtime_lighting.glsl";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/../../obj/build/realtime_lighting.glsl.cpp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -2631,6 +2699,7 @@
 				0008E95B19F1AC540091588D /* cache1d.cpp in Sources */,
 				20E014DC23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */,
 				96E0923C1956130549CEC87D /* ambient_occlusion.glsl.cpp in Sources */,
+				E544D00C05B4B690FC507049 /* realtime_lighting.glsl.cpp in Sources */,
 				0008E97E19F1AC540091588D /* smalltextfont.cpp in Sources */,
 				0008E97619F1AC540091588D /* polymer.cpp in Sources */,
 				20B02C4E23BF30DF00896299 /* miniz.c in Sources */,
@@ -2654,6 +2723,8 @@
 				20A63CBF23BF23100007D142 /* enet.cpp in Sources */,
 				0008E97A19F1AC540091588D /* scriptfile.cpp in Sources */,
 				0008E97719F1AC540091588D /* polymost.cpp in Sources */,
+				08711F563A6246921DC3F741 /* realtime_lighting_mesh.cpp in Sources */,
+				610B446D9FEA6841BCF6D79D /* polymost_lighting.cpp in Sources */,
 				20A63CD423BF23600007D142 /* softsurface.cpp in Sources */,
 				0008E96819F1AC540091588D /* hightile.cpp in Sources */,
 				20A63CE023BF23810007D142 /* zpl.cpp in Sources */,
@@ -2822,11 +2893,14 @@
 				20A63CC423BF231C0007D142 /* fix16_str.cpp in Sources */,
 				001382A219F361B60007DA6C /* scriptfile.cpp in Sources */,
 				001382A319F361B60007DA6C /* polymost.cpp in Sources */,
+				76AC86D4BEACCC302E5F1723 /* realtime_lighting_mesh.cpp in Sources */,
+				AA4AE2BBC17899FD79E7A2DC /* polymost_lighting.cpp in Sources */,
 				20E014DB23BF366100CC954F /* polymost1Frag.glsl.cpp in Sources */,
 				001382A419F361B60007DA6C /* hightile.cpp in Sources */,
 				001382A519F361B60007DA6C /* dxtfilter.cpp in Sources */,
 				20E014DD23BF366100CC954F /* polymost1Vert.glsl.cpp in Sources */,
 				57F41F260F93ACC7B6412BBB /* ambient_occlusion.glsl.cpp in Sources */,
+				FCBDEE96A6E3CF2339FEDDF2 /* realtime_lighting.glsl.cpp in Sources */,
 				20A63CBD23BF23070007D142 /* cpuid.cpp in Sources */,
 				20B02C4D23BF30DF00896299 /* miniz_tdef.c in Sources */,
 				001382A619F361B60007DA6C /* lz4.c in Sources */,

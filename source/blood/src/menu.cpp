@@ -2329,7 +2329,7 @@ void UpdateAmbientOcclusion(CGameMenuItemZBool *pItem)
 
 void UpdateRealtimeLighting(CGameMenuItemZBool *pItem)
 {
-    if (videoGetRenderMode() == REND_VULKAN)
+    if (videoUsesPolymost())
         r_realtimelighting = pItem->at20;
 }
 
@@ -2352,7 +2352,7 @@ void PreDrawDisplayPolymost(CGameMenuItem *pItem)
     }
     else if (pItem == &itemOptionsDisplayRealtimeLighting)
     {
-        pItem->bEnable = videoGetRenderMode() == REND_VULKAN;
+        pItem->bEnable = videoUsesPolymost();
         itemOptionsDisplayRealtimeLighting.at20 = r_realtimelighting;
     }
 }

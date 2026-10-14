@@ -185,9 +185,9 @@ behind another surface. Transparent surfaces use the opaque depth behind them.
 OpenGL requires framebuffer blit and packed depth/stencil support; unsupported
 hardware keeps rendering normally and reports that AO is unavailable.
 
-Vulkan also enables realtime point lighting and shadows by default. Toggle
-**Options → Display Setup → Renderer Setup → Lighting and Shadows**, or use
-`r_realtimelighting 0` / `r_realtimelighting 1`. Changes apply immediately and
+Polymost and Vulkan also enable realtime point lighting and shadows by default.
+Toggle **Options → Display Setup → Renderer Setup → Lighting and Shadows**,
+or use `r_realtimelighting 0` / `r_realtimelighting 1`. Changes apply immediately and
 are saved independently of ambient occlusion. Torches, candles, flames, flares,
 Tesla shots, explosions and muzzle flashes illuminate nearby world surfaces.
 Up to eight nearby lights cast filtered cubemap shadows from opaque sector
@@ -195,8 +195,9 @@ walls, floors, ceilings and moving doors, including geometry outside the view.
 Sprites, models and alpha-cutout surfaces receive lighting but do not cast these
 map shadows. Transparent surfaces use the opaque depth behind them; sky,
 mirror/room-over-room portal surfaces, weapons and HUD are excluded. This feature
-requires sampleable scene depth/stencil and a supported depth shadow format;
-unsupported devices retain the original rendering.
+requires sampleable scene depth/stencil and a supported depth shadow format.
+OpenGL also needs framebuffer blit, packed depth/stencil support and a
+single-sample framebuffer; unsupported devices retain the original rendering.
 
 Vulkan records commands on the calling thread and up to four background threads.
 The automatic background count is `min(4, available CPUs - 1)`, so three CPUs

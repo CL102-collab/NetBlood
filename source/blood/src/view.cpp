@@ -69,8 +69,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "view.h"
 #include "warp.h"
 #include "weapon.h"
-#ifdef USE_VULKAN
-#include "vulkan_renderer.h"
+#ifdef USE_OPENGL
+#include "realtime_lighting.h"
 #endif
 #ifdef NOONE_EXTENSIONS
 #include "nnexts.h"
@@ -3098,10 +3098,10 @@ tspritetype *viewAddEffect(int nTSprite, VIEW_EFFECT nViewEffect)
 LOCATION gPrevSpriteLoc[kMaxSprites];
 static LOCATION gViewSpritePredictLoc;
 
-#ifdef USE_VULKAN
-static unsigned viewCollectRealtimeLights(VulkanLight *lights, int32_t cX, int32_t cY, int32_t cZ)
+#ifdef USE_OPENGL
+static unsigned viewCollectRealtimeLights(RealtimeLight *lights, int32_t cX, int32_t cY, int32_t cZ)
 {
-    float scores[kVulkanMaxLights] = {};
+    float scores[kMaxRealtimeLights] = {};
     unsigned count = 0;
 
     // Original sprites include emitters outside the view, whose light can still
@@ -3263,9 +3263,9 @@ static unsigned viewCollectRealtimeLights(VulkanLight *lights, int32_t cX, int32
         unsigned slot = 0;
         while (slot < count && scores[slot] >= score)
             ++slot;
-        if (slot == kVulkanMaxLights)
+        if (slot == kMaxRealtimeLights)
             continue;
-        if (count < kVulkanMaxLights)
+        if (count < kMaxRealtimeLights)
             ++count;
         for (unsigned i = count - 1; i > slot; --i)
         {
@@ -4545,15 +4545,13 @@ RORHACK:
         renderDrawMasks();
         gView->pSprite->cstat = bakCstat;
 
-#ifdef USE_VULKAN
-        if (r_realtimelighting && videoGetRenderMode() == REND_VULKAN)
+#ifdef USE_OPENGL
+        if (r_realtimelighting && videoUsesPolymost())
         {
-            VulkanLight lights[kVulkanMaxLights];
+            RealtimeLight lights[kMaxRealtimeLights];
             unsigned const lightCount = viewCollectRealtimeLights(lights, cX, cY, cZ);
             polymost_applyRealtimeLighting(lights, lightCount);
         }
-#endif
-#ifdef USE_OPENGL
         // Finish contact shading before blur, weapons, crosshair and HUD.
         polymost_applyAmbientOcclusion();
 #endif

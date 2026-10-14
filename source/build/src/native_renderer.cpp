@@ -125,6 +125,20 @@ bool nativeAmbientOcclusion(const float projection[16], const int viewport[4], f
     return false;
 }
 
+bool nativeRealtimeLighting(const float projection[16], const float eyeToWorld[16], const int viewport[4],
+                            const RealtimeLight *lights, unsigned lightCount,
+                            const RealtimeShadowVertex *shadowVertices, unsigned shadowVertexCount, bool shadows)
+{
+#ifdef USE_VULKAN
+    if (vulkanActive()) return vulkanRealtimeLighting(projection, eyeToWorld, viewport, lights, lightCount,
+                                                     shadowVertices, shadowVertexCount, shadows);
+#else
+    (void)projection; (void)eyeToWorld; (void)viewport; (void)lights; (void)lightCount;
+    (void)shadowVertices; (void)shadowVertexCount; (void)shadows;
+#endif
+    return false;
+}
+
 void nativeDraw(const NativeVertex *vertices, unsigned count, const NativeDrawState &state)
 {
 #ifdef USE_METAL

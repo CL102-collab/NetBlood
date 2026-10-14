@@ -308,6 +308,8 @@
     <ClCompile Include="..\..\source\build\src\pngwrite.cpp" />
     <ClCompile Include="..\..\source\build\src\polymer.cpp" />
     <ClCompile Include="..\..\source\build\src\polymost.cpp" />
+    <ClCompile Include="..\..\source\build\src\polymost_lighting.cpp" />
+    <ClCompile Include="..\..\source\build\src\realtime_lighting_mesh.cpp" />
     <ClCompile Include="..\..\source\build\src\pragmas.cpp" />
     <ClCompile Include="..\..\source\build\src\rawinput.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
@@ -343,9 +345,6 @@
       <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\..\source\build\src\vulkan_renderer.cpp">
-      <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\..\source\build\src\vulkan_lighting.cpp">
       <ExcludedFromBuild Condition="'$(BuildVulkanEnabled)'!='true'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\..\source\build\src\wiibits.cpp">
@@ -447,7 +446,8 @@
     <ClInclude Include="..\..\source\build\include\vectormath.hpp" />
     <ClInclude Include="..\..\source\build\include\vfs.h" />
     <ClInclude Include="..\..\source\build\include\vulkan_renderer.h" />
-    <ClInclude Include="..\..\source\build\include\vulkan_lighting.h" />
+    <ClInclude Include="..\..\source\build\include\realtime_lighting.h" />
+    <ClInclude Include="..\..\source\build\include\polymost_lighting.h" />
     <ClInclude Include="..\..\source\build\include\winbits.h" />
     <ClInclude Include="..\..\source\build\include\windows_inc.h" />
     <ClInclude Include="..\..\source\build\include\winlayer.h" />
@@ -513,6 +513,16 @@ echo )shader^"; &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp</C
       <Outputs>$(IntermediateOutputPath)%(Filename)%(Extension).cpp</Outputs>
     </CustomBuild>
     <ClCompile Include="$(IntermediateOutputPath)\ambient_occlusion.glsl.cpp" Filter="Source Files/Generated" />
+    <CustomBuild Include="..\..\source\build\src\realtime_lighting.glsl">
+      <FileType>Document</FileType>
+      <Command>echo char const *%(Filename) = R^"shader( &gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp
+type %(Identity) &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp
+echo )shader^"; &gt;&gt; $(IntermediateOutputPath)%(Filename)%(Extension).cpp</Command>
+      <Message>Compiling shader to $(IntermediateOutputPath)%(Filename)%(Extension).cpp</Message>
+      <Inputs>%(Identity)</Inputs>
+      <Outputs>$(IntermediateOutputPath)%(Filename)%(Extension).cpp</Outputs>
+    </CustomBuild>
+    <ClCompile Include="$(IntermediateOutputPath)\realtime_lighting.glsl.cpp" Filter="Source Files/Generated" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

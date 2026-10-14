@@ -319,7 +319,7 @@ engine_excl := \
     $(engine_editor_objs) \
 
 ifeq (0,$(USE_VULKAN))
-    engine_excl += vulkan_renderer.cpp vulkan_lighting.cpp
+    engine_excl += vulkan_renderer.cpp
 endif
 ifeq (00,$(USE_VULKAN)$(USE_METAL))
     engine_excl += native_renderer.cpp native_frontend.cpp
@@ -334,6 +334,8 @@ else
         mdsprite.cpp \
         polymer.cpp \
         polymost.cpp \
+        polymost_lighting.cpp \
+        realtime_lighting_mesh.cpp \
         tilepacker.cpp \
         voxmodel.cpp \
 
@@ -378,6 +380,7 @@ engine_objs := \
     polymost1Frag.glsl \
     polymost1Vert.glsl \
     ambient_occlusion.glsl \
+    realtime_lighting.glsl \
 
 ifeq (0,$(NOASM))
   engine_objs += a.nasm

@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include "renderer_types.h"
+#include "realtime_lighting.h"
 
 struct SDL_Window;
 
@@ -75,6 +76,10 @@ void nativeFlush();
 // Stencil bit 0x80 masks eligible world pixels; alpha/depth remain unchanged.
 bool nativeAmbientOcclusion(const float projection[16], const int viewport[4],
                             float radius, float strength, float bias);
+bool nativeRealtimeLighting(const float projection[16], const float eyeToWorld[16], const int viewport[4],
+                            const RealtimeLight *lights, unsigned lightCount,
+                            const RealtimeShadowVertex *shadowVertices, unsigned shadowVertexCount,
+                            bool shadows = true);
 void nativeDraw(const NativeVertex *vertices, unsigned count, const NativeDrawState &state);
 void nativeClear(uint32_t mask, const float color[4], float depth, uint32_t stencil,
                  const NativeDrawState &state);

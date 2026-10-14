@@ -1,8 +1,8 @@
-// Build world geometry used by native Vulkan point-light shadow maps.
+// Build world geometry shared by Polymost and Vulkan point-light shadow maps.
 // Copyright (C) 2026 NBlood contributors. GPL-2.0-only.
-#include "vulkan_lighting.h"
+#include "realtime_lighting.h"
 
-#ifdef USE_VULKAN
+#ifdef USE_OPENGL
 #include "build.h"
 
 #include <algorithm>
@@ -17,7 +17,7 @@
 namespace
 {
 // Polymer includes the same implementation in the global namespace. Keep this
-// instance private, including its types, so Vulkan also works without Polymer.
+// instance private, including its types, so both backends work without Polymer.
 namespace shadowTess
 {
 #define LIBTESS2_IMPLEMENTATION
@@ -44,7 +44,7 @@ struct SectorGeometry
 std::vector<SectorGeometry> sectorGeometry;
 
 bool intersectsLights(double const minimum[3], double const maximum[3],
-                      VulkanLight const *lights, unsigned lightCount)
+                      RealtimeLight const *lights, unsigned lightCount)
 {
     for (unsigned light = 0; light < lightCount; ++light)
     {
@@ -150,8 +150,8 @@ int32_t coordinate(float value)
                            std::min(double(std::numeric_limits<int32_t>::max()), std::round(double(value)))));
 }
 
-void emitTriangle(VulkanShadowVertex const &a, VulkanShadowVertex const &b, VulkanShadowVertex const &c,
-                  VulkanLight const *lights, unsigned lightCount, std::vector<VulkanShadowVertex> &vertices)
+void emitTriangle(RealtimeShadowVertex const &a, RealtimeShadowVertex const &b, RealtimeShadowVertex const &c,
+                  RealtimeLight const *lights, unsigned lightCount, std::vector<RealtimeShadowVertex> &vertices)
 {
     double minimum[3], maximum[3];
     for (unsigned axis = 0; axis < 3; ++axis)
@@ -175,15 +175,15 @@ bool castsPlane(int sectorIndex, bool floor)
     return true;
 }
 
-void emitPlanes(int sectorIndex, SectorGeometry &geometry, VulkanLight const *lights,
-                unsigned lightCount, std::vector<VulkanShadowVertex> &vertices)
+void emitPlanes(int sectorIndex, SectorGeometry &geometry, RealtimeLight const *lights,
+                unsigned lightCount, std::vector<RealtimeShadowVertex> &vertices)
 {
     bool const ceiling = castsPlane(sectorIndex, false), floor = castsPlane(sectorIndex, true);
     if (!ceiling && !floor) return;
     if (!geometry.tessellated) triangulate(geometry);
     for (size_t triangle = 0; triangle < geometry.triangles.size(); triangle += 3)
     {
-        VulkanShadowVertex ceilingVertices[3], floorVertices[3];
+        RealtimeShadowVertex ceilingVertices[3], floorVertices[3];
         for (unsigned corner = 0; corner < 3; ++corner)
         {
             auto const &p = geometry.triangles[triangle + corner];
@@ -202,8 +202,8 @@ double interpolate(double first, double second, double amount)
     return first + (second - first) * amount;
 }
 
-void emitWalls(int sectorIndex, VulkanLight const *lights, unsigned lightCount,
-               std::vector<VulkanShadowVertex> &vertices)
+void emitWalls(int sectorIndex, RealtimeLight const *lights, unsigned lightCount,
+               std::vector<RealtimeShadowVertex> &vertices)
 {
     auto const &sec = sector[sectorIndex];
     for (int i = sec.wallptr; i < sec.wallptr + sec.wallnum; ++i)
@@ -261,7 +261,7 @@ void emitWalls(int sectorIndex, VulkanLight const *lights, unsigned lightCount,
             auto span = [&](unsigned top, unsigned bottom)
             {
                 if (middle[bottom] <= middle[top]) return;
-                VulkanShadowVertex quad[4] = {
+                RealtimeShadowVertex quad[4] = {
                     { { float(interpolate(a.x, b.x, t0)), float(interpolate(a.y, b.y, t0)), float(interpolate(first[top], second[top], t0)) } },
                     { { float(interpolate(a.x, b.x, t1)), float(interpolate(a.y, b.y, t1)), float(interpolate(first[top], second[top], t1)) } },
                     { { float(interpolate(a.x, b.x, t1)), float(interpolate(a.y, b.y, t1)), float(interpolate(first[bottom], second[bottom], t1)) } },
@@ -283,12 +283,12 @@ void emitWalls(int sectorIndex, VulkanLight const *lights, unsigned lightCount,
 }
 } // namespace
 
-void vulkanBuildShadowMesh(VulkanLight const *lights, unsigned lightCount,
-                           std::vector<VulkanShadowVertex> &vertices)
+void buildRealtimeShadowMesh(RealtimeLight const *lights, unsigned lightCount,
+                           std::vector<RealtimeShadowVertex> &vertices)
 {
     vertices.clear();
     if (!lights || !lightCount || numsectors <= 0 || numwalls <= 0) return;
-    lightCount = std::min(lightCount, kVulkanMaxLights);
+    lightCount = std::min(lightCount, kMaxRealtimeLights);
     sectorGeometry.resize(std::min(int(numsectors), MAXSECTORS));
     // The exact topology snapshots also invalidate sectors reused by a new map.
     // Only tessellation is cached: slopes, doors and portal spans stay current.

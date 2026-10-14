@@ -27,6 +27,8 @@ def main():
                            if program == "vulkan_polymost" else
                            "// Native AO wrapper around the shared ambient_occlusion.glsl algorithm."
                            if program == "ambient_occlusion_vk" else
+                           "// Native lighting wrapper around the shared realtime_lighting.glsl algorithm."
+                           if program == "realtime_lighting_vk" else
                            "// Native realtime point lighting and world geometry shadow maps.")
             lines = [
                 "// SPDX-License-Identifier: GPL-2.0-only",
