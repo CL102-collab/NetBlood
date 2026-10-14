@@ -2,59 +2,69 @@
 name: Publish
 
 'on':
-  workflow_run:
-    workflows: [Build]
-    types: [completed]
-    branches: [master]
+  workflow_call: {}
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
 
 concurrency:
-  group: publish-${{ github.event.workflow_run.head_sha }}
+  group: publish-${{ github.event.release.id }}
   cancel-in-progress: false
 
 jobs:
   release:
-    # Failed/cancelled tests or packages can never fall back to a previous run.
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'master' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+    # The caller must finish all test/package gates. PR/manual calls cannot publish.
+    if: github.event_name == 'release' && github.event.action == 'published'
+    permissions:
+      actions: read
+      contents: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.run_id }}
           pattern: package-*
           merge-multiple: true
           path: dist
       - name: Verify packages from this exact successful run
         run: python3 platform/ci/package.py verify-release --directory dist
-      - name: Publish the complete package set
+      - name: Verify the published release still targets the tested commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REVISION: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_REVISION: ${{ github.sha }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          tag="r$(git rev-list --count HEAD)-${SOURCE_REVISION:0:8}"
-          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          NetBlood packages for Windows, Debian 12, Linux AppImage, macOS, FreeBSD, and NetBSD.
-
-          All 144 legacy demos and the regression suites passed before packaging.
-          Blood game data is required separately. See platform/ci/README.md in the source tree for platform requirements.
-          NOTES
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; refusing to overwrite its packages." >&2
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          release = json.loads((Path(os.environ["RUNNER_TEMP"]) / "release.json").read_text())
+          if (release.get("id") != int(os.environ["RELEASE_ID"])
+                  or release.get("tag_name") != os.environ["RELEASE_TAG"]
+                  or release.get("draft") is not False or not release.get("published_at")):
+              raise SystemExit("The original release is no longer published with its expected tag.")
+          PY
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          release_revision="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [ "$release_revision" != "$SOURCE_REVISION" ]; then
+            echo "Release tag no longer points to the tested commit; refusing to upload." >&2
             exit 1
           fi
-          gh release create "$tag" --target "$SOURCE_REVISION" --title "$tag" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" \
+      - name: Attach the complete package set to the existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # Without --clobber, GitHub rejects any existing asset of the same name.
+          gh release upload "$RELEASE_TAG" \
             dist/*.zip dist/*.deb dist/*.AppImage dist/*.tar.xz dist/SHA256SUMS

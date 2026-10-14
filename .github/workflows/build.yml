@@ -2,17 +2,16 @@
 name: Build
 
 'on':
-  push:
-    branches: [master, 'feat/**']
   pull_request: {}
-  merge_group: {}
+  release:
+    types: [published]
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -327,3 +326,12 @@ jobs:
           name: release-checksums
           path: dist/SHA256SUMS
           if-no-files-found: error
+
+  publish-release:
+    name: Attach tested packages to the published release
+    needs: packages-complete
+    if: github.event_name == 'release' && github.event.action == 'published'
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/publish.yml

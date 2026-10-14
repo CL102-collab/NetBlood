@@ -1,8 +1,11 @@
 # Validation and packages
 
-The GitHub Actions **Build** workflow runs on pushes to `master` and `feat/**`,
-pull requests, merge queues, and manual dispatch. All Windows binaries are
-cross-compiled on Ubuntu; no job uses a Windows runner or Windows container.
+The GitHub Actions **Build** workflow runs automatically for pull requests and
+published releases (including prereleases). Ordinary branch/tag pushes and merge
+queues do not start it. Updating a branch with an open PR still runs its PR checks.
+An explicit manual dispatch is available for testing and packaging without a
+release. All Windows binaries are cross-compiled on Ubuntu; no job uses a Windows
+runner or Windows container.
 The obsolete Windows-hosted AppVeyor configuration has been removed; GitHub
 Actions is the maintained validation and packaging pipeline.
 
@@ -178,15 +181,24 @@ used on the wrong host rather than producing mislabeled binaries.
 
 ## Publication
 
-PR, feature-branch, and manual runs provide downloadable Actions artifacts.
-Only a successful `master` **push** build can publish a release. Publication
-checks out that build's exact commit and downloads artifacts from that exact
-workflow run ID; it never selects the latest unrelated successful build.
+Publish a release in GitHub to start validation and packaging for its tag. The
+release exists before CI finishes; its download assets appear only after every
+test and package gate succeeds. Draft releases do not trigger builds. CI never
+creates releases or tags automatically. Release events created using another
+workflow's `GITHUB_TOKEN` do not trigger Actions; publish through the GitHub UI,
+a personal token, or a GitHub App token instead.
 
-Both workflows verify that all 13 expected packages exist before publication.
-A failed/cancelled validation or package job prevents release. `SHA256SUMS` covers
-the complete set. Release tags include the revision count and commit prefix, and
-existing releases are never silently overwritten.
+PR and manual runs provide downloadable Actions artifacts and cannot publish.
+Only a successful **published-release** run calls the reusable Publish workflow,
+after the complete-package gate. Write permission is limited to that release job.
+It checks out the exact tested commit and downloads artifacts from the caller's
+exact workflow run ID; it never selects an unrelated successful build.
+
+Both workflows verify that all 13 expected packages exist. Publication also
+checks that the original release remains published and that its tag still points
+to the tested commit. A failed/cancelled validation or package job prevents asset
+upload. `SHA256SUMS` covers the complete set. Uploads never replace existing assets;
+a rerun encountering the same filenames fails instead of silently overwriting.
 
 The build recipes and smoke checks run in CI on their named targets. Local syntax
 checks or a successful Linux build do not establish that macOS, BSD, ARM, or XP
