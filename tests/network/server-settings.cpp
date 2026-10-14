@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Run the real dedicated limit checker against controlled player/team scores.
+// Run the real dedicated rule parser and limit checker against controlled state.
 // Section GC removes unrelated startup, filesystem and map-loading functions.
 #include "../../source/blood/src/netserver.cpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <limits>
+#include <stdexcept>
 
 bool gDedicated = true, gGameStarted = true, gStartNewGame = false;
 bool ready2send = true;
 int gLevelTime = 0;
 int gNextLevel = 0;
 int32_t gAutoAim = 1;
+int gNetPlayers = 8, gNetPort = kNetDefaultPort;
 int connecthead = -1, connectpoint2[MAXMULTIPLAYERS];
 GAMEOPTIONS gGameOptions = {};
 PKT_STARTGAME gPacketStartGame = {};
@@ -27,6 +30,16 @@ static int preparedMaps = 0;
 static std::string readMapName;
 static bool mapReadable = true, shuffleSucceeds = true;
 static int shufflePlayers = 2, shuffles = 0;
+void _SetErrorLoc(const char*, int) {}
+void _ThrowError(const char* format, ...)
+{
+    char message[1024];
+    va_list arguments;
+    va_start(arguments, format);
+    std::vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    throw std::runtime_error(message);
+}
 bool netIsServer() { return isServer; }
 int netTeamShufflePlayerCount() { return shufflePlayers; }
 bool netShuffleTeams(std::string& error)
@@ -107,6 +120,9 @@ void reset()
 {
     settings = NetServerSettings();
     settings.gameType = kGameTypeBloodBath;
+    hasDedicatedOptions = hasMaxPlayers = hasServerPlayers = false;
+    hasDifficulty = hasLoseKeys = hasCoopLives = false;
+    serverPlayers = 8;
     pendingAdvance = false;
     pendingLimit = NetServerLimit::NotReached;
     rotation.clear();
@@ -134,6 +150,136 @@ void reset()
     std::fill(std::begin(connectpoint2), std::end(connectpoint2), -1);
     for (auto& player : gPlayer) player.fragCount = 0;
     std::fill(std::begin(gPlayerScores), std::end(gPlayerScores), 0);
+}
+
+void pickupAndMonsterRules()
+{
+    const char* weapons[] = {"norespawn", "permanent", "respawn", "markers"};
+    const char* items[] = {"norespawn", "respawn", "markers"};
+    const char* monsters[] = {"none", "spawn", "respawn"};
+    for (int gameType : {kGameTypeCoop, kGameTypeBloodBath, kGameTypeTeams})
+    {
+        reset();
+        // Startup configuration must not inherit an old game's pickup or
+        // monster fields. Co-op's legacy default spawns monsters once.
+        gGameOptions.nWeaponSettings = 3;
+        gGameOptions.nItemSettings = 2;
+        gGameOptions.nMonsterSettings = 2;
+        netServerValidateOptions(gameType, false);
+        netServerApplySettings();
+        CHECK(gGameOptions.nWeaponSettings == 1);
+        CHECK(gGameOptions.nItemSettings == 0);
+        CHECK(gGameOptions.nMonsterSettings == (gameType == kGameTypeCoop ? 1 : 0));
+        CHECK(settings.monsterSettings == int(gGameOptions.nMonsterSettings));
+
+        for (int weapon = 0; weapon < 4; ++weapon)
+            for (int item = 0; item < 3; ++item)
+                for (int monster = 0; monster < 3; ++monster)
+                {
+                    reset();
+                    netServerParseOption("weaponsstay", weapons[weapon]);
+                    netServerParseOption("itemsstay", items[item]);
+                    netServerParseOption("monsters", monsters[monster]);
+                    netServerValidateOptions(gameType, false);
+                    netServerApplySettings();
+                    CHECK(settings.weaponSettings == weapon && gGameOptions.nWeaponSettings == weapon);
+                    CHECK(settings.itemSettings == item && gGameOptions.nItemSettings == item);
+                    CHECK(settings.monsterSettings == monster && gGameOptions.nMonsterSettings == monster);
+                    CHECK(gGameOptions.nGameType == gameType);
+
+                    // Stock-map rotation must reinstall the chosen modes even
+                    // when intervening map setup has overwritten GAMEOPTIONS.
+                    rotation = {"E2M1", "E2M2"};
+                    settings.rotationCount = rotation.size();
+                    for (int level = 0; level < 2; ++level)
+                    {
+                        MapEntry entry = {};
+                        entry.episode = 1;
+                        entry.level = level;
+                        std::strcpy(entry.metadata.Filename, rotation[level].c_str());
+                        initialMaps.push_back(entry);
+                    }
+                    gGameOptions.nWeaponSettings = (weapon + 1) % 4;
+                    gGameOptions.nItemSettings = (item + 1) % 3;
+                    gGameOptions.nMonsterSettings = (monster + 1) % 3;
+                    netServerAdvanceMap();
+                    CHECK(settings.rotationIndex == 1 && preparedMaps == 1);
+                    CHECK(gGameOptions.nWeaponSettings == weapon);
+                    CHECK(gGameOptions.nItemSettings == item);
+                    CHECK(gGameOptions.nMonsterSettings == monster);
+                }
+    }
+
+    struct ModeCase { const char* option; const char* value; int expected; };
+    for (const auto& rule : {
+             ModeCase{"weaponsstay", "NoReSpAwN", 0}, ModeCase{"weaponsstay", "PERMANENT", 1},
+             ModeCase{"weaponsstay", "ReSpAwN", 2}, ModeCase{"weaponsstay", "MARKERS", 3},
+             ModeCase{"itemsstay", "NoReSpAwN", 0}, ModeCase{"itemsstay", "RESPAWN", 1},
+             ModeCase{"itemsstay", "MaRkErS", 2}, ModeCase{"monsters", "NONE", 0},
+             ModeCase{"monsters", "SpAwN", 1}, ModeCase{"monsters", "RESPAWN", 2}})
+    {
+        reset();
+        netServerParseOption(rule.option, rule.value);
+        netServerValidateOptions(kGameTypeTeams, false);
+        netServerApplySettings();
+        int const installed = !std::strcmp(rule.option, "weaponsstay") ? gGameOptions.nWeaponSettings
+            : !std::strcmp(rule.option, "itemsstay") ? gGameOptions.nItemSettings : gGameOptions.nMonsterSettings;
+        CHECK(installed == rule.expected);
+    }
+
+    for (const auto& option : {"weaponsstay", "itemsstay", "monsters"})
+    {
+        for (const char* value : {static_cast<const char*>(nullptr), "", "invalid", "1", "respawn-extra", " respawn", "on", "off", "ON", "OFF"})
+        {
+            reset();
+            bool rejected = false;
+            try { netServerParseOption(option, value); }
+            catch (const std::runtime_error& error)
+            {
+                rejected = true;
+                CHECK(std::string(error.what()).find(option) != std::string::npos);
+            }
+            CHECK(rejected);
+        }
+        reset();
+        netServerParseOption(option, "respawn");
+        gDedicated = false;
+        bool rejected = false;
+        try { netServerValidateOptions(kGameTypeBloodBath, false); }
+        catch (const std::runtime_error& error)
+        {
+            rejected = true;
+            CHECK(std::string(error.what()).find("dedicated") != std::string::npos);
+        }
+        CHECK(rejected);
+    }
+
+    // The CLI translates dedicated -nodudes to monsters=none. Repeated
+    // explicit settings use their command-line order, including this alias.
+    reset();
+    netServerParseOption("monsters", "none");
+    netServerParseOption("monsters", "respawn");
+    netServerValidateOptions(kGameTypeBloodBath, false);
+    netServerApplySettings();
+    CHECK(gGameOptions.nMonsterSettings == 2);
+    netServerParseOption("monsters", "none");
+    netServerApplySettings();
+    CHECK(gGameOptions.nMonsterSettings == 0);
+
+    reset();
+    netServerParseOption("weaponsstay", "markers");
+    netServerParseOption("weaponsstay", "respawn");
+    netServerParseOption("itemsstay", "markers");
+    netServerParseOption("itemsstay", "norespawn");
+    netServerValidateOptions(kGameTypeCoop, false);
+    netServerApplySettings();
+    CHECK(gGameOptions.nWeaponSettings == 2 && gGameOptions.nItemSettings == 0);
+    gDedicated = false;
+    gGameOptions.nWeaponSettings = 3;
+    gGameOptions.nItemSettings = 2;
+    gGameOptions.nMonsterSettings = 0;
+    netServerApplySettings();
+    CHECK(gGameOptions.nWeaponSettings == 3 && gGameOptions.nItemSettings == 2 && gGameOptions.nMonsterSettings == 0);
 }
 
 void limitBoundaries()
@@ -558,7 +704,7 @@ void restartVotePolicy()
                     gGameOptions.nGameType = mode;
                     settings.maxPlayers = 7; settings.timeLimitMinutes = 11;
                     settings.scoreLimit = 37; settings.autoAim = 0;
-                    settings.weaponsStay = false; settings.friendlyFire = true;
+                    settings.weaponSettings = 2; settings.friendlyFire = true;
                     settings.coopLives = 8; settings.loseKeys = false;
                     settings.episode = mode == kGameTypeCoop ? 2 : 0;
                     settings.mapList = hasRotation ? "rotation.txt" : "";
@@ -599,7 +745,7 @@ void restartVotePolicy()
                     CHECK(settings.mapList == (hasRotation ? "rotation.txt" : ""));
                     CHECK(settings.gameType == (dedicated ? mode : kGameTypeSinglePlayer));
                     CHECK(settings.maxPlayers == 7 && settings.timeLimitMinutes == 11 && settings.scoreLimit == 37);
-                    CHECK(settings.autoAim == 0 && !settings.weaponsStay && settings.friendlyFire);
+                    CHECK(settings.autoAim == 0 && settings.weaponSettings == 2 && settings.friendlyFire);
                     CHECK(settings.coopLives == 8 && !settings.loseKeys);
                     CHECK(settings.episode == (mode == kGameTypeCoop ? 2 : 0));
                 }
@@ -671,7 +817,7 @@ void teamShufflePolicy()
                 gGameOptions.nGameType = kGameTypeTeams;
                 settings.maxPlayers = 6; settings.timeLimitMinutes = 17;
                 settings.scoreLimit = 23; settings.autoAim = 0;
-                settings.weaponsStay = false; settings.friendlyFire = true;
+                settings.weaponSettings = 2; settings.friendlyFire = true;
                 settings.holsterWeapon = settings.chaseView = true;
                 settings.mapList = hasRotation ? "rotation.txt" : "";
                 if (hasRotation)
@@ -699,7 +845,7 @@ void teamShufflePolicy()
                 CHECK(settings.mapList == (hasRotation ? "rotation.txt" : ""));
                 CHECK(settings.gameType == (dedicated ? kGameTypeTeams : kGameTypeCoop));
                 CHECK(settings.maxPlayers == 6 && settings.timeLimitMinutes == 17 && settings.scoreLimit == 23);
-                CHECK(settings.autoAim == 0 && !settings.weaponsStay && settings.friendlyFire);
+                CHECK(settings.autoAim == 0 && settings.weaponSettings == 2 && settings.friendlyFire);
                 CHECK(settings.holsterWeapon && settings.chaseView);
             }
 
@@ -738,6 +884,6 @@ void listenCoopNextCinematic()
 
 int main()
 {
-    limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); restartVotePolicy(); teamShufflePolicy(); listenCoopNextCinematic();
-    std::printf("PASS: dedicated limits, timed intermissions, hot-join scores, map/shuffle vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
+    pickupAndMonsterRules(); limitBoundaries(); authoritativeScores(); joiningPlayerScoreReset(); clockAndGuards(); intermissionRotation(); coopRoutes(); mapVotePolicy(); listenCustomRestart(); restartVotePolicy(); teamShufflePolicy(); listenCoopNextCinematic();
+    std::printf("PASS: dedicated pickup/monster rules, limits, timed intermissions, hot-join scores, map/shuffle vote policy, cinematic guards and coop exits (%u assertions)\n", assertions);
 }

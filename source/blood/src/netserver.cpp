@@ -53,6 +53,15 @@ bool toggle(const char* option, const char* text)
     return false;
 }
 
+int mode(const char* option, const char* text, const char* const* names, int count, const char* expected)
+{
+    if (text)
+        for (int i = 0; i < count; ++i)
+            if (!Bstrcasecmp(text, names[i])) return i;
+    ThrowError("Invalid -%s: expected %s", option, expected);
+    return 0;
+}
+
 std::string canonical(const char* name)
 {
     std::string result(name);
@@ -320,7 +329,21 @@ void netServerParseOption(const char* name, const char* value)
     else if (!std::strcmp(name, "timelimit")) settings.timeLimitMinutes = number(name, value, 0, 10080);
     else if (!std::strcmp(name, "scorelimit")) settings.scoreLimit = number(name, value, 0, INT_MAX);
     else if (!std::strcmp(name, "autoaim")) settings.autoAim = toggle(name, value);
-    else if (!std::strcmp(name, "weaponsstay")) settings.weaponsStay = toggle(name, value);
+    else if (!std::strcmp(name, "weaponsstay"))
+    {
+        static const char* const names[] = { "norespawn", "permanent", "respawn", "markers" };
+        settings.weaponSettings = mode(name, value, names, 4, "norespawn, permanent, respawn or markers");
+    }
+    else if (!std::strcmp(name, "itemsstay"))
+    {
+        static const char* const names[] = { "norespawn", "respawn", "markers" };
+        settings.itemSettings = mode(name, value, names, 3, "norespawn, respawn or markers");
+    }
+    else if (!std::strcmp(name, "monsters"))
+    {
+        static const char* const names[] = { "none", "spawn", "respawn" };
+        settings.monsterSettings = mode(name, value, names, 3, "none, spawn or respawn");
+    }
     else if (!std::strcmp(name, "friendlyfire")) settings.friendlyFire = toggle(name, value);
     else if (!std::strcmp(name, "holsterweapon")) settings.holsterWeapon = toggle(name, value);
     else if (!std::strcmp(name, "chaseview")) settings.chaseView = toggle(name, value);
@@ -346,6 +369,8 @@ void netServerValidateOptions(int gameType, bool hasUserMap)
         return;
     }
     settings.gameType = gameType;
+    if (settings.monsterSettings < 0)
+        settings.monsterSettings = gameType == kGameTypeCoop ? 1 : 0;
     if (hasMaxPlayers && hasServerPlayers && settings.maxPlayers != serverPlayers)
         ThrowError("Conflicting -maxplayers and -server player limits");
     if (!hasMaxPlayers && hasServerPlayers) settings.maxPlayers = serverPlayers;
@@ -408,10 +433,11 @@ void netServerApplySettings()
     if (!gDedicated) return;
     gGameOptions.nGameType = settings.gameType;
     gGameOptions.nDifficulty = gGameOptions.nDifficultyQuantity = gGameOptions.nDifficultyHealth = settings.difficulty;
-    gGameOptions.nWeaponSettings = settings.weaponsStay ? 1 : 2;
+    gGameOptions.nWeaponSettings = settings.weaponSettings;
+    gGameOptions.nItemSettings = settings.itemSettings;
+    gGameOptions.nMonsterSettings = settings.monsterSettings;
     gGameOptions.bFriendlyFire = settings.friendlyFire;
     gGameOptions.bPlayerKeys = settings.loseKeys ? LOSTONDEATH : KEPTONRESPAWN;
-    if (settings.gameType != kGameTypeCoop) gGameOptions.nMonsterSettings = 0;
     gAutoAim = settings.autoAim;
     for (int p = 0; p < kMaxPlayers; ++p)
     {

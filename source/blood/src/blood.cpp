@@ -1370,6 +1370,8 @@ SWITCH switches[] = {
     { "lives", 61, 1 },
     { "stunserver", 62, 1 },
     { "password", 63, 1 },
+    { "itemsstay", 64, 1 },
+    { "monsters", 65, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1414,7 +1416,9 @@ void PrintHelp(void)
         "-timelimit [min]\tMinutes per map; 0 means unlimited (default)\n"
         "-scorelimit [n]\tFrag/team score limit; 0 means unlimited (default)\n"
         "-autoaim on|off\tForce autoaim for every player; Default:on\n"
-        "-weaponsstay on|off\tKeep picked-up weapons available; Default:on\n"
+        "-weaponsstay [mode]\tnorespawn|permanent|respawn|markers; Default:permanent\n"
+        "-itemsstay [mode]\tnorespawn|respawn|markers; Default:norespawn\n"
+        "-monsters [mode]\tnone|spawn|respawn; Default:spawn in coop, none otherwise\n"
         "-friendlyfire on|off\tAllow damage to teammates; Default:off\n"
         "-holsterweapon on|off\tAllow holstering in Bloodbath; Default:off\n"
         "-chaseview on|off\tAllow chase view in Bloodbath; Default:off\n"
@@ -1574,6 +1578,7 @@ void ParseOptions(void)
             break;
         case 5:
             gGameOptions.nMonsterSettings = 0;
+            if (gDedicated) netServerParseOption("monsters", "none");
             break;
         case 6:
             if (gDemoRunValidation)
@@ -1779,6 +1784,13 @@ void ParseOptions(void)
             if (OptArgc < 1) ThrowError("Missing argument for -password");
             netParsePasswordOption(OptArgv[0]);
             break;
+        case 64: case 65:
+        {
+            const char* name = option == 64 ? "itemsstay" : "monsters";
+            if (OptArgc < 1) ThrowError("Missing argument for -%s", name);
+            netServerParseOption(name, OptArgv[0]);
+            break;
+        }
         }
     }
     netServerValidateOptions(gRequestedGameType, bAddUserMap);

@@ -223,14 +223,16 @@ def main():
                              ("scorelimit", ("-1", "2147483648", "ten")),
                              ("difficulty", ("-1", "5", "2x")),
                              ("episode", ("0", "8", "1x")),
-                             ("autoaim", ("maybe",)), ("weaponsstay", ("2",)), ("losekeys", ("yes",)),
+                             ("autoaim", ("maybe",)), ("weaponsstay", ("2", "spawn", "respawn-extra", "on", "off", "ON", "OFF")),
+                             ("itemsstay", ("permanent", "on", "3")),
+                             ("monsters", ("markers", "off", "3")), ("losekeys", ("yes",)),
                              ("mapvote", ("maybe",)), ("friendlyfire", ("maybe", "2")),
                              ("holsterweapon", ("maybe", "2")), ("chaseview", ("maybe", "2")),
                              ("lives", ("-1", "256", "4x")),
                              ("gametype", ("invalid",))):
             for index, value in enumerate(values):
                 invalid(f"{flag}-{index}", ["-dedicated", "-" + flag, value], "game type" if flag == "gametype" else flag)
-        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview", "lives"):
+        for flag in ("server", "port", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim", "weaponsstay", "itemsstay", "monsters", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon", "chaseview", "lives"):
             invalid("missing-" + flag, ["-dedicated", "-" + flag], "game type" if flag == "gametype" else flag)
         for flag, value in (("episode", "1"), ("difficulty", "2"), ("losekeys", "off"), ("lives", "4")):
             invalid("coop-only-" + flag, ["-dedicated", "-gametype", "bloodbath", "-" + flag, value], flag)
@@ -254,16 +256,20 @@ def main():
         invalid("non-dedicated-holsterweapon", ["-holsterweapon", "on"], "dedicated")
         invalid("non-dedicated-chaseview", ["-chaseview", "on"], "dedicated")
         invalid("non-dedicated-lives", ["-lives", "4"], "dedicated")
+        for flag in ("weaponsstay", "itemsstay", "monsters"):
+            invalid("non-dedicated-" + flag, ["-" + flag, "respawn"], "dedicated")
         invalid("teams-lives", ["-dedicated", "-gametype", "teams", "-lives", "4"], "lives")
 
         port = free_port()
         expected = {"gametype": 2, "timelimit": 1, "scorelimit": 25, "maxplayers": 2,
                     "autoaim": 0, "weaponsstay": 1, "rotation_count": 2, "friendly_fire": 0,
+                    "weapon_mode": 1, "item_mode": 2, "monster_mode": 0,
                     "holster_weapon": 0, "chase_view": 0, "coop_lives": 0}
         server_started = time.monotonic()
         server = start("rotation-server", port, True,
                        ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "2",
-                        "-timelimit", "1", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "on",
+                        "-timelimit", "1", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "permanent",
+                        "-itemsstay", "markers",
                         "-maplist", "rotation.txt"],
                        {"rotation.txt": b"\xef\xbb\xbf# Real server rotation\r\n\r\n E1M1 \r\n; Comment between maps\r\nE1M2 # inline comment\r\n"})
         server.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
@@ -333,7 +339,8 @@ def main():
         for option, allowed in (("holsterweapon", {"holster_weapon": 1, "chase_view": 0}),
                                 ("chaseview", {"holster_weapon": 0, "chase_view": 1})):
             port = free_port()
-            permitted = {"gametype": 2, "coop_lives": 0, **allowed}
+            permitted = {"gametype": 2, "coop_lives": 0, "weapon_mode": 1, "item_mode": 0,
+                         "monster_mode": 0, **allowed}
             override = start(option + "-server", port, True,
                              ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "1",
                               "-" + option, "on"])
@@ -352,11 +359,12 @@ def main():
         port = free_port()
         coop_expected = {"gametype": 1, "timelimit": 0, "scorelimit": 0, "maxplayers": 1, "autoaim": 1,
                          "weaponsstay": 0, "difficulty": 4, "losekeys": 0, "episode": 2, "level": 1,
+                         "weapon_mode": 2, "item_mode": 0, "monster_mode": 1,
                          "friendly_fire": 1, "holster_weapon": 1, "chase_view": 1, "coop_lives": 4}
         coop = start("coop-server", port, True,
                      ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1",
                       "-episode", "2", "-difficulty", "4", "-losekeys", "off", "-autoaim", "on",
-                      "-weaponsstay", "off", "-timelimit", "0", "-scorelimit", "0", "-friendlyfire", "on",
+                      "-weaponsstay", "respawn", "-timelimit", "0", "-scorelimit", "0", "-friendlyfire", "on",
                       "-holsterweapon", "off", "-chaseview", "off"])
         coop.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                   "configured co-op episode", args.timeout)
@@ -377,7 +385,8 @@ def main():
         coop.stop()
 
         port = free_port()
-        unlimited_expected = {"gametype": 1, "maxplayers": 1, "coop_lives": 0}
+        unlimited_expected = {"gametype": 1, "maxplayers": 1, "coop_lives": 0,
+                              "weapon_mode": 1, "item_mode": 0, "monster_mode": 1}
         unlimited = start("coop-unlimited-server", port, True,
                           ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "1", "-lives", "0"])
         unlimited.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
@@ -403,6 +412,7 @@ def main():
         port = free_port()
         teams_expected = {"gametype": 3, "maxplayers": 1, "scorelimit": 20,
                           "timelimit": 0, "autoaim": 1, "weaponsstay": 1, "friendly_fire": 0,
+                          "weapon_mode": 1, "item_mode": 0, "monster_mode": 0,
                           "holster_weapon": 1, "chase_view": 1, "coop_lives": 0}
         teams = start("teams-server", port, True,
                       ["-dedicated", "-server", "1", "-port", str(port), "-gametype", "teams", "-scorelimit", "20",
@@ -420,6 +430,48 @@ def main():
                                                       "client": status(teams_client, teams_expected)}
         teams_client.stop()
         teams.stop()
+
+        # The standalone C++ matrix exercises every combination. These real
+        # sessions verify that all distinct modes also survive bootstrap,
+        # hot-join and map restart on clients. The two -nodudes orders cover
+        # the actual CLI alias, independently of the parser's unit coverage.
+        mode_cases = (
+            ("bloodbath", 2,
+             ["-nodudes", "-weaponsstay", "NoReSpAwN", "-itemsstay", "ReSpAwN", "-monsters", "ReSpAwN"],
+             {"weapon_mode": 0, "item_mode": 1, "monster_mode": 2}),
+            ("teams", 3,
+             ["-weaponsstay", "MaRkErS", "-itemsstay", "MaRkErS", "-monsters", "SpAwN"],
+             {"weapon_mode": 3, "item_mode": 2, "monster_mode": 1}),
+            ("coop", 1,
+             ["-weaponsstay", "ReSpAwN", "-itemsstay", "NoReSpAwN", "-monsters", "respawn", "-nodudes", "-lives", "0"],
+             {"weapon_mode": 2, "item_mode": 0, "monster_mode": 0}),
+        )
+        for mode_name, game_type, options, selected in mode_cases:
+            port = free_port()
+            mode_expected = {"gametype": game_type, "maxplayers": 2,
+                             "weaponsstay": int(selected["weapon_mode"] == 1), **selected}
+            mode_server = start(mode_name + "-modes-server", port, True,
+                                ["-dedicated", "-port", str(port), "-gametype", mode_name,
+                                 "-maxplayers", "2"] + options)
+            mode_server.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
+                             "configured pickup and monster modes", args.timeout)
+            result["phases"][mode_name + "-modes-empty"] = status(mode_server, mode_expected)
+            mode_client = start(mode_name + "-modes-client", port)
+            joined(mode_client, timeout=args.timeout)
+            result["phases"][mode_name + "-modes-joined"] = {
+                "server": status(mode_server, mode_expected), "client": status(mode_client, mode_expected)}
+            late_client = start(mode_name + "-modes-late-client", port)
+            joined(late_client, timeout=args.timeout)
+            result["phases"][mode_name + "-modes-hotjoin"] = status(late_client, mode_expected)
+            mode_server.command_text("restartmap")
+            joined(mode_client, count=2, timeout=args.timeout)
+            joined(late_client, count=2, timeout=args.timeout)
+            result["phases"][mode_name + "-modes-restart"] = {
+                "server": status(mode_server, mode_expected), "client": status(mode_client, mode_expected),
+                "late_client": status(late_client, mode_expected)}
+            late_client.stop()
+            mode_client.stop()
+            mode_server.stop()
         result["passed"] = True
     except (Failure, OSError, subprocess.SubprocessError) as error:
         result["failures"].append(str(error))

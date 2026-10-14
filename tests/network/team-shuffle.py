@@ -102,7 +102,7 @@ def main():
     def host(name, mode="teams", rotation=True, extra=()):
         port = free_port()
         arguments = ["-dedicated", "-port", str(port), "-gametype", mode, "-maxplayers", "4",
-                     "-autoaim", "off", "-weaponsstay", "on"]
+                     "-autoaim", "off", "-weaponsstay", "permanent"]
         arguments += ["-maplist", "rotation.txt"] if rotation else ["-map", "NBSHUF1.MAP"]
         arguments += list(extra)
         game = Game(name, args, root, library, port, dedicated=True, launch_arguments=arguments,

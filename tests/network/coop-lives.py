@@ -123,7 +123,7 @@ def main():
     def server(name, limit=None):
         port = free_port()
         arguments = ["-dedicated", "-port", str(port), "-gametype", "coop", "-maxplayers", "2",
-                     "-map", "NBLIVES1.MAP", "-losekeys", "off", "-weaponsstay", "off"]
+                     "-map", "NBLIVES1.MAP", "-losekeys", "off", "-weaponsstay", "respawn"]
         if limit is not None:
             arguments += ["-lives", str(limit)]
         game = Game(name, args, root, library, port, dedicated=True,

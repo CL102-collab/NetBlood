@@ -71,12 +71,19 @@ Start a headless server with hot-join and server-owned gameplay rules:
 
 ```sh
 ./nblood -dedicated -port 23513 -gametype bloodbath -maxplayers 8 \
-  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay on -maplist rotation.txt
+  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay permanent \
+  -itemsstay markers -monsters none -maplist rotation.txt
 ```
 
 Put one map name per line in `rotation.txt` on the game's search path; the list
 repeats. For cooperative episode play, use `-gametype coop -episode 1
 -difficulty 2 -losekeys off` instead of the score limit and map list.
+
+`-weaponsstay` accepts `norespawn`, `permanent` (default), `respawn`, or
+`markers`; `-itemsstay` accepts `norespawn` (default), `respawn`, or `markers`.
+`-monsters` accepts `none`, `spawn`, or `respawn`; its default is `spawn` in
+co-op and `none` in Bloodbath or teams. All modes are available in every game
+type. Respawn markers show pickup locations while items or weapons are absent.
 Connected clients cannot change the server's rules or start another game.
 
 Add `-password "crypt key"` to require a password; omitting it leaves the

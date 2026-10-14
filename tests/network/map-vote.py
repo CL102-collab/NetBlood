@@ -187,7 +187,7 @@ def main():
             port = free_port()
             if dedicated:
                 options = ["-dedicated", "-port", str(port), "-gametype", mode, "-maxplayers", "2",
-                           "-timelimit", "10", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "on"]
+                           "-timelimit", "10", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "permanent"]
                 options += ["-maplist", "rotation.txt"] if rotation else ["-map", "NBRST1.MAP"]
                 server = start(name + "-server", port, True, options, files)
                 first = start(name + "-first", port, files=files)
@@ -304,7 +304,7 @@ def main():
         port = free_port()
         server = start("rotation-server", port, True,
                        ["-dedicated", "-port", str(port), "-gametype", "bloodbath", "-maxplayers", "4",
-                        "-timelimit", "10", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "on",
+                        "-timelimit", "10", "-scorelimit", "25", "-autoaim", "off", "-weaponsstay", "permanent",
                         "-maplist", "rotation.txt"], {"rotation.txt": b"E1M1\nE1M2\n"})
         first = start("client-1", port)
         second = start("client-2", port)

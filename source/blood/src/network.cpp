@@ -4180,11 +4180,12 @@ void netPrintStatus()
     if (netIsLive())
     {
         auto const rules = netIsServer() ? serverRules() : clientServerRules;
-        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d holster_weapon=%d chase_view=%d coop_lives=%d",
+        LOG_F(INFO, "NET rules gametype=%d timelimit=%u scorelimit=%u maxplayers=%u autoaim=%u weaponsstay=%d difficulty=%d losekeys=%d episode=%d level=%d rotation_index=%u rotation_count=%u mapvote=%u friendly_fire=%d holster_weapon=%d chase_view=%d coop_lives=%d weapon_mode=%d item_mode=%d monster_mode=%d",
               int(gGameOptions.nGameType), rules.timeLimitMinutes, rules.scoreLimit, rules.maxPlayers, rules.autoAim,
               int(gGameOptions.nWeaponSettings == 1), int(gGameOptions.nDifficulty), int(gGameOptions.bPlayerKeys == LOSTONDEATH),
               gGameOptions.nEpisode + 1, gGameOptions.nLevel + 1, rules.rotationIndex, rules.rotationCount, rules.mapVoteEnabled,
-              int(gGameOptions.bFriendlyFire), int(netAllowHolsterWeapon()), int(netAllowChaseView()), netCoopLifeLimit());
+              int(gGameOptions.bFriendlyFire), int(netAllowHolsterWeapon()), int(netAllowChaseView()), netCoopLifeLimit(),
+              int(gGameOptions.nWeaponSettings), int(gGameOptions.nItemSettings), int(gGameOptions.nMonsterSettings));
         int monsters = 0, pickups = 0;
         for (int n = headspritestat[kStatDude]; n >= 0; n = nextspritestat[n])
             if (!IsPlayerSprite(&sprite[n]) && sprite[n].extra > 0 && xsprite[sprite[n].extra].health > 0) ++monsters;

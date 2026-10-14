@@ -11,7 +11,9 @@ struct NetServerSettings
     int gameType = 1;
     int maxPlayers = 8;
     int autoAim = 1;
-    bool weaponsStay = true;
+    int weaponSettings = 1; // No respawn, permanent, respawn, respawn with markers.
+    int itemSettings = 0; // No respawn, respawn, respawn with markers.
+    int monsterSettings = -1; // None, spawn, respawn; -1 selects the game-type default.
     bool friendlyFire = false;
     bool holsterWeapon = false; // Bloodbath only.
     bool chaseView = false; // Bloodbath only.

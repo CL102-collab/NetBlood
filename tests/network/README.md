@@ -217,8 +217,8 @@ For example, run a two-map Bloodbath rotation with a 15-minute or 30-frag limit:
 
 ```sh
 ./nblood -dedicated -port 23513 -gametype bloodbath -maxplayers 8 \
-  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay on \
-  -maplist rotation.txt
+  -timelimit 15 -scorelimit 30 -autoaim off -weaponsstay permanent \
+  -itemsstay markers -monsters none -maplist rotation.txt
 ```
 
 `rotation.txt` contains one map name per line. Blank lines and `#` or `;`
@@ -237,7 +237,8 @@ For cooperative episode play:
 
 ```sh
 ./nblood -dedicated -port 23513 -gametype coop -maxplayers 4 \
-  -episode 2 -difficulty 3 -losekeys off -autoaim on -weaponsstay on
+  -episode 2 -difficulty 3 -losekeys off -autoaim on \
+  -weaponsstay markers -itemsstay respawn -monsters respawn
 ```
 
 Episode numbers start at 1 and must name a cooperative episode in the selected
@@ -253,7 +254,10 @@ exclusive.
 | `-timelimit` | Integer minutes 0–10080; 0 (default) means unlimited |
 | `-scorelimit` | 0–2147483647; 0 (default) means unlimited; Bloodbath or teams only |
 | `-autoaim` | `on` (default) or `off`, applied to every player |
-| `-weaponsstay` | `on` (default) or `off` |
+| `-weaponsstay` | `norespawn`, `permanent` (default), `respawn`, `markers` |
+| `-itemsstay` | `norespawn` (default), `respawn`, `markers` |
+| `-monsters` | `none`, `spawn`, `respawn`; default `spawn` in co-op, `none` in Bloodbath or teams |
+| `-nodudes` | No value; disables monsters, equivalent to `-monsters none` on dedicated servers |
 | `-friendlyfire` | `on` or `off` (default); teammate damage in co-op and teams |
 | `-holsterweapon` | `on` or `off` (default); permission to holster in Bloodbath |
 | `-chaseview` | `on` or `off` (default); permission to use chase view in Bloodbath |
@@ -263,6 +267,29 @@ exclusive.
 | `-difficulty` | Cooperative difficulty 0–4; default 2; `-s` remains supported |
 | `-losekeys` | `on` (default) or `off`; cooperative play only |
 | `-lives` | Total lives per player per level, 1–255; default 4; `0` enables legacy unlimited respawn; dedicated co-op only |
+
+Weapon, item and monster modes apply to co-op, Bloodbath and teams. For weapons
+and items, `norespawn` removes pickups after collection, `respawn` restores
+them after a delay, and `markers` adds pickup location markers during that
+delay. `permanent` keeps weapons available after collection. Monster `spawn`
+enables normal map monsters; `respawn` also brings killed monsters back after
+a delay, and `none` disables them. Map-specific respawn flags can force or
+suppress normal respawn behavior. Ammo uses the weapon mode for respawn and
+the item mode for marker visibility. Repeated options use the last value;
+this also applies when mixing `-nodudes` with `-monsters`.
+
+`net_status` reports these effective modes as integers:
+
+| Field | Mode values |
+| --- | --- |
+| `weapon_mode` | 0 = `norespawn`, 1 = `permanent`, 2 = `respawn`, 3 = `markers` |
+| `item_mode` | 0 = `norespawn`, 1 = `respawn`, 2 = `markers` |
+| `monster_mode` | 0 = `none`, 1 = `spawn`, 2 = `respawn` |
+
+The existing `weaponsstay` field remains a boolean: 1 for `permanent`, 0 for
+other weapon modes. Clients receive all three modes through the existing
+`GAMEOPTIONS` snapshot; these settings do not change the wire protocol or
+snapshot layout.
 
 When a configured time or score limit is reached, the dedicated server advances
 the map list. With an explicit cooperative episode, a time limit follows the
