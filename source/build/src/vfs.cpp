@@ -484,10 +484,43 @@ static int32_t kread_grp(int32_t handle, void *buffer, int32_t leng);
 static int32_t klseek_grp(int32_t handle, int32_t offset, int32_t whence);
 static void kclose_grp(int32_t handle);
 
+// Archive offsets are consumed by the signed 32-bit VFS API. Check the actual
+// backing size before narrowing it, including when loading a group from a group.
+static int64_t kfilelength_grp(int32_t handle)
+{
+    int32_t const parent = groupfilgrp[handle];
+    if (parent != GRP_FILESYSTEM)
+    {
+        int32_t const entry = groupfil[handle];
+        return int64_t(gfileoffs[parent][entry+1]) - gfileoffs[parent][entry];
+    }
+#ifdef _WIN32
+    return _filelengthi64(groupfil[handle]);
+#else
+    return buildvfs_length(groupfil[handle]);
+#endif
+}
+
+static uint32_t group_read_u32(const char *data)
+{
+    uint32_t value;
+    Bmemcpy(&value, data, sizeof(value));
+    return B_LITTLE32(value);
+}
+
+static bool group_ssi_string(const char *data, unsigned capacity, unsigned maxLength)
+{
+    unsigned const length = uint8_t(data[0]);
+    if (length > maxLength)
+        return false;
+    for (unsigned i = length; i < capacity; ++i)
+        if (data[1+i] != 0)
+            return false;
+    return true;
+}
+
 int initgroupfile(const char *filename)
 {
-    char buf[70];
-
     // translate all backslashes (0x5c) to forward slashes (0x2f)
     toupperlookup[0x5c] = 0x2f;
 
@@ -499,160 +532,143 @@ int initgroupfile(const char *filename)
     if (numgroupfiles >= MAXGROUPFILES)
         return -1;
 
+    int32_t const handle = numgroupfiles;
     char *zfn = NULL;
-
-    if (kopen_internal(filename, &zfn, 0, 0, 0, numgroupfiles, groupfilgrp, groupfil, groupfilpos) < 0)
+    if (kopen_internal(filename, &zfn, 0, 0, 0, handle, groupfilgrp, groupfil, groupfilpos) < 0)
+    {
+        Xfree(zfn);
         return -1;
+    }
 
 #ifdef WITHKPLIB
-    // check if ZIP
+    // ZIP mounting uses its own index implementation, and requires an actual
+    // filesystem path. Do not inspect uninitialized bytes in a truncated file.
     if (zfn)
     {
-        kread_grp(numgroupfiles, buf, 4);
-        if (buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04)
+        char signature[4];
+        bool const isZip = kread_grp(handle, signature, sizeof(signature)) == sizeof(signature)
+            && !Bmemcmp(signature, "PK\003\004", sizeof(signature));
+        if (isZip)
         {
-            kclose_grp(numgroupfiles);
-
+            kclose_grp(handle);
             kzaddstack(zfn);
             Xfree(zfn);
             return MAXGROUPFILES;
         }
-        klseek_grp(numgroupfiles,0,BSEEK_SET);
-
-        Xfree(zfn);
+        if (klseek_grp(handle, 0, BSEEK_SET) != 0)
+        {
+            Xfree(zfn);
+            kclose_grp(handle);
+            return -1;
+        }
     }
-#else
-    Xfree(zfn);
 #endif
+    Xfree(zfn);
 
-    // check if GRP
-    kread_grp(numgroupfiles,buf,16);
-    if (!Bmemcmp(buf, "KenSilverman", 12))
+    // Keep the new index private until every entry has been checked. A failed
+    // mount must not leak allocations or replace an already mounted group's data.
+    char *filelist = NULL;
+    int32_t *fileoffs = NULL;
+    int64_t const archiveLength = kfilelength_grp(handle);
+    do
     {
-        gnumfiles[numgroupfiles] = B_LITTLE32(*((int32_t *)&buf[12]));
-
-        gfilelist[numgroupfiles] = (char *)Xmalloc(gnumfiles[numgroupfiles]<<4);
-        gfileoffs[numgroupfiles] = (int32_t *)Xmalloc((gnumfiles[numgroupfiles]+1)<<2);
-
-        kread_grp(numgroupfiles,gfilelist[numgroupfiles],gnumfiles[numgroupfiles]<<4);
-
-        int32_t j = (gnumfiles[numgroupfiles]+1)<<4;
-        for (bssize_t i=0; i<gnumfiles[numgroupfiles]; i++)
-        {
-            int32_t const k = B_LITTLE32(*((int32_t *)&gfilelist[numgroupfiles][(i<<4)+12]));
-            gfilelist[numgroupfiles][(i<<4)+12] = 0;
-            gfileoffs[numgroupfiles][i] = j;
-            j += k;
-        }
-        gfileoffs[numgroupfiles][gnumfiles[numgroupfiles]] = j;
-        groupname[numgroupfiles] = Xstrdup(filename);
-        return numgroupfiles++;
-    }
-    klseek_grp(numgroupfiles, 0, BSEEK_SET);
-
-    // check if SSI
-    // this performs several checks because there is no "SSI" magic
-    int32_t version;
-    kread_grp(numgroupfiles, &version, 4);
-    version = B_LITTLE32(version);
-    while (version == 1 || version == 2) // if
-    {
-        char zerobuf[70];
-        Bmemset(zerobuf, 0, 70);
-
-        int32_t numfiles;
-        kread_grp(numgroupfiles, &numfiles, 4);
-        numfiles = B_LITTLE32(numfiles);
-
-        uint8_t temp, temp2;
-
-        // get the string length
-        kread_grp(numgroupfiles, &temp, 1);
-        if (temp > 31) // 32 bytes allocated for the string
-            break;
-        // seek to the end of the string
-        klseek_grp(numgroupfiles, temp, BSEEK_CUR);
-        // verify everything remaining is a null terminator
-        temp = 32 - temp;
-        kread_grp(numgroupfiles, buf, temp);
-        if (Bmemcmp(buf, zerobuf, temp))
+        if (archiveLength < 16 || archiveLength > INT32_MAX)
             break;
 
-        if (version == 2)
-        {
-            // get the string length
-            kread_grp(numgroupfiles, &temp, 1);
-            if (temp > 11) // 12 bytes allocated for the string
-                break;
-            // seek to the end of the string
-            klseek_grp(numgroupfiles, temp, BSEEK_CUR);
-            // verify everything remaining is a null terminator
-            temp = 12 - temp;
-            kread_grp(numgroupfiles, buf, temp);
-            if (Bmemcmp(buf, zerobuf, temp))
-                break;
-        }
+        char header[267];
+        if (kread_grp(handle, header, 16) != 16)
+            break;
 
-        temp2 = 0;
-        for (int i=0;i<3;i++)
+        bool const isGrp = !Bmemcmp(header, "KenSilverman", 12);
+        uint32_t count;
+        uint64_t indexEnd;
+        if (isGrp)
         {
-            // get the string length
-            kread_grp(numgroupfiles, &temp, 1);
-            if (temp > 70) // 70 bytes allocated for the string
+            count = group_read_u32(header+12);
+            indexEnd = 16u + uint64_t(count) * 16u;
+        }
+        else
+        {
+            uint32_t const version = group_read_u32(header);
+            if (version != 1 && version != 2)
+                break;
+
+            unsigned const headerSize = version == 2 ? 267 : 254;
+            if (archiveLength < headerSize || klseek_grp(handle, 0, BSEEK_SET) != 0
+                || kread_grp(handle, header, headerSize) != int32_t(headerSize))
+                break;
+
+            // SSI has no signature, so retain its string/padding checks as well
+            // as checking every byte of its header and directory is present.
+            if (!group_ssi_string(header+8, 32, 31))
+                break;
+            unsigned strings = 41;
+            if (version == 2)
             {
-                temp2 = 1;
-                break;
+                if (!group_ssi_string(header+strings, 12, 11))
+                    break;
+                strings += 13;
             }
-            // seek to the end of the string
-            klseek_grp(numgroupfiles, temp, BSEEK_CUR);
-            // verify everything remaining is a null terminator
-            temp = 70 - temp;
-            if (temp == 0)
-                continue;
-            kread_grp(numgroupfiles, buf, temp);
-            temp2 |= !!Bmemcmp(buf, zerobuf, temp);
+            if (!group_ssi_string(header+strings, 70, 70)
+                || !group_ssi_string(header+strings+71, 70, 70)
+                || !group_ssi_string(header+strings+142, 70, 70))
+                break;
+
+            count = group_read_u32(header+4);
+            indexEnd = headerSize + uint64_t(count) * 121u;
         }
-        if (temp2)
+
+        // This bounds count, both allocations, directory indexing, and all
+        // narrowing conversions below even on 32-bit hosts. Unsigned high-bit
+        // counts and entries cannot masquerade as negative lengths or offsets.
+        if (indexEnd > uint64_t(archiveLength))
+            break;
+        filelist = (char *)Xmalloc(max<size_t>(size_t(count) * 16u, 1));
+        fileoffs = (int32_t *)Xmalloc((size_t(count) + 1u) * sizeof(*fileoffs));
+        if (isGrp && kread_grp(handle, filelist, int32_t(count * 16u)) != int32_t(count * 16u))
             break;
 
-        // Passed all the tests: read data.
-
-        gnumfiles[numgroupfiles] = numfiles;
-
-        gfilelist[numgroupfiles] = (char *)Xmalloc(gnumfiles[numgroupfiles]<<4);
-        gfileoffs[numgroupfiles] = (int32_t *)Xmalloc((gnumfiles[numgroupfiles]+1)<<2);
-
-        int32_t j = (version == 2 ? 267 : 254) + (numfiles * 121), k;
-        for (bssize_t i = 0; i < numfiles; i++)
+        uint64_t offset = indexEnd;
+        uint32_t entry = 0;
+        for (; entry < count; ++entry)
         {
-            // get the string length
-            kread_grp(numgroupfiles, &temp, 1);
-            if (temp > 12)
-                temp = 12;
-            // read the file name
-            kread_grp(numgroupfiles, &gfilelist[numgroupfiles][i<<4], temp);
-            gfilelist[numgroupfiles][(i<<4)+temp] = 0;
-
-            // skip to the end of the 12 bytes
-            klseek_grp(numgroupfiles, 12-temp, BSEEK_CUR);
-
-            // get the file size
-            kread_grp(numgroupfiles, &k, 4);
-            k = B_LITTLE32(k);
-
-            // record the offset of the file in the SSI
-            gfileoffs[numgroupfiles][i] = j;
-            j += k;
-
-            // skip unknown data
-            klseek_grp(numgroupfiles, 104, BSEEK_CUR);
+            char *const name = filelist + size_t(entry) * 16u;
+            uint32_t length;
+            if (isGrp)
+            {
+                length = group_read_u32(name+12);
+                name[12] = 0;
+            }
+            else
+            {
+                char record[121];
+                if (kread_grp(handle, record, sizeof(record)) != sizeof(record)
+                    || uint8_t(record[0]) > 12)
+                    break;
+                unsigned const nameLength = uint8_t(record[0]);
+                Bmemcpy(name, record+1, nameLength);
+                name[nameLength] = 0;
+                length = group_read_u32(record+13);
+            }
+            if (length > uint64_t(archiveLength) - offset)
+                break;
+            fileoffs[entry] = int32_t(offset);
+            offset += length;
         }
-        gfileoffs[numgroupfiles][gnumfiles[numgroupfiles]] = j;
-        groupname[numgroupfiles] = Xstrdup(filename);
-        return numgroupfiles++;
-    }
+        if (entry != count)
+            break;
 
-    kclose_grp(numgroupfiles);
+        fileoffs[count] = int32_t(offset);
+        gnumfiles[handle] = int32_t(count);
+        gfilelist[handle] = filelist;
+        gfileoffs[handle] = fileoffs;
+        groupname[handle] = Xstrdup(filename);
+        return numgroupfiles++;
+    } while (0);
+
+    Xfree(filelist);
+    Xfree(fileoffs);
+    kclose_grp(handle);
     return -1;
 }
 

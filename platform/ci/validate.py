@@ -86,7 +86,9 @@ def commands(args):
         # protocol-test.sh already runs these three scripts. Keep automatic
         # discovery so adding another standalone regression test adds it to CI.
         nested = {"compatibility-test.sh", "uri-test.sh", "chat-test.sh"}
-        standalone = [[str(path)] for path in sorted((ROOT / "tests/network").glob("*-test.sh"))
+        standalone = [[str(path)]
+                      for directory in ("tests/network", "tests/security")
+                      for path in sorted((ROOT / directory).glob("*-test.sh"))
                       if path.name not in nested]
         return [[python, str(ROOT / "platform/ci/test_pipeline.py")],
                 [python, str(ROOT / "platform/ci/test_windows_verify.py")],

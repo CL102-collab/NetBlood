@@ -273,13 +273,12 @@ void Resource::Purge(void)
 
 DICTNODE **Resource::Probe(const char *fname, const char *type)
 {
-    char name[BMAX_PATH];
     dassert(indexName != NULL);
-    memset(name, 0, sizeof(name));
-    strcpy(name, type);
-    strcat(name, fname);
     dassert(dict != NULL);
-    unsigned int hash = Bcrc32(name, strlen(name), 0) & (buffSize - 1);
+    // Hash the same concatenated bytes without copying an untrusted key into a
+    // fixed-size buffer. Some map callers probe directly rather than Lookup().
+    unsigned int hash = Bcrc32(type, strlen(type), 0);
+    hash = Bcrc32(fname, strlen(fname), hash) & (buffSize - 1);
     unsigned int i = hash;
     do
     {
@@ -303,16 +302,10 @@ DICTNODE **Resource::Probe(const char *fname, const char *type)
 
 DICTNODE **Resource::Probe(unsigned int id, const char *type)
 {
-    struct {
-        int id;
-        char type[BMAX_PATH];
-    } name;
     dassert(indexName != NULL);
-    memset(&name, 0, sizeof(name));
-    strcpy(name.type, type);
-    name.id = id;
     dassert(dict != NULL);
-    unsigned int hash = Bcrc32(&name, strlen(name.type)+sizeof(name.id), 0) & (buffSize - 1);
+    unsigned int hash = Bcrc32(&id, sizeof(id), 0);
+    hash = Bcrc32(type, strlen(type), hash) & (buffSize - 1);
     unsigned int i = hash;
     do
     {
@@ -386,19 +379,44 @@ void Resource::Grow(void)
     Reindex();
 }
 
+// Resource names and their filenames are copied to fixed-size buffers. Reject
+// oversized keys before copying; truncating would silently register or resolve
+// a different resource.
+static bool ResourceKeyFits(const char *name, const char *type)
+{
+    if (!name || !type || strnlen(name, BMAX_PATH) + strnlen(type, BMAX_PATH) >= BMAX_PATH)
+    {
+        LOG_F(ERROR, "Rejected resource: name and type must fit in %d bytes including the terminator", BMAX_PATH);
+        return false;
+    }
+    return true;
+}
+
 void Resource::AddExternalResource(const char *name, const char *type, int id, int flags, const char *pzDirectory)
 {
     char name2[BMAX_PATH], oldName[BMAX_PATH], type2[BMAX_PATH], filename[BMAX_PATH], path[BMAX_PATH];
 
-    if (Bstrlen(type) > 0)
-        Bsnprintf(filename, BMAX_PATH-1, "%s.%s", name, type);
-    else
-        Bsnprintf(filename, BMAX_PATH-1, "%s", name);
+    if (!ResourceKeyFits(name, type))
+        return;
+
+    int const filenameLength = Bsnprintf(filename, sizeof(filename), *type ? "%s.%s" : "%s", name, type);
+    if (filenameLength < 0 || filenameLength >= (int)sizeof(filename))
+    {
+        LOG_F(ERROR, "Rejected external resource: filename exceeds %d bytes", BMAX_PATH-1);
+        return;
+    }
 
     if (pzDirectory)
-        Bsnprintf(path, BMAX_PATH-1, "%s/%s", pzDirectory, filename);
+    {
+        if (strnlen(pzDirectory, BMAX_PATH) + 1 + filenameLength >= sizeof(path))
+        {
+            LOG_F(ERROR, "Rejected external resource: directory and filename exceed %d bytes", BMAX_PATH-1);
+            return;
+        }
+        Bsnprintf(path, sizeof(path), "%s/%s", pzDirectory, filename);
+    }
     else
-        Bstrncpy(path, filename, BMAX_PATH-1);
+        Bstrcpy(path, filename);
 
     int fhandle = kopen4loadfrommod(filename, 0);
     if (fhandle == -1)
@@ -526,6 +544,9 @@ void Resource::AddExternalResource(const char *name, const char *type, int id, i
 void Resource::AddFromBuffer(const char* name, const char* type, char* data, int size, int id, int flags)
 {
     char name2[BMAX_PATH], oldName[BMAX_PATH], type2[BMAX_PATH];
+
+    if (!ResourceKeyFits(name, type))
+        return;
 
     char *pHeapData = (char*)Alloc(size);
     if (!pHeapData)
@@ -705,8 +726,8 @@ void Resource::Free(void *p)
 DICTNODE *Resource::Lookup(const char *name, const char *type)
 {
     char name2[BMAX_PATH], type2[BMAX_PATH];
-    dassert(name != NULL);
-    dassert(type != NULL);
+    if (!ResourceKeyFits(name, type))
+        return NULL;
     //if (strlen(name) > 8 || strlen(type) > 3) return NULL;
     // Try to load external resource first
     AddExternalResource(name, type);
@@ -720,7 +741,8 @@ DICTNODE *Resource::Lookup(const char *name, const char *type)
 DICTNODE *Resource::Lookup(unsigned int id, const char *type)
 {
     char type2[BMAX_PATH];
-    dassert(type != NULL);
+    if (!ResourceKeyFits("", type))
+        return NULL;
     //if (strlen(type) > 3) return NULL;
     strcpy(type2, type);
     Bstrupr(type2);
@@ -740,9 +762,9 @@ void Resource::Read(DICTNODE *n, void *p)
     if (n->flags & DICT_EXTERNAL)
     {
         if (n->path)
-            Bstrncpy(filename, n->path, BMAX_PATH-1);
+            Bstrncpyz(filename, n->path, sizeof(filename));
         else
-            Bsnprintf(filename, BMAX_PATH-1, "%s.%s", n->name, n->type);
+            Bsnprintf(filename, sizeof(filename), "%s.%s", n->name, n->type);
         int fhandle = kopen4loadfrommod(filename, 0);
         if (fhandle == -1 || (uint32_t)kread(fhandle, p, n->size) != n->size)
         {
