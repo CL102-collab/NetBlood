@@ -157,7 +157,7 @@ A port of several BUILD Engine games derived from the Duke Nukem 3D codebase, ba
 ## Building from source
 See: https://wiki.eduke32.com/wiki/Main_Page
 
-### Native Vulkan rendering
+### Native Vulkan and Metal rendering
 
 NBlood offers **Vulkan** in the startup renderer selector and the in-game Video
 Mode menu. You can also enter `setrendermode 5` in the console, or set
@@ -174,7 +174,15 @@ OpenGL context. Polymer remains a separate renderer.
 Vulkan currently uses uncompressed GPU textures, so large texture packs can use
 more graphics memory than OpenGL with texture compression enabled.
 
-Polymost and Vulkan enable screen-space ambient occlusion by default. Toggle
+NBlood also offers **Metal** on macOS 11 or later, with SDL **2.0.14 or newer**.
+Select it in the startup renderer selector or Video Mode menu, use
+`setrendermode 6`, or set `Renderer = 6` in `nblood.cfg`. Metal shares the same
+Polymost scene frontend and submits directly to Apple's Metal API without
+requiring Vulkan, MoltenVK or an OpenGL context. It is enabled by default in
+macOS builds; `USE_METAL=0` disables it at build time. See
+[the Metal checks](tests/metal/README.md) for native compilation and GPU tests.
+
+Polymost, Vulkan and Metal enable screen-space ambient occlusion by default. Toggle
 **Options → Display Setup → Renderer Setup → Ambient Occlusion**, or use
 `r_ambientocclusion 0` / `r_ambientocclusion 1` in the console. The setting is
 saved and takes effect immediately. AO adds local contact shading around visible
@@ -185,7 +193,7 @@ behind another surface. Transparent surfaces use the opaque depth behind them.
 OpenGL requires framebuffer blit and packed depth/stencil support; unsupported
 hardware keeps rendering normally and reports that AO is unavailable.
 
-Polymost and Vulkan also enable realtime point lighting and shadows by default.
+Polymost, Vulkan and Metal enable realtime point lighting and shadows by default.
 Toggle **Options → Display Setup → Renderer Setup → Lighting and Shadows**,
 or use `r_realtimelighting 0` / `r_realtimelighting 1`. Changes apply immediately and
 are saved independently of ambient occlusion. Torches, candles, flames, flares,

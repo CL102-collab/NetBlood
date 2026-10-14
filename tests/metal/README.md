@@ -50,6 +50,27 @@ to remain unchanged. They check isolated geometry with an infinite far plane,
 queued AO frames, and resized targets. Reference/on PPM images are retained.
 Apple API and shader validation are enabled during these tests.
 
+Point-light scenes check visible illumination, localized geometry shadows,
+moving lights, and a caster completely outside the camera frustum. Zero lights,
+zero intensity, disabling the effect, disabling shadows, and an empty caster
+mesh must restore the corresponding original pixels. Alpha, stencil exclusions,
+post-pass HUD elements and inset viewport boundaries are checked independently.
+The suite also translates the camera/light/mesh together, queues changing light
+positions without intermediate readbacks, resizes and suspends the target, and
+destroys/recreates the renderer with pending lit frames. Lossless `metal-*.ppm`
+images are retained. Isolate these checks with:
+
+```sh
+tests/metal/backend-test.sh --realtime-lighting-only --require-device \
+    --output /tmp/netblood-metal-lighting
+```
+
+The [game lighting runner](../realtime-lighting/README.md) supports native Metal
+through `--native-backend metal` on macOS. It checks the generated torch/pillar
+fixture against OpenGL, live toggling and saved settings, and lit renderer
+switching using a Cocoa window and an SDL input interposer. These game checks
+require separately supplied Blood assets and a local development executable.
+
 `result.json` and separate compile/link/runtime logs report exactly what ran.
 Without a native Metal device the script exits **77**, records `status: skipped`
 and `runtime: unavailable`, and explicitly says that GPU rendering was not

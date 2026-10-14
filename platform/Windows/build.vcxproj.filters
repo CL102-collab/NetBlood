@@ -545,6 +545,12 @@
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\source\build\include\native_renderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\source\build\include\renderer_types.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\source\build\include\vulkan_renderer.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -71,6 +71,32 @@ struct AmbientOcclusionUniforms
     float projection[4], depth[4], viewport[4], target[4];
 };
 
+constexpr NSUInteger kShadowFaceSize = 256;
+constexpr NSUInteger kShadowFaces = 6;
+struct RealtimeLightingUniforms
+{
+    AmbientOcclusionUniforms ao;
+    float eyeToWorld[16], params[4];
+    RealtimeLight lights[kMaxRealtimeLights];
+};
+struct ShadowUniforms
+{
+    float light[4];
+    int32_t face[4];
+};
+static_assert(kMaxRealtimeLights == 8 && sizeof(RealtimeLight) == 32 && sizeof(RealtimeLightingUniforms) == 400,
+              "Keep MetalLightingUniforms in sync with the native lighting block");
+static_assert(sizeof(RealtimeShadowVertex) == 12 && sizeof(ShadowUniforms) == 32,
+              "Keep packed_float3 shadow vertices and MetalShadowUniforms in sync");
+
+struct RealtimeLighting
+{
+    id<MTLRenderPipelineState> pipeline = nil, shadowPipeline = nil;
+    id<MTLDepthStencilState> shadowDepth = nil;
+    id<MTLTexture> atlas = nil;
+    bool initialized = false, failed = false;
+};
+
 struct Backend
 {
     SDL_Window *window = nullptr;
@@ -87,6 +113,7 @@ struct Backend
     id<MTLCommandBuffer> command = nil;
     id<MTLRenderCommandEncoder> render = nil;
     id<MTLBlitCommandEncoder> blit = nil;
+    RealtimeLighting lighting;
     std::array<SubmissionSlot, kFramesInFlight> slots;
     unsigned slot = 0;
     std::map<PipelineKey, id<MTLRenderPipelineState>> pipelines;
@@ -554,6 +581,70 @@ id<MTLRenderPipelineState> postprocessPipeline(NSString *vertex, NSString *fragm
     return result;
 }
 
+bool disableRealtimeLighting(char const *reason, NSError *error = nil)
+{
+    if (!g.lighting.failed)
+    {
+        std::fprintf(stderr, "Metal: realtime lighting disabled; %s", reason);
+        if (error) std::fprintf(stderr, ": %s", error.localizedDescription.UTF8String);
+        std::fprintf(stderr, "\n");
+    }
+    // Command buffers retain already encoded resources. Releasing these CPU
+    // references cannot invalidate a preceding frame's atlas or pipeline.
+    g.lighting = RealtimeLighting{};
+    g.lighting.failed = true;
+    return false;
+}
+
+bool createRealtimeLightingResources()
+{
+    if (g.lighting.failed) return false;
+    if (g.lighting.pipeline) return true;
+    if (!g.depth || !g.stencil) return disableRealtimeLighting("sampled scene depth/stencil is unavailable");
+    MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+    descriptor.vertexFunction = [g.library newFunctionWithName:@"metalAOVertex"];
+    descriptor.fragmentFunction = [g.library newFunctionWithName:@"metalLightingFragment"];
+    if (!descriptor.vertexFunction || !descriptor.fragmentFunction)
+        return disableRealtimeLighting("lighting shader entry points are unavailable");
+    auto color = descriptor.colorAttachments[0];
+    color.pixelFormat = kColorFormat;
+    color.writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
+    color.blendingEnabled = YES;
+    color.rgbBlendOperation = color.alphaBlendOperation = MTLBlendOperationAdd;
+    color.sourceRGBBlendFactor = MTLBlendFactorDestinationColor;
+    color.destinationRGBBlendFactor = MTLBlendFactorOne;
+    color.sourceAlphaBlendFactor = MTLBlendFactorZero;
+    color.destinationAlphaBlendFactor = MTLBlendFactorOne;
+    NSError *error = nil;
+    g.lighting.pipeline = [g.device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    if (!g.lighting.pipeline) return disableRealtimeLighting("cannot create the lighting pipeline", error);
+
+    descriptor = [MTLRenderPipelineDescriptor new];
+    descriptor.vertexFunction = [g.library newFunctionWithName:@"metalShadowVertex"];
+    descriptor.fragmentFunction = [g.library newFunctionWithName:@"metalShadowFragment"];
+    descriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    if (!descriptor.vertexFunction || !descriptor.fragmentFunction)
+        return disableRealtimeLighting("shadow shader entry points are unavailable");
+    error = nil;
+    g.lighting.shadowPipeline = [g.device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    if (!g.lighting.shadowPipeline) return disableRealtimeLighting("cannot create the shadow pipeline", error);
+    MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
+    depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+    depth.depthWriteEnabled = YES;
+    g.lighting.shadowDepth = [g.device newDepthStencilStateWithDescriptor:depth];
+    if (!g.lighting.shadowDepth) return disableRealtimeLighting("cannot create the shadow depth state");
+    MTLTextureDescriptor *texture = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+        width:kShadowFaceSize * kMaxRealtimeLights height:kShadowFaceSize * kShadowFaces mipmapped:NO];
+    texture.storageMode = MTLStorageModePrivate;
+    texture.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    // Device-created textures use tracked hazards. Separate encoders and the
+    // single queue order atlas reads/writes, including across in-flight frames.
+    g.lighting.atlas = [g.device newTextureWithDescriptor:texture];
+    if (!g.lighting.atlas) return disableRealtimeLighting("sampled shadow depth textures are unavailable");
+    g.lighting.atlas.label = @"NetBlood realtime point-light shadow atlas";
+    return true;
+}
+
 bool copyPixels(Texture const &texture, int level, int x, int y, int width, int height, uint8_t const *rgba)
 {
     NSUInteger const rowBytes = static_cast<NSUInteger>(width) * 4;
@@ -935,6 +1026,122 @@ bool metalAmbientOcclusion(float const projection[16], int const worldViewport[4
         [encoder setFragmentBuffer:allocation.buffer offset:allocation.offset atIndex:0];
         [encoder setFragmentTexture:g.depth atIndex:0];
         [encoder setFragmentTexture:g.stencil atIndex:1];
+        [encoder setFragmentSamplerState:g.nearestSampler atIndex:0];
+        [encoder setViewport:MTLViewport{0, 0, double(g.width), double(g.height), 0, 1}];
+        [encoder setScissorRect:scissor];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+        return true;
+    }
+}
+
+bool metalRealtimeLighting(float const projection[16], float const eyeToWorld[16], int const worldViewport[4],
+                           RealtimeLight const *lights, unsigned lightCount,
+                           RealtimeShadowVertex const *shadowVertices, unsigned shadowVertexCount, bool shadows)
+{
+    @autoreleasepool
+    {
+        if (!metalActive() || g.failed) return false;
+        // Off and zero-light paths leave scene encoding and submission alone.
+        if (!lightCount || g.suspended) return true;
+        if (!projection || !eyeToWorld || !worldViewport || !lights || lightCount > kMaxRealtimeLights) return false;
+        if (shadows && (shadowVertexCount % 3 || (shadowVertexCount && !shadowVertices))) return false;
+        for (unsigned i = 0; i < 16; ++i)
+            if (!std::isfinite(projection[i]) || !std::isfinite(eyeToWorld[i])) return false;
+        for (unsigned i = 0; i < lightCount; ++i)
+        {
+            for (unsigned j = 0; j < 4; ++j)
+                if (!std::isfinite(lights[i].positionRadius[j]) || !std::isfinite(lights[i].color[j]) || lights[i].color[j] < 0.f) return false;
+            if (lights[i].positionRadius[3] <= 0.001f) return false;
+        }
+        if (worldViewport[2] <= 0 || worldViewport[3] <= 0) return true;
+        if (projection[0] <= 0.f || projection[5] <= 0.f ||
+            std::fabs(projection[11] - 1.f) > .00001f || std::fabs(projection[15]) > .00001f) return false;
+        NativeDrawState clipping = {};
+        clipping.scissorTest = true;
+        std::copy(worldViewport, worldViewport + 4, clipping.scissor);
+        MTLScissorRect const scissor = clipRect(clipping);
+        if (!scissor.width || !scissor.height) return true;
+        unsigned const vertexCount = shadows ? shadowVertexCount : 0;
+        // Keep optional oversized work from failing the otherwise usable scene
+        // renderer. The map frontend supplies a much smaller bounded mesh.
+        if (vertexCount > (kSubmissionBytes - sizeof(RealtimeLightingUniforms)) / sizeof(RealtimeShadowVertex)) return false;
+        if (!createRealtimeLightingResources()) return false;
+        if (!g.initialized && !beginRender()) return false;
+        endEncoding();
+        NSUInteger const vertexBytes = NSUInteger(vertexCount) * sizeof(RealtimeShadowVertex);
+        StreamAllocation allocation;
+        // A reservation may submit and advance the ring. Reserving the complete
+        // call at once keeps its mesh and uniforms in the same owned stream page.
+        if (!reserveStream(sizeof(RealtimeLightingUniforms) + vertexBytes, 256, allocation)) return false;
+        RealtimeLightingUniforms uniforms = {};
+        uniforms.ao.projection[0] = projection[0]; uniforms.ao.projection[1] = projection[5];
+        uniforms.ao.projection[2] = projection[8]; uniforms.ao.projection[3] = projection[9];
+        uniforms.ao.depth[0] = projection[10]; uniforms.ao.depth[1] = projection[14];
+        for (unsigned i = 0; i < 4; ++i) uniforms.ao.viewport[i] = float(worldViewport[i]);
+        uniforms.ao.target[0] = 1.f / g.width; uniforms.ao.target[1] = 1.f / g.height;
+        std::memcpy(uniforms.eyeToWorld, eyeToWorld, sizeof(uniforms.eyeToWorld));
+        uniforms.params[0] = float(lightCount);
+        uniforms.params[1] = shadows ? 1.f : 0.f;
+        uniforms.params[2] = float(kShadowFaceSize);
+        uniforms.params[3] = float(kMaxRealtimeLights);
+        std::memcpy(uniforms.lights, lights, lightCount * sizeof(RealtimeLight));
+        std::memcpy(allocation.data, &uniforms, sizeof(uniforms));
+        if (vertexBytes) std::memcpy(allocation.data + sizeof(uniforms), shadowVertices, vertexBytes);
+
+        if (shadows || !g.lighting.initialized)
+        {
+            MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.depthAttachment.texture = g.lighting.atlas;
+            pass.depthAttachment.loadAction = MTLLoadActionClear;
+            pass.depthAttachment.storeAction = MTLStoreActionStore;
+            pass.depthAttachment.clearDepth = 1.;
+            id<MTLRenderCommandEncoder> encoder = [g.command renderCommandEncoderWithDescriptor:pass];
+            if (!encoder) return disableRealtimeLighting("cannot create the shadow encoder");
+            encoder.label = @"NetBlood point-light world geometry shadows";
+            [encoder setRenderPipelineState:g.lighting.shadowPipeline];
+            [encoder setDepthStencilState:g.lighting.shadowDepth];
+            [encoder setCullMode:MTLCullModeNone];
+            [encoder setDepthClipMode:MTLDepthClipModeClip];
+            [encoder setTriangleFillMode:MTLTriangleFillModeFill];
+            [encoder setDepthBias:0.f slopeScale:0.f clamp:0.f];
+            if (vertexCount)
+            {
+                [encoder setVertexBuffer:allocation.buffer offset:allocation.offset + sizeof(uniforms) atIndex:0];
+                for (unsigned light = 0; light < lightCount; ++light)
+                    for (NSUInteger face = 0; face < kShadowFaces; ++face)
+                    {
+                        ShadowUniforms shadow = {};
+                        std::memcpy(shadow.light, lights[light].positionRadius, sizeof(shadow.light));
+                        shadow.face[0] = int32_t(face);
+                        // Metal copies these small per-face constants into the
+                        // encoded command; stack reuse cannot alter GPU work.
+                        [encoder setVertexBytes:&shadow length:sizeof(shadow) atIndex:1];
+                        [encoder setFragmentBytes:&shadow length:sizeof(shadow) atIndex:1];
+                        [encoder setViewport:MTLViewport{double(light * kShadowFaceSize), double(face * kShadowFaceSize),
+                            double(kShadowFaceSize), double(kShadowFaceSize), 0., 1.}];
+                        [encoder setScissorRect:MTLScissorRect{light * kShadowFaceSize, face * kShadowFaceSize,
+                            kShadowFaceSize, kShadowFaceSize}];
+                        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vertexCount];
+                    }
+            }
+            [encoder endEncoding];
+            g.lighting.initialized = true;
+        }
+
+        MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = g.color;
+        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> encoder = [g.command renderCommandEncoderWithDescriptor:pass];
+        if (!encoder) return disableRealtimeLighting("cannot create the lighting encoder");
+        encoder.label = @"NetBlood realtime world point lighting";
+        [encoder setRenderPipelineState:g.lighting.pipeline];
+        [encoder setDepthStencilState:g.noDepth];
+        [encoder setFragmentBuffer:allocation.buffer offset:allocation.offset atIndex:0];
+        [encoder setFragmentTexture:g.depth atIndex:0];
+        [encoder setFragmentTexture:g.stencil atIndex:1];
+        [encoder setFragmentTexture:g.lighting.atlas atIndex:2];
         [encoder setFragmentSamplerState:g.nearestSampler atIndex:0];
         [encoder setViewport:MTLViewport{0, 0, double(g.width), double(g.height), 0, 1}];
         [encoder setScissorRect:scissor];

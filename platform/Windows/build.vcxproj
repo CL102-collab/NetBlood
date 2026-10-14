@@ -445,6 +445,8 @@
     <ClInclude Include="..\..\source\build\include\vec.h" />
     <ClInclude Include="..\..\source\build\include\vectormath.hpp" />
     <ClInclude Include="..\..\source\build\include\vfs.h" />
+    <ClInclude Include="..\..\source\build\include\native_renderer.h" />
+    <ClInclude Include="..\..\source\build\include\renderer_types.h" />
     <ClInclude Include="..\..\source\build\include\vulkan_renderer.h" />
     <ClInclude Include="..\..\source\build\include\realtime_lighting.h" />
     <ClInclude Include="..\..\source\build\include\polymost_lighting.h" />

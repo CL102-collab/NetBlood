@@ -243,6 +243,7 @@ jobs:
           path: |
             .ci-build/macos/metal-validation/**/*.json
             .ci-build/macos/metal-validation/**/*.log
+            .ci-build/macos/metal-validation/**/*.ppm
           include-hidden-files: true
           if-no-files-found: warn
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

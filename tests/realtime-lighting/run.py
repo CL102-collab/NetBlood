@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Check OpenGL/Vulkan lighting, live toggles, renderer switching and persistence.
+"""Check OpenGL/native lighting, live toggles, renderer switching and persistence.
 
 The default scene is an original room with a live torch and a solid pillar.
-Requires DISPLAY, SDL2 development files, Pillow and supplied Blood 1.21 assets.
+Requires SDL2 development files, Pillow and supplied Blood 1.21 assets.
+Linux uses DISPLAY; macOS uses a logged-in Cocoa session and DYLD interposition.
 """
 # SPDX-License-Identifier: GPL-2.0-only
 import argparse
@@ -12,9 +13,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import zlib
 
@@ -32,6 +35,65 @@ def load_module(name, path):
 
 render_checks = load_module('render_checks', ROOT / 'tests/vulkan/run.py')
 fixtures = load_module('fixture_generator', ROOT / 'tests/vulkan/make-fixtures.py')
+
+
+def macos_input_driver_source():
+    # Mach-O interposition does not rely on ELF symbol preemption. Only this
+    # unsigned test dylib is injected into the supplied development executable.
+    source = render_checks.INPUT_DRIVER
+    source = source.replace('#include <SDL_vulkan.h>', '#include <SDL_vulkan.h>\n#include <SDL_metal.h>')
+    source = source.replace('static unsigned gl_attempts, gl_contexts, vulkan_surfaces;',
+                            'static unsigned gl_attempts, gl_contexts, vulkan_surfaces, metal_views;')
+    source = source.replace('SDL_GLContext SDL_GL_CreateContext(', 'static SDL_GLContext lighting_GL_CreateContext(')
+    source = source.replace('SDL_bool SDL_Vulkan_CreateSurface(', 'static SDL_bool lighting_Vulkan_CreateSurface(')
+    source = source.replace('int SDL_PollEvent(', 'static int lighting_PollEvent(')
+    # dyld leaves references from the interposing image bound to the original
+    # function. Use those references directly when forwarding each call.
+    for function in ('SDL_GL_CreateContext', 'SDL_Vulkan_CreateSurface', 'SDL_PollEvent'):
+        source = source.replace(f'if (!original) *(void **)(&original) = dlsym(RTLD_NEXT, "{function}");',
+                                f'if (!original) original = {function};')
+    source = source.replace('vulkan_surfaces=%u\\n",', 'vulkan_surfaces=%u metal_views=%u\\n",')
+    source = source.replace('gl_attempts, gl_contexts, vulkan_surfaces);',
+                            'gl_attempts, gl_contexts, vulkan_surfaces, metal_views);')
+    source += r'''
+static SDL_MetalView lighting_Metal_CreateView(SDL_Window *window)
+{
+    static SDL_MetalView (*original)(SDL_Window *);
+    if (!original) original = SDL_Metal_CreateView;
+    SDL_MetalView result = original ? original(window) : NULL;
+    if (result) ++metal_views;
+    fprintf(stderr, "RENDER_TEST_METAL_VIEW: %s\n", result ? "created" : "failed");
+    return result;
+}
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *original;
+} const lighting_interposes[] __attribute__((section("__DATA,__interpose"))) = {
+    {(const void *)lighting_GL_CreateContext, (const void *)SDL_GL_CreateContext},
+    {(const void *)lighting_Vulkan_CreateSurface, (const void *)SDL_Vulkan_CreateSurface},
+    {(const void *)lighting_PollEvent, (const void *)SDL_PollEvent},
+    {(const void *)lighting_Metal_CreateView, (const void *)SDL_Metal_CreateView},
+};
+'''
+    return source
+
+
+def build_input_driver(output):
+    if sys.platform != 'darwin':
+        return render_checks.build_input_driver(output)
+    source_path = output / 'input_driver.c'
+    source_path.write_text(macos_input_driver_source())
+    library = output / 'input_driver.dylib'
+    sdl_config = os.environ.get('SDL_CONFIG', 'sdl2-config')
+    cflags = shlex.split(subprocess.check_output([sdl_config, '--cflags'], text=True))
+    libraries = shlex.split(subprocess.check_output([sdl_config, '--libs'], text=True))
+    command = shlex.split(os.environ.get('CC', 'cc')) + ['-Wall', '-Wextra', '-Werror', '-dynamiclib']
+    command += shlex.split(os.environ.get('CPPFLAGS', '')) + shlex.split(os.environ.get('CFLAGS', ''))
+    command += cflags + [str(source_path), '-o', str(library)]
+    command += shlex.split(os.environ.get('LDFLAGS', '')) + libraries
+    subprocess.run(command, check=True)
+    return library
 
 
 def generate_fixture(directory):
@@ -80,7 +142,7 @@ def difference(first, second):
     return {'mean_rgb': sum(ImageStat.Stat(image).mean) / 3, 'bbox': image.getbbox()}
 
 
-def run_game(command, runtime, env, log_path, timeout, renderer):
+def run_game(command, runtime, env, log_path, timeout, renderer, native_backend='vulkan'):
     errors = []
     with log_path.open('w') as log:
         try:
@@ -94,16 +156,23 @@ def run_game(command, runtime, env, log_path, timeout, renderer):
             errors.append(str(error))
     log = log_path.read_text(errors='replace')
     errors += [line for line in log.splitlines() if re.search(
-        r'\b(?:ERROR|FATAL)\||VUID-|Validation Error|SYNC-HAZARD|GL_INVALID_|unknown (?:command|symbol)', line, re.I)]
-    contexts = re.search(r'RENDER_TEST_CONTEXTS: gl_attempts=(\d+) gl_contexts=(\d+) vulkan_surfaces=(\d+)', log)
+        r'\b(?:ERROR|FATAL)\||VUID-|Validation Error|SYNC-HAZARD|GL_INVALID_|unknown (?:command|symbol)'
+        r'|Metal (?:API|Shader) Validation.*(?:error|failed)|validate\w*:.*failed|GPU (?:fault|error)|MTLCommandBufferError', line, re.I)]
+    contexts = re.search(r'RENDER_TEST_CONTEXTS: gl_attempts=(\d+) gl_contexts=(\d+) vulkan_surfaces=(\d+)'
+                         r'(?: metal_views=(\d+))?', log)
     if not contexts:
         errors.append('missing renderer context evidence')
-    elif renderer == 'vulkan' and (int(contexts[1]) != 0 or int(contexts[3]) < 1):
+    elif renderer == 'vulkan' and (int(contexts[1]) != 0 or int(contexts[3]) < 1 or int(contexts[4] or 0) != 0):
         errors.append('expected a native Vulkan surface and no OpenGL context attempts')
-    elif renderer == 'opengl' and (int(contexts[2]) < 1 or int(contexts[3]) != 0):
-        errors.append('expected an OpenGL context without Vulkan surfaces')
-    elif renderer == 'switch' and (int(contexts[2]) < 2 or int(contexts[3]) < 1):
-        errors.append('switching did not create both OpenGL contexts and a Vulkan surface')
+    elif renderer == 'opengl' and (int(contexts[2]) < 1 or int(contexts[3]) != 0 or int(contexts[4] or 0) != 0):
+        errors.append('expected an OpenGL context without Vulkan surfaces or Metal views')
+    elif renderer == 'metal' and (int(contexts[1]) != 0 or int(contexts[3]) != 0 or int(contexts[4] or 0) < 1):
+        errors.append('expected a native Metal view without OpenGL context attempts or Vulkan surfaces')
+    elif renderer == 'switch':
+        if int(contexts[2]) < 2 or (native_backend == 'vulkan' and int(contexts[3]) < 1):
+            errors.append(f'switching did not create both OpenGL contexts and the {native_backend} backend')
+        if native_backend == 'metal' and (int(contexts[3]) != 0 or int(contexts[4] or 0) < 1):
+            errors.append('switching did not create a native Metal view without Vulkan surfaces')
     return log, errors
 
 
@@ -112,7 +181,7 @@ def prepare_runtime(args, output, binary, library, renderer, lighting):
     runtime.mkdir()
     (runtime / 'lighting.cfg').write_text(
         '[Setup]\nForceSetup = 0\nNoAutoLoad = 1\n[Screen Setup]\n'
-        f'Renderer = {5 if renderer == "vulkan" else 3}\n'
+        f'Renderer = {dict(opengl=3, switch=3, vulkan=5, metal=6)[renderer]}\n'
         'ScreenMode = 0\nScreenBPP = 32\nScreenWidth = 800\nScreenHeight = 600\n')
     map_name = args.map or 'VFLIGHT'
     bindings = '\n'.join(f'bind {key} norepeat "exec step-{index}.cfg"'
@@ -126,13 +195,18 @@ def prepare_runtime(args, output, binary, library, renderer, lighting):
         fixture_path = output / 'fixture'
         command += ['-j=' + str(fixture_path), '-h=lighting.def']
     env = os.environ.copy()
-    env.update(SDL_VIDEODRIVER='x11', SDL_AUDIODRIVER='dummy',
+    env.update(SDL_VIDEODRIVER='cocoa' if sys.platform == 'darwin' else 'x11', SDL_AUDIODRIVER='dummy',
                RENDER_TEST_INITIAL_MS=str(args.initial_delay_ms), RENDER_TEST_INTERVAL_MS='1500',
                RENDER_TEST_PRESSES='4', MESA_DEBUG='context')
-    env['LD_PRELOAD'] = str(library) + (' ' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
+    if sys.platform == 'darwin':
+        env['DYLD_INSERT_LIBRARIES'] = str(library) + (':' + env['DYLD_INSERT_LIBRARIES'] if env.get('DYLD_INSERT_LIBRARIES') else '')
+    else:
+        env['LD_PRELOAD'] = str(library) + (' ' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else '')
     if args.validation:
         env['VK_INSTANCE_LAYERS'] = 'VK_LAYER_KHRONOS_validation'
         env['VK_LAYER_ENABLES'] = 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT'
+        if sys.platform == 'darwin':
+            env['MTL_DEBUG_LAYER'] = env['MTL_SHADER_VALIDATION'] = '1'
     return runtime, command, env
 
 
@@ -193,13 +267,13 @@ def switch_case(args, output, binary, library, captures):
     runtime, command, env = prepare_runtime(args, output, binary, library, 'switch', 1)
     map_name = args.map or 'VFLIGHT'
     scripts = (f'map "{map_name}"\npause\necho LIGHTING_FROZEN\n',
-               'screenshot\nsetrendermode 5\necho LIGHTING_SWITCH_0\n',
+               f'screenshot\nsetrendermode {6 if args.native_backend == "metal" else 5}\necho LIGHTING_SWITCH_0\n',
                'screenshot\nsetrendermode 3\necho LIGHTING_SWITCH_1\n',
                'screenshot\necho LIGHTING_SWITCH_2\nquit\n')
     for index, script in enumerate(scripts):
         (runtime / f'step-{index}.cfg').write_text(script)
-    print('Checking lit renderer switching: OpenGL / Vulkan / OpenGL', flush=True)
-    log, errors = run_game(command, runtime, env, runtime / 'console.log', args.timeout, 'switch')
+    print(f'Checking lit renderer switching: OpenGL / {args.native_backend} / OpenGL', flush=True)
+    log, errors = run_game(command, runtime, env, runtime / 'console.log', args.timeout, 'switch', args.native_backend)
     for marker in ('Paused at simulation frame 0.', 'LIGHTING_FROZEN', 'LIGHTING_SWITCH_0',
                    'LIGHTING_SWITCH_1', 'LIGHTING_SWITCH_2'):
         if marker not in log:
@@ -209,7 +283,7 @@ def switch_case(args, output, binary, library, captures):
     if len(paths) != 3:
         errors.append(f'expected 3 switching screenshots, found {len(paths)}')
     else:
-        for index, renderer in enumerate(('opengl', 'vulkan', 'opengl')):
+        for index, renderer in enumerate(('opengl', args.native_backend, 'opengl')):
             render_checks.inspect_image(paths[index], (800, 600))
             if len(captures[renderer]) == 3:
                 comparison = render_checks.compare_images(
@@ -231,8 +305,10 @@ def main():
     parser.add_argument('--binary', type=Path, default=ROOT / 'nblood')
     parser.add_argument('--assets', type=Path, required=True)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--mode', choices=('opengl', 'vulkan', 'compare', 'all'), default='all',
+    parser.add_argument('--mode', choices=('opengl', 'vulkan', 'metal', 'compare', 'all'), default='all',
                         help='all also checks switching with lighting enabled (default)')
+    parser.add_argument('--native-backend', choices=('vulkan', 'metal'), default='vulkan',
+                        help='native renderer used by compare/all (default: vulkan)')
     parser.add_argument('--map', help='Use an existing scene instead of the generated torch fixture')
     parser.add_argument('--expect-unlit', action='store_true',
                         help='Require an unchanged image for a scene without visible light contributions')
@@ -245,12 +321,19 @@ def main():
     output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='netblood-lighting-'))
     if args.output:
         output.mkdir(parents=True, exist_ok=False)
+    if sys.platform != 'darwin' and (args.mode == 'metal' or
+                                    (args.mode in ('compare', 'all') and args.native_backend == 'metal')):
+        result = {'status': 'skipped', 'runtime': 'unavailable', 'exit_code': 77,
+                  'reason': 'Native Metal game rendering requires macOS; no rendering was tested.'}
+        (output / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
+        print(f"SKIP: {result['reason']} Evidence: {output}")
+        return 77
     binary = output / 'nblood-tested'
     shutil.copy2(args.binary.resolve(), binary)
-    library = render_checks.build_input_driver(output)
+    library = build_input_driver(output)
     if not args.map:
         generate_fixture(output / 'fixture')
-    renderers = ('opengl', 'vulkan') if args.mode in ('compare', 'all') else (args.mode,)
+    renderers = ('opengl', args.native_backend) if args.mode in ('compare', 'all') else (args.mode,)
     cases, captures, parity = [], {}, []
     for renderer in renderers:
         case, captures[renderer] = toggle_case(args, output, binary, library, renderer)
@@ -258,11 +341,12 @@ def main():
     if len(renderers) == 2 and all(len(captures[renderer]) == 3 for renderer in renderers):
         for index, setting in enumerate(('off', 'on', 'restored')):
             comparison = render_checks.compare_images(
-                captures['opengl'][index], captures['vulkan'][index], output / f'parity-{setting}.png', 2.0)
+                captures['opengl'][index], captures[args.native_backend][index], output / f'parity-{setting}.png', 2.0)
             parity.append(dict(setting=setting, **comparison))
     if args.mode == 'all':
         cases.append(switch_case(args, output, binary, library, captures))
     result = {'map': args.map or 'VFLIGHT', 'mode': args.mode, 'expect_unlit': args.expect_unlit,
+              'native_backend': args.native_backend,
               'ambient_occlusion': args.ambient_occlusion,
               'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'cases': cases, 'parity': parity,

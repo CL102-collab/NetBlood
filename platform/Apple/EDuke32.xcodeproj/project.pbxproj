@@ -620,6 +620,16 @@
 		20FD1D511C44E4E700C2E553 /* colmatch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20FD1D501C44E4E700C2E553 /* colmatch.cpp */; };
 		20FD1D521C44E4E700C2E553 /* colmatch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 20FD1D501C44E4E700C2E553 /* colmatch.cpp */; };
 		20FD1D6B1C44E64700C2E553 /* GameController.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20FD1D6A1C44E64700C2E553 /* GameController.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
+		6FEF44F30F1468F0C9E73A65 /* native_renderer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03277040FD40FDDA4B5ADA90 /* native_renderer.cpp */; };
+		A01E102FB2BCE82FD2DEEBFA /* native_frontend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2E4A3CB9702E086C8CD3A61F /* native_frontend.cpp */; };
+		0C2E24F48FC56612E3ADAD1B /* metal_renderer.mm in Sources */ = {isa = PBXBuildFile; fileRef = E7C3B9ABE7EE50E93F0F4DE0 /* metal_renderer.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc"; }; };
+		64B978CC226520A24AB67619 /* native_renderer.h in Headers */ = {isa = PBXBuildFile; fileRef = E20B00D8B3270016D16DE75D /* native_renderer.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		1ACF3FAC269F89D5FB138A4B /* renderer_types.h in Headers */ = {isa = PBXBuildFile; fileRef = 22E0ED82C6CE0B368D8F27CE /* renderer_types.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		912F341A93BCDD8518ED31D5 /* metal_renderer.h in Headers */ = {isa = PBXBuildFile; fileRef = 76D2AA2A27E72594D7072FCC /* metal_renderer.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		060879F4E3DA77D2A613906E /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6074C242CF61E857449C448 /* Metal.framework */; };
+		FB2BD7D2F98E9262599A92BA /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0013832419F366280007DA6C /* QuartzCore.framework */; };
+		864B3D7AED497515834A2B99 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6074C242CF61E857449C448 /* Metal.framework */; };
+		2F8D59358859AD9FD0D97A2B /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0013832419F366280007DA6C /* QuartzCore.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1106,6 +1116,15 @@
 		20FD1D471C44E4BE00C2E553 /* colmatch.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = colmatch.h; sourceTree = "<group>"; };
 		20FD1D501C44E4E700C2E553 /* colmatch.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.c; path = colmatch.cpp; sourceTree = "<group>"; };
 		20FD1D6A1C44E64700C2E553 /* GameController.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = GameController.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS9.2.sdk/System/Library/Frameworks/GameController.framework; sourceTree = DEVELOPER_DIR; };
+		03277040FD40FDDA4B5ADA90 /* native_renderer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = native_renderer.cpp; sourceTree = "<group>"; };
+		2E4A3CB9702E086C8CD3A61F /* native_frontend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = native_frontend.cpp; sourceTree = "<group>"; };
+		E7C3B9ABE7EE50E93F0F4DE0 /* metal_renderer.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = metal_renderer.mm; sourceTree = "<group>"; };
+		E20B00D8B3270016D16DE75D /* native_renderer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = native_renderer.h; sourceTree = "<group>"; };
+		22E0ED82C6CE0B368D8F27CE /* renderer_types.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = renderer_types.h; sourceTree = "<group>"; };
+		76D2AA2A27E72594D7072FCC /* metal_renderer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = metal_renderer.h; sourceTree = "<group>"; };
+		31A517760CDCDB12ADD0EDE5 /* metal_shaders.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = metal_shaders.h; sourceTree = "<group>"; };
+		D127521CE570EA1FC5939362 /* metal_polymost.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = metal_polymost.metal; sourceTree = "<group>"; };
+		E6074C242CF61E857449C448 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1113,6 +1132,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				060879F4E3DA77D2A613906E /* Metal.framework in Frameworks */,
+				FB2BD7D2F98E9262599A92BA /* QuartzCore.framework in Frameworks */,
 				00970E6119F2142400873EB9 /* CoreAudio.framework in Frameworks */,
 				00970E5E19F213B300873EB9 /* libiconv.dylib in Frameworks */,
 				00970E4A19F20F7E00873EB9 /* libBUILD.a in Frameworks */,
@@ -1139,6 +1160,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				864B3D7AED497515834A2B99 /* Metal.framework in Frameworks */,
+				2F8D59358859AD9FD0D97A2B /* QuartzCore.framework in Frameworks */,
 				00970E5B19F2139500873EB9 /* ForceFeedback.framework in Frameworks */,
 				00970E4619F20F7E00873EB9 /* libBUILD.a in Frameworks */,
 				0008EA8819F1B2400091588D /* AudioToolbox.framework in Frameworks */,
@@ -1260,6 +1283,7 @@
 		0008E64D19F1A66E0091588D /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				E6074C242CF61E857449C448 /* Metal.framework */,
 				2085BEB91A8F23B9002BF4CE /* libSystem.dylib */,
 				0013832819F366720007DA6C /* libc++.dylib */,
 				0013832619F366440007DA6C /* CoreMotion.framework */,
@@ -1388,6 +1412,9 @@
 		0008E8A019F1AC530091588D /* include */ = {
 			isa = PBXGroup;
 			children = (
+				E20B00D8B3270016D16DE75D /* native_renderer.h */,
+				22E0ED82C6CE0B368D8F27CE /* renderer_types.h */,
+				76D2AA2A27E72594D7072FCC /* metal_renderer.h */,
 				0008E8A119F1AC530091588D /* a.h */,
 				0008E9A319F1AD9B0091588D /* animvpx.h */,
 				0008E8A219F1AC530091588D /* baselayer.h */,
@@ -1466,6 +1493,11 @@
 		0008E8D619F1AC530091588D /* src */ = {
 			isa = PBXGroup;
 			children = (
+				03277040FD40FDDA4B5ADA90 /* native_renderer.cpp */,
+				2E4A3CB9702E086C8CD3A61F /* native_frontend.cpp */,
+				E7C3B9ABE7EE50E93F0F4DE0 /* metal_renderer.mm */,
+				31A517760CDCDB12ADD0EDE5 /* metal_shaders.h */,
+				D127521CE570EA1FC5939362 /* metal_polymost.metal */,
 				20CEFB111E08A86B0077879C /* 2d.cpp */,
 				00970E3319F207F000873EB9 /* a-c.cpp */,
 				0008E9A219F1AD9B0091588D /* animvpx.cpp */,
@@ -1879,6 +1911,9 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				64B978CC226520A24AB67619 /* native_renderer.h in Headers */,
+				1ACF3FAC269F89D5FB138A4B /* renderer_types.h in Headers */,
+				912F341A93BCDD8518ED31D5 /* metal_renderer.h in Headers */,
 				20CEFB241E08A91D0077879C /* clip.h in Headers */,
 				20C6092423BF215600672309 /* softsurface.h in Headers */,
 				20C6092723BF216100672309 /* tilepacker.h in Headers */,
@@ -2678,6 +2713,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6FEF44F30F1468F0C9E73A65 /* native_renderer.cpp in Sources */,
+				A01E102FB2BCE82FD2DEEBFA /* native_frontend.cpp in Sources */,
+				0C2E24F48FC56612E3ADAD1B /* metal_renderer.mm in Sources */,
 				0008E97B19F1AC540091588D /* sdlayer.cpp in Sources */,
 				0008E95D19F1AC540091588D /* compat.cpp in Sources */,
 				0008E96919F1AC540091588D /* kplib.cpp in Sources */,
@@ -3175,7 +3213,7 @@
 				INFOPLIST_FILE = "$(SRCROOT)/bundles/EDuke32.app/Contents/Info.plist";
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = NO;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3187,6 +3225,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",
@@ -3298,7 +3337,7 @@
 				INFOPLIST_FILE = "$(SRCROOT)/bundles/EDuke32.app/Contents/Info.plist";
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = YES;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3310,6 +3349,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",
@@ -3427,7 +3467,7 @@
 				INFOPLIST_FILE = "$(SRCROOT)/bundles/Mapster32.app/Contents/Info.plist";
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = NO;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3439,6 +3479,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",
@@ -3550,7 +3591,7 @@
 				INFOPLIST_FILE = "$(SRCROOT)/bundles/Mapster32.app/Contents/Info.plist";
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = YES;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3562,6 +3603,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",
@@ -3670,7 +3712,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = NO;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3682,6 +3724,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",
@@ -3782,7 +3825,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = /usr/local/lib;
 				LLVM_LTO = YES;
-				MACOSX_DEPLOYMENT_TARGET = 10.10;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_CFLAGS = (
 					"-D_THREAD_SAFE",
@@ -3794,6 +3837,7 @@
 					"-DSDL_TARGET=2",
 					"-DRENDERTYPESDL=1",
 					"-DUSE_OPENGL",
+					"-DUSE_METAL",
 					"-DPOLYMER",
 					"-DHAS_SOCKLEN_T",
 					"-DUSING_LTO",

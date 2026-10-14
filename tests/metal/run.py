@@ -24,6 +24,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="new directory for logs, binaries and result.json")
     parser.add_argument("--require-device", action="store_true", help="fail instead of exit 77 without native Metal")
+    parser.add_argument("--realtime-lighting-only", action="store_true", help="isolate point lighting, shadows and their lifecycle")
     parser.add_argument("--timeout", type=float, default=180, help="runtime timeout in seconds")
     args = parser.parse_args()
     output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="netblood-metal-test-"))
@@ -33,6 +34,7 @@ def main() -> int:
         "platform": platform.platform(), "status": "failed", "shader_compile": "not-run",
         "backend_compile": "not-run", "runtime": "not-run", "commands": [],
         "require_device": args.require_device,
+        "suite": "realtime-lighting" if args.realtime_lighting_only else "all",
     }
     code = 1
 
@@ -98,8 +100,11 @@ def main() -> int:
         # These are Apple's actual API/shader validation controls. They do not
         # emulate Metal or permit missing-device results to count as rendering.
         env = os.environ.copy()
-        env.update({"MTL_DEBUG_LAYER": "1", "MTL_SHADER_VALIDATION": "1", "NBLOOD_AO_TEST_OUTPUT": str(output)})
+        env.update({"MTL_DEBUG_LAYER": "1", "MTL_SHADER_VALIDATION": "1", "NBLOOD_AO_TEST_OUTPUT": str(output),
+                    "NBLOOD_LIGHTING_TEST_OUTPUT": str(output)})
         argv = [str(executable)] + (["--require-device"] if args.require_device else [])
+        if args.realtime_lighting_only:
+            argv.append("--realtime-lighting-only")
         code = command(argv, "runtime.log", env=env, timeout=args.timeout)
         runtime_log = (output / "runtime.log").read_text(errors="replace")
         if code == 77:
@@ -109,8 +114,12 @@ def main() -> int:
                 code = 1
                 result["status"] = "failed"
         elif code == 0:
-            if "PASS: native Metal backend contract suite" not in runtime_log:
+            marker = ("PASS: targeted native Metal point lighting and shadow checks" if args.realtime_lighting_only
+                      else "PASS: native Metal backend contract suite")
+            if marker not in runtime_log:
                 raise RuntimeError("backend exited without completing its contract checks")
+            if "PASS: native Metal point lighting, geometry shadows and lighting lifecycle" not in runtime_log:
+                raise RuntimeError("backend exited without completing lighting and shadow checks")
             if re.search(r"(Metal (?:API|Shader) Validation.*(?:error|failed)|validate\w*:.*failed|GPU (?:fault|error)|MTLCommandBufferError)",
                          runtime_log, re.I):
                 raise RuntimeError("Apple Metal validation reported an error")

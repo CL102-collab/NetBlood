@@ -3,6 +3,7 @@
 #pragma once
 
 #include "native_renderer.h"
+#include "realtime_lighting.h"
 
 struct SDL_Window;
 
@@ -18,6 +19,10 @@ void metalFinish();
 void metalFlush();
 bool metalAmbientOcclusion(const float projection[16], const int viewport[4],
                            float radius, float strength, float bias);
+bool metalRealtimeLighting(const float projection[16], const float eyeToWorld[16], const int viewport[4],
+                           const RealtimeLight *lights, unsigned lightCount,
+                           const RealtimeShadowVertex *shadowVertices, unsigned shadowVertexCount,
+                           bool shadows = true);
 void metalDraw(const NativeVertex *vertices, unsigned count, const NativeDrawState &state);
 void metalClear(uint32_t mask, const float color[4], float depth, uint32_t stencil,
                 const NativeDrawState &state);

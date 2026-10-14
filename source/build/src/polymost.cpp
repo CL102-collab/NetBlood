@@ -10562,7 +10562,7 @@ void polymost_initosdfuncs(void)
 #endif
         { "r_animsmoothing","enable/disable model animation smoothing",(void *) &r_animsmoothing, CVAR_BOOL, 0, 1 },
         { "r_ambientocclusion", "enable/disable ambient occlusion in Polymost, Vulkan and Metal", (void *) &r_ambientocclusion, CVAR_BOOL, 0, 1 },
-        { "r_realtimelighting", "enable/disable Polymost and Vulkan realtime lighting and shadows", (void *) &r_realtimelighting, CVAR_BOOL, 0, 1 },
+        { "r_realtimelighting", "enable/disable realtime lighting and shadows in Polymost, Vulkan and Metal", (void *) &r_realtimelighting, CVAR_BOOL, 0, 1 },
         { "r_anisotropy", "changes the OpenGL texture anisotropy setting (requires r_useindexedcolortextures to be off)", (void *) &glanisotropy, CVAR_INT|CVAR_FUNCPTR|CVAR_RESTARTVID, 1, 16 },
         { "r_downsize","controls downsizing factor (quality) for hires textures",(void *) &r_downsize, CVAR_INT|CVAR_FUNCPTR, 0, 5 },
         { "r_finishbeforeswap", "run glFinish() before swapping when 'r_glfinish' is 1 and when not using KMT vsync", (void *) &r_finishbeforeswap, CVAR_BOOL, 0, 1 },

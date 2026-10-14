@@ -300,6 +300,261 @@ void ambientSceneChecks(int width, int height)
 }
 
 
+// The receiver and caster have separate projections from the camera and point
+// light. In the offscreen case the complete caster lies outside the camera's
+// frustum, but still blocks rays to the visible wall. Screen-space occlusion
+// cannot satisfy this test.
+struct LightingScene
+{
+    bool apply = true, shadows = true, eligible = true, hud = false, inset = false;
+    bool offscreen = false, emptyMesh = false, zeroLights = false, zeroColor = false;
+    bool movedLight = false, translatedWorld = false;
+};
+
+void lightingFrame(int width, int height, LightingScene const &scene)
+{
+    NativeDrawState state = defaults(width, height);
+    float const background[] = { 0.12f, 0.23f, 0.34f, 0.7f };
+    metalClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                background, 1.f, 0, state);
+    state.depthTest = true;
+    state.stencilTest = true;
+    state.stencilReference = scene.eligible ? 128 : 0;
+    state.stencilWriteMask = 128;
+    state.stencilPass = GL_REPLACE;
+    if (scene.inset)
+    {
+        state.viewport[0] = width / 8;
+        state.viewport[1] = height / 8;
+        state.viewport[2] = width * 3 / 4;
+        state.viewport[3] = height * 3 / 4;
+    }
+    std::fill(state.uniforms.projection, state.uniforms.projection + 16, 0.f);
+    state.uniforms.projection[0] = state.uniforms.projection[5] = 1.f;
+    state.uniforms.projection[10] = 17.f / 15.f;
+    state.uniforms.projection[11] = 1.f;
+    state.uniforms.projection[14] = -32.f / 15.f;
+    float eyeToWorld[16] = {};
+    for (unsigned i = 0; i < 4; ++i) eyeToWorld[i * 5] = 1.f;
+    if (scene.translatedWorld)
+    {
+        eyeToWorld[12] = 8.f;
+        eyeToWorld[13] = -3.f;
+        eyeToWorld[14] = 12.f;
+    }
+    std::vector<RealtimeShadowVertex> shadowMesh;
+    auto quad = [&state, &shadowMesh, &eyeToWorld](float left, float right, float bottom, float top, float z)
+    {
+        float const positions[4][3] = { {left, bottom, z}, {right, bottom, z},
+                                         {right, top, z}, {left, top, z} };
+        unsigned const indices[] = {0, 2, 1, 0, 3, 2};
+        NativeVertex vertices[6] = {};
+        for (unsigned i = 0; i < 6; ++i)
+        {
+            RealtimeShadowVertex shadow = {};
+            for (unsigned axis = 0; axis < 3; ++axis)
+            {
+                vertices[i].position[axis] = positions[indices[i]][axis];
+                shadow.position[axis] = positions[indices[i]][axis] + eyeToWorld[12 + axis];
+            }
+            vertices[i].position[3] = 1.f;
+            vertices[i].color[0] = 0.35f;
+            vertices[i].color[1] = 0.45f;
+            vertices[i].color[2] = 0.55f;
+            vertices[i].color[3] = 0.7f;
+            shadowMesh.push_back(shadow);
+        }
+        metalDraw(vertices, 6, state);
+    };
+    quad(-4.f, 4.f, -4.f, 4.f, 4.f);
+    if (scene.offscreen) quad(-4.1f, -3.1f, -0.4f, 0.4f, 1.5f);
+    else quad(-0.75f, -0.25f, -0.5f, 0.5f, 2.f);
+    RealtimeLight light = {};
+    light.positionRadius[0] = scene.offscreen ? -6.f : (scene.movedLight ? 1.f : -1.f);
+    light.positionRadius[2] = scene.offscreen ? 0.f : 1.f;
+    light.positionRadius[3] = scene.offscreen ? 16.f : 8.f;
+    for (unsigned axis = 0; axis < 3; ++axis) light.positionRadius[axis] += eyeToWorld[12 + axis];
+    light.color[0] = scene.zeroColor ? 0.f : 0.8f;
+    light.color[1] = scene.zeroColor ? 0.f : 0.5f;
+    light.color[2] = scene.zeroColor ? 0.f : 0.2f;
+    light.color[3] = 1.f;
+    if (scene.apply)
+        require(metalRealtimeLighting(state.uniforms.projection, eyeToWorld, state.viewport,
+                                       scene.zeroLights ? nullptr : &light, scene.zeroLights ? 0 : 1,
+                                       scene.emptyMesh ? nullptr : shadowMesh.data(),
+                                       scene.emptyMesh ? 0 : static_cast<unsigned>(shadowMesh.size()), scene.shadows),
+                "apply native point lighting and geometry shadows");
+    if (scene.hud)
+    {
+        state = defaults(width, height);
+        state.scissorTest = true;
+        state.scissor[0] = width / 4;
+        state.scissor[1] = height / 8;
+        state.scissor[2] = width / 2;
+        state.scissor[3] = height / 8;
+        triangle(state, 1.f, 1.f, 1.f);
+        state.scissor[1] += height / 8;
+        triangle(state, 1.f, 0.f, 1.f);
+    }
+}
+
+std::vector<unsigned char> lightingImage(int width, int height)
+{
+    std::vector<unsigned char> image(static_cast<size_t>(width) * height * 4);
+    require(metalReadPixels(0, 0, width, height, image.data()), "read lighting comparison image");
+    return image;
+}
+
+void lightingWriteImage(char const *label, int width, int height, std::vector<unsigned char> const &image)
+{
+    char const *directory = std::getenv("NBLOOD_LIGHTING_TEST_OUTPUT");
+    if (!directory || !*directory) return;
+    std::string const path = std::string(directory) + "/metal-" + label + ".ppm";
+    FILE *file = std::fopen(path.c_str(), "wb");
+    require(file != nullptr, "open lighting evidence image in the supplied existing directory");
+    std::fprintf(file, "P6\n%d %d\n255\n", width, height);
+    for (int y = height - 1; y >= 0; --y)
+        for (int x = 0; x < width; ++x)
+            require(std::fwrite(&image[(size_t(y) * width + x) * 4], 1, 3, file) == 3,
+                    "write lighting evidence pixels");
+    require(std::fclose(file) == 0, "close lighting evidence image");
+}
+
+void lightingSceneChecks(int width, int height)
+{
+    auto capture = [width, height](LightingScene const &scene)
+    {
+        lightingFrame(width, height, scene);
+        return lightingImage(width, height);
+    };
+    LightingScene scene;
+    scene.apply = false;
+    auto const unlit = capture(scene);
+    scene.apply = true;
+    scene.shadows = false;
+    auto const lit = capture(scene);
+    scene.shadows = true;
+    auto const shadowed = capture(scene);
+    unsigned brightened = 0, blocked = 0, unaffected = 0;
+    for (size_t i = 0; i < unlit.size(); i += 4)
+    {
+        require(lit[i + 3] == unlit[i + 3] && shadowed[i + 3] == unlit[i + 3],
+                "lighting and shadows preserve destination alpha");
+        for (unsigned c = 0; c < 3; ++c)
+        {
+            require(lit[i + c] + 1 >= unlit[i + c], "point lighting never darkens the base material");
+            require(shadowed[i + c] <= lit[i + c] + 1, "shadows only reduce the added light");
+            require(shadowed[i + c] + 1 >= unlit[i + c], "shadows preserve the base material lighting");
+        }
+        if (lit[i] >= unlit[i] + 3) ++brightened;
+        if (shadowed[i] + 3 <= lit[i]) ++blocked;
+        if (lit[i] >= unlit[i] + 3 && std::abs(int(lit[i]) - int(shadowed[i])) <= 1) ++unaffected;
+    }
+    require(brightened > unsigned(width * height / 20), "point light visibly illuminates the receiver");
+    require(blocked > unsigned(width * height / 400), "geometry blocks point light on visible receiver pixels");
+    require(unaffected > unsigned(width * height / 20), "unblocked receiver retains its point lighting");
+    std::printf("PASS: lighting %dx%d: %u illuminated, %u shadowed, %u unblocked pixels\n",
+                width, height, brightened, blocked, unaffected);
+    if (width == 160)
+    {
+        lightingWriteImage("unlit", width, height, unlit);
+        lightingWriteImage("lit", width, height, lit);
+        lightingWriteImage("shadowed", width, height, shadowed);
+    }
+    scene.movedLight = true;
+    auto const moved = capture(scene);
+    unsigned movedPixels = 0;
+    for (size_t i = 0; i < moved.size(); i += 4)
+        if (std::abs(int(moved[i]) - int(shadowed[i])) >= 3) ++movedPixels;
+    require(movedPixels > unsigned(width * height / 20), "moving the point light updates illumination and shadows");
+    scene = LightingScene();
+    scene.shadows = false;
+    require(capture(scene) == lit, "disabling shadows removes the previous shadow atlas exactly");
+    scene.shadows = true;
+    scene.emptyMesh = true;
+    require(capture(scene) == lit, "an empty caster mesh does not reuse stale shadows");
+    scene = LightingScene();
+    scene.apply = false;
+    require(capture(scene) == unlit, "disabling lighting restores exact original pixels after prior use");
+    scene.apply = true;
+    scene.zeroLights = true;
+    require(capture(scene) == unlit, "zero lights is an exact bypass after prior use");
+    scene.zeroLights = false;
+    scene.zeroColor = true;
+    require(capture(scene) == unlit, "zero-intensity light leaves the base material unchanged");
+    scene.zeroColor = false;
+    scene.eligible = false;
+    require(capture(scene) == unlit, "stencil-ineligible content receives no point lighting or shadows");
+
+    scene = LightingScene();
+    scene.translatedWorld = true;
+    auto const translated = capture(scene);
+    unsigned translatedChanges = 0, translationError = 0;
+    for (size_t i = 0; i < translated.size(); ++i)
+    {
+        unsigned const error = unsigned(std::abs(int(translated[i]) - int(shadowed[i])));
+        translationError += error;
+        if (error > 1) ++translatedChanges;
+    }
+    std::printf("Lighting world translation: %u changed channels, aggregate error %u\n",
+                translatedChanges, translationError);
+    // Translating a shadow edge across floating-point coordinates can select
+    // an adjacent PCF texel. Bound that small edge variation, while rejecting a
+    // misplaced light or a camera/world reconstruction mismatch.
+    require(translatedChanges < translated.size() / 200 && translationError < translated.size() / 20,
+            "camera, light and shadow mesh world translation preserves the rendered scene");
+
+    scene = LightingScene();
+    scene.offscreen = true;
+    scene.shadows = false;
+    auto const offscreenLit = capture(scene);
+    scene.shadows = true;
+    auto const offscreenShadow = capture(scene);
+    unsigned offscreenBlocked = 0;
+    for (size_t i = 0; i < offscreenLit.size(); i += 4)
+        if (offscreenShadow[i] + 2 <= offscreenLit[i]) ++offscreenBlocked;
+    require(offscreenBlocked > unsigned(width * height / 200),
+            "a caster wholly outside the camera frustum shadows the visible receiver");
+    if (width == 160)
+    {
+        lightingWriteImage("offscreen-lit", width, height, offscreenLit);
+        lightingWriteImage("offscreen-shadowed", width, height, offscreenShadow);
+    }
+
+    scene = LightingScene();
+    scene.hud = true;
+    scene.apply = false;
+    auto const hudOff = capture(scene);
+    scene.apply = true;
+    auto const hudOn = capture(scene);
+    for (int y = height / 8; y < (height / 8) * 3; ++y)
+        for (int x = width / 4; x < width * 3 / 4; ++x)
+            for (unsigned c = 0; c < 4; ++c)
+                require(hudOn[(size_t(y) * width + x) * 4 + c] == hudOff[(size_t(y) * width + x) * 4 + c],
+                        "HUD drawn after lighting remains byte-for-byte unchanged");
+    scene = LightingScene();
+    scene.inset = true;
+    scene.apply = false;
+    auto const insetOff = capture(scene);
+    scene.apply = true;
+    auto const insetOn = capture(scene);
+    unsigned insetChanges = 0;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+        {
+            size_t const offset = (size_t(y) * width + x) * 4;
+            bool const outside = x < width / 8 || x >= width / 8 + width * 3 / 4 ||
+                                 y < height / 8 || y >= height / 8 + height * 3 / 4;
+            for (unsigned c = 0; c < 4; ++c)
+                if (outside)
+                    require(insetOn[offset + c] == insetOff[offset + c], "lighting respects the supplied world viewport");
+            if (!outside && insetOn[offset] >= insetOff[offset] + 3) ++insetChanges;
+        }
+    require(insetChanges > unsigned(width * height / 40), "offset viewport still receives point lighting");
+    std::puts("PASS: lighting motion, shadow bypass, offscreen caster, world transform, alpha, mask, HUD and viewport");
+}
+
+
 void renderingState()
 {
     NativeDrawState state = defaults();
@@ -783,15 +1038,64 @@ void ambientOcclusion(SDL_Window *window)
     require(metalPresent(), "present resized AO targets");
     metalDestroy();
 }
+
+void realtimeLighting(SDL_Window *window)
+{
+    SDL_SetWindowSize(window, 160, 120);
+    SDL_PumpEvents();
+    require(metalCreate(window, 160, 120, 0), "create Metal lighting renderer");
+    require(SDL_GL_GetCurrentContext() == nullptr, "Metal lighting uses no OpenGL context");
+    lightingSceneChecks(160, 120);
+    LightingScene scene;
+    scene.hud = true;
+    lightingFrame(160, 120, scene);
+    auto const expected = lightingImage(160, 120);
+    for (unsigned frame = 0; frame < 12; ++frame)
+    {
+        // Alternate uniforms and shadow maps while previous frames are queued.
+        // Only the final frame is read back, matching the original light.
+        scene.movedLight = (frame & 1) == 0;
+        lightingFrame(160, 120, scene);
+        require(metalPresent(), "present lighting frames without readback or Finish");
+    }
+    require(lightingImage(160, 120) == expected, "Metal lighting remains exact across queued light changes");
+    require(metalResize(0, 0), "suspend render target with lighting resources");
+    require(metalPresent(), "present suspended Metal lighting renderer");
+    require(metalResize(160, 120), "restore suspended Metal lighting target");
+    scene.movedLight = false;
+    lightingFrame(160, 120, scene);
+    require(lightingImage(160, 120) == expected, "lighting survives suspension and restoration");
+    SDL_SetWindowSize(window, 240, 180);
+    SDL_PumpEvents();
+    require(metalResize(240, 180), "resize Metal lighting targets");
+    lightingSceneChecks(240, 180);
+    lightingFrame(240, 180, scene);
+    auto const resized = lightingImage(240, 180);
+    require(metalPresent(), "present resized lighting targets");
+    lightingFrame(240, 180, scene);
+    require(metalPresent(), "queue lit frame before renderer teardown");
+    metalDestroy();
+    require(!metalActive(), "lighting teardown releases Metal renderer ownership");
+    require(metalCreate(window, 240, 180, 0), "recreate Metal lighting renderer after teardown");
+    lightingFrame(240, 180, scene);
+    require(lightingImage(240, 180) == resized, "lighting resources recreate with identical pixels");
+    metalDestroy();
+    std::puts("PASS: native Metal point lighting, geometry shadows and lighting lifecycle");
+}
 }
 
 int main(int argc, char **argv)
 {
-    bool const requireDevice = argc == 2 && std::strcmp(argv[1], "--require-device") == 0;
-    if (argc != 1 && !requireDevice)
+    bool requireDevice = false, lightingOnly = false;
+    for (int i = 1; i < argc; ++i)
     {
-        std::fprintf(stderr, "usage: backend-test [--require-device]\n");
-        return 2;
+        if (std::strcmp(argv[i], "--require-device") == 0) requireDevice = true;
+        else if (std::strcmp(argv[i], "--realtime-lighting-only") == 0) lightingOnly = true;
+        else
+        {
+            std::fprintf(stderr, "usage: backend-test [--require-device] [--realtime-lighting-only]\n");
+            return 2;
+        }
     }
     if (!metalSupported())
     {
@@ -811,6 +1115,15 @@ int main(int argc, char **argv)
                                          SDL_WINDOW_METAL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     require(window != nullptr, "create an actual SDL Metal window");
     require(SDL_GL_GetCurrentContext() == nullptr, "tests begin without an OpenGL context");
+    if (lightingOnly)
+    {
+        realtimeLighting(window);
+        require(SDL_GL_GetCurrentContext() == nullptr, "Metal lighting never created an OpenGL context");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::puts("PASS: targeted native Metal point lighting and shadow checks");
+        return 0;
+    }
     require(metalCreate(window, 64, 64, 0), "create native Metal renderer");
     require(metalActive(), "native renderer owns the Metal window");
     std::printf("DEVICE: %s\n", metalDeviceName());
@@ -824,6 +1137,7 @@ int main(int argc, char **argv)
     streamRollover();
     lifecycle(window);
     ambientOcclusion(window);
+    realtimeLighting(window);
     require(SDL_GL_GetCurrentContext() == nullptr, "native rendering never created an OpenGL context");
     SDL_DestroyWindow(window);
     SDL_Quit();

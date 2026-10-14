@@ -1,5 +1,6 @@
 // Native Metal shaders for the shared Polymost scene frontend.
-// Derived from polymost1Vert.glsl, polymost1Frag.glsl, and ambient_occlusion.glsl.
+// Derived from polymost1Vert.glsl, polymost1Frag.glsl, ambient_occlusion.glsl,
+// realtime_lighting.glsl, and realtime_shadow_vk.vert/.frag.
 // Copyright (C) 2026 NetBlood contributors. SPDX-License-Identifier: GPL-2.0-only
 #include <metal_stdlib>
 using namespace metal;
@@ -371,6 +372,160 @@ fragment float4 metalAOFragment(MetalAOVaryings input [[stage_in]],
     float factor = ambientOcclusion(float2(input.position.x, 1.0f / u.target.y - input.position.y),
                                      u, depth, stencil, depthSampler);
     return float4(float3(factor), 1.0f);
+}
+
+// Keep the 400-byte layout identical to the backend's RealtimeLightingUniforms:
+// AO occupies bytes 0..63, eyeToWorld 64..127, params 128..143, and lights 144..399.
+struct MetalPointLight
+{
+    float4 positionRadius;
+    float4 color;
+};
+
+struct MetalLightingUniforms
+{
+    MetalAOUniforms ao;
+    float4x4 eyeToWorld;
+    float4 params; // count, shadows enabled, face resolution, atlas columns
+    MetalPointLight lights[8];
+};
+
+// Arithmetic mirrors realtime_lighting.glsl. The atlas uses top-origin Metal
+// texture coordinates; metalShadowVertex flips clip Y so the common face UV
+// formula still addresses the same world-space direction without a sample flip.
+static float shadowVisibility(int lightIndex, float3 fromLight, float radius, float diffuse,
+                               constant MetalLightingUniforms &u,
+                               depth2d<float> shadow, sampler depthSampler)
+{
+    if (u.params.y < 0.5f) return 1.0f;
+    float3 a = abs(fromLight);
+    float3 face;
+    int faceIndex;
+    if (a.x >= a.y && a.x >= a.z)
+    {
+        if (fromLight.x > 0.0f) { faceIndex = 0; face = float3(-fromLight.z, -fromLight.y, a.x); }
+        else { faceIndex = 1; face = float3(fromLight.z, -fromLight.y, a.x); }
+    }
+    else if (a.y >= a.z)
+    {
+        if (fromLight.y > 0.0f) { faceIndex = 2; face = float3(fromLight.x, fromLight.z, a.y); }
+        else { faceIndex = 3; face = float3(fromLight.x, -fromLight.z, a.y); }
+    }
+    else
+    {
+        if (fromLight.z > 0.0f) { faceIndex = 4; face = float3(fromLight.x, -fromLight.y, a.z); }
+        else { faceIndex = 5; face = float3(-fromLight.x, -fromLight.y, a.z); }
+    }
+    float2 cell = float2(lightIndex, faceIndex);
+    float2 dimensions = float2(u.params.w, 6.0f);
+    float2 facePixel = (face.xy / max(face.z, 0.000001f) * 0.5f + 0.5f) * u.params.z;
+    float receiver = length(fromLight) / radius;
+    float bias = (0.35f + 1.25f * (1.0f - diffuse)) / u.params.z;
+    float visibility = 0.0f;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 pixel = clamp(facePixel + float2(x, y), float2(0.5f), float2(u.params.z - 0.5f));
+            float2 uv = (cell + pixel / u.params.z) / dimensions;
+            visibility += receiver - bias <= shadow.sample(depthSampler, uv) ? 1.0f : 0.0f;
+        }
+    return visibility / 9.0f;
+}
+
+static float3 realtimeLighting(float2 pixel, constant MetalLightingUniforms &u,
+                                depth2d<float> depthImage, texture2d<uint, access::read> stencil,
+                                depth2d<float> shadow, sampler depthSampler)
+{
+    float depth = aoReadDepth(pixel, u.ao, depthImage, stencil, depthSampler);
+    if (depth >= 0.999999f || depth <= 0.0f) return float3(0.0f);
+    float3 eye = aoPosition(pixel, depth, u.ao);
+    float3 position = (u.eyeToWorld * float4(eye, 1.0f)).xyz;
+    float3x3 directionToWorld = float3x3(u.eyeToWorld[0].xyz, u.eyeToWorld[1].xyz, u.eyeToWorld[2].xyz);
+    float3 dx = directionToWorld * aoDerivative(pixel, float2(1.0f, 0.0f), eye,
+                                                u.ao, depthImage, stencil, depthSampler);
+    float3 dy = directionToWorld * aoDerivative(pixel, float2(0.0f, 1.0f), eye,
+                                                u.ao, depthImage, stencil, depthSampler);
+    if (length(dx) < 1.0e-20f || length(dy) < 1.0e-20f) return float3(0.0f);
+    float3 normal = cross(normalize(dx), normalize(dy));
+    if (length(normal) < 0.00001f) return float3(0.0f);
+    normal = normalize(normal);
+    if (dot(normal, position - u.eyeToWorld[3].xyz) > 0.0f) normal = -normal;
+    float3 illumination = float3(0.0f);
+    for (int i = 0; i < int(u.params.x); ++i)
+    {
+        float3 toLight = u.lights[i].positionRadius.xyz - position;
+        float distanceToLight = length(toLight);
+        float radius = u.lights[i].positionRadius.w;
+        if (distanceToLight >= radius || distanceToLight < 0.000001f) continue;
+        float diffuse = max(dot(normal, toLight / distanceToLight), 0.0f);
+        if (diffuse <= 0.0f) continue;
+        float attenuation = 1.0f - distanceToLight / radius;
+        float visibility = shadowVisibility(i, -toLight, radius, diffuse, u, shadow, depthSampler);
+        illumination += u.lights[i].color.rgb * u.lights[i].color.a *
+            (attenuation * attenuation * diffuse * visibility);
+    }
+    return clamp(illumination, 0.0f, 1.0f);
+}
+
+fragment float4 metalLightingFragment(MetalAOVaryings input [[stage_in]],
+                                      constant MetalLightingUniforms &u [[buffer(0)]],
+                                      depth2d<float> depth [[texture(0)]],
+                                      texture2d<uint, access::read> stencil [[texture(1)]],
+                                      depth2d<float> shadow [[texture(2)]],
+                                      sampler depthSampler [[sampler(0)]])
+{
+    // Scene reconstruction, unlike atlas sampling, uses bottom-left pixels.
+    float2 pixel = float2(input.position.x, 1.0f / u.ao.target.y - input.position.y);
+    // DST_COLOR + ONE blends base * (1 + illumination); RGB-only writes keep
+    // destination alpha unchanged, including the strict identity outside lights.
+    return float4(realtimeLighting(pixel, u, depth, stencil, shadow, depthSampler), 0.0f);
+}
+
+struct MetalShadowUniforms
+{
+    float4 light;
+    int4 face;
+};
+
+struct MetalShadowVaryings
+{
+    float4 position [[position]];
+    float3 lightPosition;
+};
+
+vertex MetalShadowVaryings metalShadowVertex(uint index [[vertex_id]],
+                                             device const packed_float3 *positions [[buffer(0)]],
+                                             constant MetalShadowUniforms &u [[buffer(1)]])
+{
+    float3 p = float3(positions[index]) - u.light.xyz;
+    MetalShadowVaryings output;
+    output.lightPosition = p;
+    float3 face;
+    if (u.face.x == 0) face = float3(-p.z, -p.y, p.x);
+    else if (u.face.x == 1) face = float3(p.z, -p.y, -p.x);
+    else if (u.face.x == 2) face = float3(p.x, p.z, p.y);
+    else if (u.face.x == 3) face = float3(p.x, -p.z, -p.y);
+    else if (u.face.x == 4) face = float3(p.x, -p.y, p.z);
+    else face = float3(-p.x, -p.y, -p.z);
+    float nearPlane = max(0.001f, u.light.w / 4096.0f);
+    float farPlane = u.light.w;
+    // Metal NDC Y points up, framebuffer/texture Y down. Negating clip Y makes
+    // a top-origin atlas cell project to face.xy / face.z * 0.5 + 0.5, exactly
+    // the shared cubemap lookup above. Metal's depth interval is already 0..w.
+    output.position = float4(face.x, -face.y,
+                              farPlane * (face.z - nearPlane) / (farPlane - nearPlane), face.z);
+    return output;
+}
+
+struct MetalShadowDepth { float depth [[depth(any)]]; };
+
+fragment MetalShadowDepth metalShadowFragment(MetalShadowVaryings input [[stage_in]],
+                                               constant MetalShadowUniforms &u [[buffer(1)]])
+{
+    MetalShadowDepth output;
+    // Radial depth keeps receiver comparisons identical on all six faces.
+    output.depth = min(length(input.lightPosition) / u.light.w, 1.0f);
+    return output;
 }
 
 // The game's logical framebuffer is independent of a Retina drawable's size.

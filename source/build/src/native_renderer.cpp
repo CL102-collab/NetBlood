@@ -129,12 +129,13 @@ bool nativeRealtimeLighting(const float projection[16], const float eyeToWorld[1
                             const RealtimeLight *lights, unsigned lightCount,
                             const RealtimeShadowVertex *shadowVertices, unsigned shadowVertexCount, bool shadows)
 {
+#ifdef USE_METAL
+    if (metalActive()) return metalRealtimeLighting(projection, eyeToWorld, viewport, lights, lightCount,
+                                                    shadowVertices, shadowVertexCount, shadows);
+#endif
 #ifdef USE_VULKAN
     if (vulkanActive()) return vulkanRealtimeLighting(projection, eyeToWorld, viewport, lights, lightCount,
                                                      shadowVertices, shadowVertexCount, shadows);
-#else
-    (void)projection; (void)eyeToWorld; (void)viewport; (void)lights; (void)lightCount;
-    (void)shadowVertices; (void)shadowVertexCount; (void)shadows;
 #endif
     return false;
 }
