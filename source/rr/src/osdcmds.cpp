@@ -479,13 +479,15 @@ static int osdcmd_vidmode(osdcmdptr_t parm)
     if (videoSetGameMode(newfs,newwidth,newheight,newbpp,upscalefactor))
     {
         initprintf("vidmode: Mode change failed!\n");
+        videoResetMode();
         if (videoSetGameMode(ud.setup.fullscreen, ud.setup.xdim, ud.setup.ydim, ud.setup.bpp, upscalefactor))
             G_GameExit("vidmode: Reset failed!\n");
     }
-    ud.setup.bpp = newbpp;
-    ud.setup.xdim = newwidth;
-    ud.setup.ydim = newheight;
-    ud.setup.fullscreen = newfs;
+    // Keep settings consistent with the actual mode, including after a failed switch.
+    ud.setup.bpp = bpp;
+    ud.setup.xdim = xres;
+    ud.setup.ydim = yres;
+    ud.setup.fullscreen = fullscreen;
     onvideomodechange(ud.setup.bpp>8);
     G_UpdateScreenArea();
     return OSDCMD_OK;

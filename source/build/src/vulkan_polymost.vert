@@ -48,7 +48,7 @@ void main()
     // Polymost's GL shader uses the precomposed ModelViewProjection matrix.
     // Preserve that multiplication order, including its depth rounding at
     // coplanar model/floor surfaces. Other modes receive plain projection.
-    vec4 clipPosition = u.projection * (polymost ? vertex : eyePosition);
+    vec4 clipPosition = u.projection * ((polymost || u.misc.w == 4.0) ? vertex : eyePosition);
     if (u.misc.w == 3.0)
         clipPosition = a_position; // glsurface already submits clip coordinates.
 
@@ -64,7 +64,7 @@ void main()
         v_texcoord0 = mix(v_texcoord0.xyzw, v_texcoord0.yxzw, u.effects.y);
     v_texcoord3 = u.textureMatrix[1] * a_texcoord3;
     v_texcoord4 = u.textureMatrix[2] * a_texcoord4;
-    if (u.misc.w == 3.0)
+    if (u.misc.w == 3.0 || u.misc.w == 4.0)
         v_texcoord0 = a_texcoord0;
 
     v_fogDistance = abs(eyePosition.z / eyePosition.w);

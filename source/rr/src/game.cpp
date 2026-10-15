@@ -42,6 +42,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "palette.h"
 #include "al_midi.h"
 #include "playmve.h"
+#include "world_lighting.h"
 
 #ifdef __ANDROID__
 #include "android.h"
@@ -923,6 +924,257 @@ void G_HandleMirror(int32_t x, int32_t y, int32_t z, fix16_t a, fix16_t q16horiz
 }
 
 #ifdef USE_OPENGL
+// This clock advances only with gameplay. Pausing freezes flicker and weapon
+// flashes, and no visual effect consumes random numbers or changes map state.
+static uint32_t g_worldLightingClock;
+static struct
+{
+    uint32_t clock;
+    int color;
+    int spriteNum;
+} g_weaponLights[MAXPLAYERS];
+
+void G_RecordWeaponLight(int playerNum, int lightColor)
+{
+    if ((unsigned)playerNum >= MAXPLAYERS || !lightColor)
+        return;
+    g_weaponLights[playerNum] = { g_worldLightingClock, lightColor, g_player[playerNum].ps->i };
+}
+
+unsigned G_CollectRealtimeLights(RealtimeLight *lights, vec3_t const &viewPos, int32_t smoothRatio)
+{
+    float scores[kMaxRealtimeLights] = {};
+    unsigned count = 0;
+    if (DEER)
+        return count;
+
+    // Original sprites include offscreen sources that illuminate visible walls.
+    // DynamicTileMap normalizes the shared Duke/RR names while retaining the
+    // RR-only names; numerical tile ranges would also match unrelated RR art.
+    for (int spriteNum = 0; spriteNum < MAXSPRITES; ++spriteNum)
+    {
+        spritetype const &source = sprite[spriteNum];
+        if ((unsigned)source.statnum >= MAXSTATUS || (unsigned)source.sectnum >= (unsigned)numsectors
+            || (unsigned)source.picnum >= MAXTILES || A_CheckSpriteFlags(spriteNum, SFLAG_NOLIGHT)
+            || (A_CheckSpriteFlags(spriteNum, SFLAG_USEACTIVATOR) && (sector[source.sectnum].lotag & 16384)))
+            continue;
+
+        float radius = 0.f, intensity = 1.f;
+        int color = 0x2870ff;
+        bool flame = false, atTop = false, marker = false, muzzleFlash = false;
+        bool const projectile = source.statnum == STAT_PROJECTILE;
+        int const tile = DYNAMICTILEMAP(source.picnum);
+        switch (tile)
+        {
+        case FIRE2__STATIC:
+        case BURNING2__STATIC:
+            if (RR) break;
+            fallthrough__;
+        case FIRE__STATIC:
+        case BURNING__STATIC:
+            radius = 1400.f;
+            flame = true;
+            switch (source.pal)
+            {
+            case 1: color = 0xff8080; break;
+            case 2: color = 0x3030ff; break;
+            case 8: color = 0x30ff30; break;
+            }
+            break;
+        case FLOORFLAME__STATIC:
+            if (RR) break;
+            fallthrough__;
+        case FIREBARREL__STATIC:
+        case FIREVASE__STATIC:
+            radius = 1800.f;
+            intensity = 1.2f;
+            flame = atTop = true;
+            break;
+        case EXPLOSION2BOT__STATIC:
+            if (RR || REALITY) break;
+            fallthrough__;
+        case EXPLOSION3__STATICRR:
+        case EXPLOSION2__STATIC:
+            radius = 2800.f;
+            intensity = 1.6f;
+            break;
+        case RPG2__STATICRR:
+        case RRTILE1790__STATICRR:
+            if (!RRRA) break;
+            fallthrough__;
+        case RPG__STATIC:
+            if (!projectile) break;
+            radius = 1800.f;
+            intensity = 1.2f;
+            flame = true;
+            break;
+        case DN64TILE3841__STATIC:
+            if (!REALITY || !projectile) break;
+            radius = 1600.f;
+            color = 0x78fcb0;
+            break;
+        case OWHIP__STATICRR:
+        case UWHIP__STATICRR:
+        case FIRELASER__STATIC:
+            if (!projectile) break;
+            radius = 1200.f;
+            break;
+        case FREEZEBLAST__STATIC:
+            // This name is the non-emissive bowling ball in Redneck Rampage.
+            if (RR || !projectile) break;
+            radius = 1800.f;
+            color = 0xffa048;
+            break;
+        case COOLEXPLOSION1__STATIC:
+            if (!projectile) break;
+            radius = 1800.f;
+            color = RR ? 0x2870ff : 0xff2080;
+            break;
+        case SHRINKSPARK__STATIC:
+            if (!projectile) break;
+            radius = 1600.f;
+            color = 0x78fcb0;
+            break;
+        case SHRINKEREXPLOSION__STATIC:
+            if (RR) break;
+            radius = 2000.f;
+            color = 0x78fcb0;
+            break;
+        case GROWSPARK__STATIC:
+            if (RR) break;
+            radius = 1200.f;
+            color = 0x1434d8;
+            break;
+        case FORCERIPPLE__STATIC:
+        case TRANSPORTERBEAM__STATIC:
+        case TRANSPORTERSTAR__STATIC:
+            radius = 1200.f;
+            color = 0xff8080;
+            break;
+        case SHOTSPARK1__STATIC:
+            if (actor[spriteNum].t_data[2] != 0) break;
+            radius = 600.f;
+            intensity = .7f;
+            break;
+        case SECTOREFFECTOR__STATIC:
+            // Point-light markers carry RGB in velocity fields and range in
+            // hitag. Respect activators; negative lights and spotlights remain
+            // Polymer features instead of being converted to positive points.
+            if ((source.statnum != STAT_LIGHT && source.statnum != STAT_EFFECTOR)
+                || source.lotag != SE_49_POINT_LIGHT || (source.cstat & 128) || source.hitag <= 0)
+                break;
+            radius = source.hitag;
+            color = clamp(int(source.xvel), 0, 255) | (clamp(int(source.yvel), 0, 255) << 8)
+                  | (clamp(int(source.zvel), 0, 255) << 16);
+            marker = true;
+            break;
+        case APLAYER__STATIC:
+            if (source.statnum != STAT_PLAYER || (unsigned)source.yvel >= MAXPLAYERS)
+                break;
+            if (g_weaponLights[source.yvel].spriteNum != spriteNum || !g_weaponLights[source.yvel].color
+                || g_worldLightingClock - g_weaponLights[source.yvel].clock >= 2u
+                || source.extra <= 0 || g_player[source.yvel].ps->newowner >= 0)
+                break;
+            radius = 1800.f;
+            intensity = 1.4f;
+            color = g_weaponLights[source.yvel].color;
+            muzzleFlash = true;
+            break;
+        }
+
+        if (radius <= 0.f || !color
+            || (!marker && !muzzleFlash && ((source.cstat & 32768) || !source.xrepeat || !source.yrepeat)))
+            continue;
+
+        // Use an untracked copy: writing tracked sprite fields in a local copy
+        // would incorrectly notify the engine's sprite change bookkeeping.
+        uspritetype lightSprite;
+        Bmemcpy(&lightSprite, &source, sizeof(lightSprite));
+        if (muzzleFlash)
+        {
+            DukePlayer_t const &player = *g_player[source.yvel].ps;
+            lightSprite.x = player.opos.x + mulscale16(player.pos.x - player.opos.x, smoothRatio);
+            lightSprite.y = player.opos.y + mulscale16(player.pos.y - player.opos.y, smoothRatio);
+            lightSprite.z = player.opos.z + mulscale16(player.pos.z - player.opos.z, smoothRatio);
+            lightSprite.ang = fix16_to_int(player.oq16ang
+                + mulscale16(((player.q16ang - player.oq16ang + F16(1024)) & 0x7ffffff) - F16(1024), smoothRatio));
+            lightSprite.x += sintable[(lightSprite.ang + 512) & 2047] >> 7;
+            lightSprite.y += sintable[lightSprite.ang & 2047] >> 7;
+        }
+        else
+        {
+            if (source.statnum == STAT_DEFAULT || source.statnum == STAT_STANDABLE || projectile
+                || source.statnum == STAT_MISC || source.statnum == STAT_ACTOR)
+            {
+                lightSprite.x -= mulscale16(65536 - smoothRatio, source.x - actor[spriteNum].bpos.x);
+                lightSprite.y -= mulscale16(65536 - smoothRatio, source.y - actor[spriteNum].bpos.y);
+                lightSprite.z -= mulscale16(65536 - smoothRatio, source.z - actor[spriteNum].bpos.z);
+            }
+            if (!marker)
+            {
+                int height;
+                int const offset = spriteheightofsptr(&lightSprite, &height, 1);
+                lightSprite.z += offset - (atTop ? height : height / 2);
+                lightSprite.z -= int(lightSprite.yoffset) * int(lightSprite.yrepeat) * 4;
+            }
+        }
+
+        float const x = lightSprite.x, y = lightSprite.y, z = lightSprite.z / 16.f;
+        float const dx = x - viewPos.x, dy = y - viewPos.y, dz = z - viewPos.z / 16.f;
+        float const distanceSquared = dx * dx + dy * dy + dz * dz;
+        float const maxDistance = 16384.f + radius;
+        if (distanceSquared > maxDistance * maxDistance)
+            continue;
+        float const score = intensity * radius * radius / (distanceSquared + radius * radius);
+        unsigned slot = 0;
+        while (slot < count && scores[slot] >= score)
+            ++slot;
+        if (slot == kMaxRealtimeLights)
+            continue;
+        if (count < kMaxRealtimeLights)
+            ++count;
+        for (unsigned i = count - 1; i > slot; --i)
+        {
+            lights[i] = lights[i - 1];
+            scores[i] = scores[i - 1];
+        }
+        scores[slot] = score;
+        // Selection is independent of flicker to keep nearby lights stable.
+        if (flame)
+        {
+            unsigned const phase = g_worldLightingClock * 92u + unsigned(spriteNum) * 137u;
+            intensity *= .94f + .06f * (sintable[phase & 2047] / 16384.f);
+        }
+        lights[slot] = { { x, y, z, radius },
+                        { (color & 255) / 255.f, ((color >> 8) & 255) / 255.f, ((color >> 16) & 255) / 255.f, intensity } };
+    }
+    return count;
+}
+
+class G_WorldEffects
+{
+    RealtimeLight lights[kMaxRealtimeLights];
+    unsigned lightCount = 0;
+    bool enabled;
+
+public:
+    explicit G_WorldEffects(bool enabled) : enabled(enabled) {}
+
+    void begin(vec3_t const &viewPos, int smoothRatio)
+    {
+        if (!enabled) return;
+        lightCount = r_realtimelighting && videoUsesPolymost() ? G_CollectRealtimeLights(lights, viewPos, smoothRatio) : 0;
+        polymost_beginAmbientOcclusion();
+    }
+
+    void finish()
+    {
+        if (!enabled) return;
+        polymost_applyRealtimeLighting(lights, lightCount);
+        polymost_applyAmbientOcclusion();
+    }
+};
+
 static void G_ReadGLFrame(void)
 {
     // Save OpenGL screenshot with Duke3D palette
@@ -965,6 +1217,13 @@ static void G_ReadGLFrame(void)
 void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
 {
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
+
+#ifdef USE_OPENGL
+    // Early exits, mirrors and security cameras must never inherit the previous
+    // view's stencil mask or camera transform.
+    polymost_cancelAmbientOcclusion();
+    G_WorldEffects worldEffects(ud.camerasprite < 0 && pPlayer->newowner < 0 && !REALITY);
+#endif
 
     int viewingRange = viewingrange;
 
@@ -1490,6 +1749,11 @@ void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
         else
         {
             yax_preparedrawrooms();
+#ifdef USE_OPENGL
+            // The lotag 848 composite above combines several translated
+            // cameras; its depth cannot be reconstructed as a single view.
+            worldEffects.begin(CAMERA(pos), smoothRatio);
+#endif
             renderDrawRoomsQ16(CAMERA(pos.x),CAMERA(pos.y),CAMERA(pos.z),CAMERA(q16ang),CAMERA(q16horiz),CAMERA(sect));
             yax_drawrooms(G_DoSpriteAnimations, CAMERA(sect), 0, smoothRatio);
 #ifdef LEGACY_ROR
@@ -1501,6 +1765,10 @@ void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
             drawing_ror = 0;
 #endif
             renderDrawMasks();
+#ifdef USE_OPENGL
+            // Complete world shading before savescreens, weapons and HUD.
+            worldEffects.finish();
+#endif
 #endif
         }
 
@@ -1566,6 +1834,9 @@ void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
         }
     }
 
+#ifdef USE_OPENGL
+    polymost_cancelAmbientOcclusion();
+#endif
     G_RestoreInterpolations();
 
     if (!RRRA || !g_fogType)
@@ -9004,6 +9275,9 @@ int G_DoMoveThings(void)
 
     if (ud.pause_on == 0)
     {
+#ifdef USE_OPENGL
+        ++g_worldLightingClock;
+#endif
         g_globalRandom = krand2();
         if (!REALITY)
             A_MoveDummyPlayers();//ST 13

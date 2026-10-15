@@ -172,7 +172,7 @@ NativeDrawState snapshot()
     // Polymost's compatibility shader consumes gl_ModelViewProjectionMatrix,
     // which OpenGL precomposes on the CPU. Multiplying M*v and then P*result on
     // the GPU changes depth rounding at model/floor intersections.
-    auto const projection = kind == 1 ? multiply(state.projection.back(), state.modelView.back().data()) : state.projection.back();
+    auto const projection = (kind == 1 || kind == 4) ? multiply(state.projection.back(), state.modelView.back().data()) : state.projection.back();
     memcpy(u.projection, projection.data(), sizeof(u.projection));
     const int units[] = {0, 3, 4};
     for (int i = 0; i < 3; ++i)
@@ -881,7 +881,7 @@ const char *const uniformNames[] = {
     "u_texturePosSize", "u_halfTexelSize", "u_palswapPos", "u_palswapSize", "u_clamp",
     "u_shade", "u_numShades", "u_visFactor", "u_fogEnabled", "u_useColorOnly", "u_usePalette",
     "u_useDetailMapping", "u_useGlowMapping", "u_npotEmulation", "u_brightness", "u_rotMatrix",
-    "u_shadeInterpolate", "u_colorCorrection", "tex"
+    "u_shadeInterpolate", "u_colorCorrection", "tex", "u_texcomb", "u_color1", "u_color2"
 };
 GLuint APIENTRY vkfCreateShader(GLenum type) { GLuint id = nextObject++; shaders[id].type = type; return id; }
 void APIENTRY vkfShaderSource(GLuint id, GLsizei count, const GLchar *const *strings, const GLint *lengths)
@@ -925,7 +925,9 @@ void APIENTRY vkfLinkProgram(GLuint id)
     if (fragment.find("s_palswap") != std::string::npos && fragment.find("u_npotEmulation") != std::string::npos) it->second.kind = 1;
     else if (fragment.find("1.1643") != std::string::npos && fragment.find("2.017") != std::string::npos) it->second.kind = 2;
     else if (fragment.find("c_paletteScale") != std::string::npos && fragment.find("s_palette") != std::string::npos) it->second.kind = 3;
-    else fail("shader program (only the engine's Polymost, paletted-surface and VPX shaders are supported)");
+    else if (fragment.find("u_texcomb") != std::string::npos && fragment.find("u_color1") != std::string::npos &&
+             fragment.find("u_color2") != std::string::npos) it->second.kind = 4;
+    else fail("shader program (only the engine's Polymost, paletted-surface, VPX and Duke64 shaders are supported)");
     it->second.linked = true;
 }
 void APIENTRY vkfUseProgram(GLuint id) { if (id && (!programs.count(id) || !programs[id].linked)) fail("UseProgram object"); state.program = id; }
@@ -987,6 +989,11 @@ void uniform(GLint location, unsigned count, const float *values)
         case 20: out = u.rotation; expected = 16; break;
         case 21: out = u.misc + 1; expected = 1; break;
         case 22: out = u.correction; expected = 4; break;
+        // Duke64's combiner reuses vectors that its material does not otherwise
+        // consume, keeping the shared native uniform layout unchanged.
+        case 24: out = u.misc; expected = 1; break;
+        case 25: out = u.effects; expected = 4; break;
+        case 26: out = u.npot; expected = 4; break;
         default: fail("uniform location");
     }
     if (count != expected) fail("uniform size");

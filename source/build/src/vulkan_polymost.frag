@@ -149,6 +149,16 @@ vec4 surfaceColor()
     return colorCorrection(color);
 }
 
+vec4 realityColor()
+{
+    // Duke64's intensity textures interpolate two colors instead of applying
+    // vertex RGB. Its regular textures retain ordinary vertex modulation.
+    vec2 coordinate = mix(v_texcoord0.xy, clamp(v_texcoord0.xy, 0.0, 0.999), u.palswapSizeClamp.zw);
+    vec4 texel = textureGrad(s_texture, coordinate, dFdx(coordinate), dFdy(coordinate));
+    vec4 combined = vec4(mix(u.effects.rgb, u.npot.rgb, texel.r), texel.a * v_color.a);
+    return mix(texel * v_color, combined, u.misc.x);
+}
+
 bool alphaTest(float alpha)
 {
     // GL_NEVER through GL_ALWAYS are the contiguous enum range 0x0200..0207.
@@ -175,6 +185,7 @@ void main()
         case 1: color = polymostColor(); break;
         case 2: color = videoColor(); break;
         case 3: color = surfaceColor(); break;
+        case 4: color = realityColor(); break;
         default: color = fixedColor(); break;
     }
     if (u.misc.z != 0.0 && !alphaTest(color.a))

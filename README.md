@@ -159,10 +159,10 @@ See: https://wiki.eduke32.com/wiki/Main_Page
 
 ### Native Vulkan and Metal rendering
 
-NBlood offers **Vulkan** in the startup renderer selector and the in-game Video
-Mode menu. You can also enter `setrendermode 5` in the console, or set
-`Renderer = 5` under `[Screen Setup]` in `nblood.cfg`. The selection is saved;
-`setrendermode 3` selects OpenGL Polymost again.
+NBlood and Rednukem offer **Vulkan** in the startup renderer selector and the
+in-game Video Mode menu. You can also enter `setrendermode 5` in the console, or set
+`Renderer = 5` under `[Screen Setup]` in `nblood.cfg` or `rednukem.cfg`.
+The selection is saved; `setrendermode 3` selects OpenGL Polymost again.
 
 Vulkan needs SDL **2.0.6 or newer**, the Vulkan loader, and a Vulkan-capable device
 and driver. On macOS, provide a Vulkan loader and MoltenVK through your SDK/runtime
@@ -174,10 +174,10 @@ OpenGL context. Polymer remains a separate renderer.
 Vulkan currently uses uncompressed GPU textures, so large texture packs can use
 more graphics memory than OpenGL with texture compression enabled.
 
-NBlood also offers **Metal** on macOS 11 or later, with SDL **2.0.14 or newer**.
+Both ports also offer **Metal** on macOS 11 or later, with SDL **2.0.14 or newer**.
 Select it in the startup renderer selector or Video Mode menu, use
-`setrendermode 6`, or set `Renderer = 6` in `nblood.cfg`. Metal shares the same
-Polymost scene frontend and submits directly to Apple's Metal API without
+`setrendermode 6`, or set `Renderer = 6` in the game's configuration file.
+Metal shares the same Polymost scene frontend and submits directly to Apple's Metal API without
 requiring Vulkan, MoltenVK or an OpenGL context. It is enabled by default in
 macOS builds; `USE_METAL=0` disables it at build time. See
 [the Metal checks](tests/metal/README.md) for native compilation and GPU tests.
@@ -196,8 +196,11 @@ hardware keeps rendering normally and reports that AO is unavailable.
 Polymost, Vulkan and Metal enable realtime point lighting and shadows by default.
 Toggle **Options → Display Setup → Renderer Setup → Lighting and Shadows**,
 or use `r_realtimelighting 0` / `r_realtimelighting 1`. Changes apply immediately and
-are saved independently of ambient occlusion. Torches, candles, flames, flares,
-Tesla shots, explosions and muzzle flashes illuminate nearby world surfaces.
+are saved independently of ambient occlusion. In Blood, torches, candles, flames,
+flares, Tesla shots, explosions and muzzle flashes illuminate nearby surfaces.
+Rednukem uses its games' flames, burning barrels, projectiles, explosions,
+point-light markers and muzzle flashes as light sources, including the
+Duke Nukem 64 renderer.
 Up to eight nearby lights cast filtered cubemap shadows from opaque sector
 walls, floors, ceilings and moving doors, including geometry outside the view.
 Sprites, models and alpha-cutout surfaces receive lighting but do not cast these
@@ -206,6 +209,9 @@ mirror/room-over-room portal surfaces, weapons and HUD are excluded. This featur
 requires sampleable scene depth/stencil and a supported depth shadow format.
 OpenGL also needs framebuffer blit, packed depth/stencil support and a
 single-sample framebuffer; unsupported devices retain the original rendering.
+Rednukem excludes reflected and security-camera views. Redneck Rampage's special
+lotag-848 geometry-composite views skip these effects because they combine
+multiple camera spaces in one depth buffer.
 
 Vulkan records commands on the calling thread and up to four background threads.
 The automatic background count is `min(4, available CPUs - 1)`, so three CPUs
@@ -251,6 +257,7 @@ disabled explicitly:
 
 ```sh
 make -j4 blood USE_VULKAN=1 SDL_TARGET=2
+make -j4 rr USE_VULKAN=1 SDL_TARGET=2
 # To build without Vulkan:
 make -j4 blood USE_VULKAN=0
 ```
@@ -281,6 +288,8 @@ selected scenes and fixtures; they do not establish complete Polymost parity or
 coverage of every platform and driver. Use the demo suite below separately to
 check simulation regressions. [Ambient occlusion checks](tests/ambient-occlusion/README.md)
 cover contact shading, live toggling, HUD isolation and renderer parity.
+[Rednukem integration checks](tests/rednukem-rendering/README.md) exercise its
+settings, AO, lighting, HUD and renderer switching with an original Duke fixture.
 
 ### Demo regression validation
 

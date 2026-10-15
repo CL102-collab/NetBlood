@@ -70,7 +70,7 @@ vertex MetalVertexOutput metalSceneVertex(MetalVertex input [[stage_in]],
     float4 eyePosition = u.modelView * position;
     // Polymost supplies a precomposed projection * modelView. Preserve the
     // multiplication order at coplanar surfaces, including models and voxels.
-    float4 clipPosition = u.projection * (polymost ? position : eyePosition);
+    float4 clipPosition = u.projection * ((polymost || u.misc.w == 4.0f) ? position : eyePosition);
     if (u.misc.w == 3.0f)
         clipPosition = input.position; // glsurface submits clip coordinates.
 
@@ -89,7 +89,7 @@ vertex MetalVertexOutput metalSceneVertex(MetalVertex input [[stage_in]],
         output.texcoord0 = mix(output.texcoord0.xyzw, output.texcoord0.yxzw, u.effects.y);
     output.texcoord3 = u.textureMatrix[1] * input.texcoord3;
     output.texcoord4 = u.textureMatrix[2] * input.texcoord4;
-    if (u.misc.w == 3.0f)
+    if (u.misc.w == 3.0f || u.misc.w == 4.0f)
         output.texcoord0 = input.texcoord0;
     output.fogDistance = abs(eyePosition.z / eyePosition.w);
     output.distance = input.position.z;
@@ -251,6 +251,16 @@ fragment float4 metalSceneFragment(MetalVaryings input [[stage_in]],
             color.rgb = palette.sample(paletteSampler, color.rg).rgb;
             color = colorCorrection(color, u);
             break;
+        case 4:
+        {
+            // Match Duke64's regular and two-color intensity materials.
+            float2 coordinate = mix(input.texcoord0.xy, clamp(input.texcoord0.xy, 0.0f, 0.999f),
+                                    u.palswapSizeClamp.zw);
+            float4 texel = image.sample(imageSampler, coordinate, gradient2d(dfdx(coordinate), dfdy(coordinate)));
+            float4 combined = float4(mix(u.effects.rgb, u.npot.rgb, texel.r), texel.a * input.color.a);
+            color = mix(texel * input.color, combined, u.misc.x);
+            break;
+        }
         default:
             color = fixedColor(input, u, image, imageSampler);
             break;

@@ -5,6 +5,7 @@
 #include "texcache.h"
 #include "reality.h"
 #include "../duke3d.h"
+#include "../world_lighting.h"
 
 tileinfo_t rt_tileinfo[RT_TILENUM];
 int32_t rt_tilemap[MAXTILES];
@@ -1109,11 +1110,33 @@ void RT_SetupMatrix(void)
     float fovy = atanf(tanf((float)ud.fov * (fPI / 180.f) / 2.f) * (3.f / 4.f)) * 2.f * (180.f/fPI);
     rt_worldspritefactor = tanf(60.f * (fPI / 180.f) / 2.f) / tanf(fovy * (fPI / 180.f) / 2.f);
     buildgl_setPerspective(fovy, (float)xdim/(float)ydim, 5.f, 16384.f);
+    float effectsProjection[16], view[16];
+    glGetFloatv(GL_PROJECTION_MATRIX, effectsProjection);
+    // The shared depth passes reconstruct positive eye Z, while Duke64 uses
+    // the conventional OpenGL camera. Flip only the projection's Z column.
+    for (int i = 8; i < 12; ++i) effectsProjection[i] = -effectsProjection[i];
 
     vec3f_t v_eye = {rt_globalposx * 0.5f, rt_globalposy * 0.5f, rt_globalposz * 0.5f};
     vec3f_t v_center = {rt_globalposx * 0.5f + dx, rt_globalposy * 0.5f + dy, rt_globalposz * 0.5f + dz};
     vec3f_t v_up = {0.f, 0.f, -1.f};
+    glPushMatrix();
+    glLoadIdentity();
     buildgl_uLookAt(v_eye, v_center, v_up);
+    glGetFloatv(GL_PROJECTION_MATRIX, view);
+    glPopMatrix();
+    glMultMatrixf(view);
+
+    // Duke64 renders isotropic Build coordinates at quarter scale. Invert its
+    // orthonormal camera basis, including the positive-Z reconstruction flip.
+    float const eyeToWorld[16] = {
+        view[0] * 4.f, view[4] * 4.f, view[8] * 4.f, 0.f,
+        view[1] * 4.f, view[5] * 4.f, view[9] * 4.f, 0.f,
+        -view[2] * 4.f, -view[6] * 4.f, -view[10] * 4.f, 0.f,
+        float(globalposx), float(globalposy), float(globalposz) / 16.f, 1.f,
+    };
+    int viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    polymost_setWorldEffectsView(effectsProjection, eyeToWorld, viewport);
 
     glGetFloatv(GL_PROJECTION_MATRIX, rt_projmatrix);
     RT_LookVectorCalc(dx, dy, dz);
@@ -3475,8 +3498,19 @@ void RT_DrawRooms(int x, int y, int z, fix16_t ang, fix16_t horiz, int16_t sectn
     rt_globalposz = z * (1.f/32.f);
     rt_globalhoriz = fix16_to_float(horiz);
     rt_globalang = fix16_to_float(ang);
+    bool const worldEffects = ud.camerasprite < 0 && g_player[screenpeek].ps->newowner < 0;
+    RealtimeLight lights[kMaxRealtimeLights];
+    vec3_t const viewPosition = { x, y, z };
+    unsigned const lightCount = worldEffects && r_realtimelighting && videoUsesPolymost()
+        ? G_CollectRealtimeLights(lights, viewPosition, smoothRatio) : 0;
+    if (worldEffects)
+        polymost_beginAmbientOcclusion();
+    else
+        polymost_cancelAmbientOcclusion();
     RT_SetupMatrix();
+    polymost_ambientOcclusionDepthWrite(false);
     RT_DisplaySky();
+    polymost_ambientOcclusionDepthWrite(true);
     rt_fxcolor = 0;
     sortspritescnt = 0;
 
@@ -3521,6 +3555,9 @@ void RT_DrawRooms(int x, int y, int z, fix16_t ang, fix16_t horiz, int16_t sectn
     if (rt_boardnum == 27 && ud.monsters_off == 0)
         RT_BOSS2Draw(rt_boss2_x, rt_boss2_y, 8192, rt_boss2_ang);
 
+    // Duke64's sorted sprites/masked walls and explosion billboards do not
+    // write depth. Preserve the opaque world's eligibility underneath them.
+    polymost_ambientOcclusionDepthWrite(false);
     RT_DrawMasks();
 
     //for (int i = 0; i < MAXSPRITES; i++)
@@ -3535,6 +3572,8 @@ void RT_DrawRooms(int x, int y, int z, fix16_t ang, fix16_t horiz, int16_t sectn
 
     RT_DisplayExplosions();
 
+    polymost_applyRealtimeLighting(lights, lightCount);
+    polymost_applyAmbientOcclusion();
     RT_EnablePolymost();
 
     auto pal = &g_player[screenpeek].ps->pals;

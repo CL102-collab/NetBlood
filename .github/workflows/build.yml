@@ -26,8 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/validation-environment
-      - name: Build the validation executable with GCC 13 and LTO
-        run: make -j2 blood CC=gcc-13 CXX=g++-13 LTO=2 USE_VULKAN=1 HAVE_GTK2=1
+      - name: Build the validation executables with GCC 13 and LTO
+        run: make -j2 blood rr CC=gcc-13 CXX=g++-13 LTO=2 USE_VULKAN=1 HAVE_GTK2=1
       - name: Require 144 synced demos and zero skipped demos
         run: >-
           python3 platform/ci/validate.py --suite demos --binary ./nblood

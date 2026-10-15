@@ -199,6 +199,7 @@ static GLuint polymost1BasicShaderProgramID = 0;
 static GLuint polymost1ExtendedShaderProgramID = 0;
 static bool ambientOcclusionWorld = false;
 static bool realtimeLightingView = false;
+static bool customWorldEffectsView = false;
 static float realtimeLightingEyeToWorld[16], realtimeLightingProjection[16];
 static int realtimeLightingViewport[4];
 static bool ambientOcclusionFailed = false;
@@ -523,12 +524,13 @@ static void polymost_resetAmbientOcclusion()
     if (ambientOcclusionProgram) glDeleteProgram(ambientOcclusionProgram);
     ambientOcclusionTexture = ambientOcclusionFramebuffer = ambientOcclusionProgram = 0;
     ambientOcclusionWidth = ambientOcclusionHeight = 0;
-    ambientOcclusionWorld = ambientOcclusionFailed = false;
+    ambientOcclusionWorld = ambientOcclusionFailed = customWorldEffectsView = false;
 }
 
 void polymost_cancelAmbientOcclusion()
 {
     realtimeLightingView = false;
+    customWorldEffectsView = false;
     if (!ambientOcclusionWorld) return;
     ambientOcclusionWorld = false;
     buildgl_setDisabled(GL_STENCIL_TEST);
@@ -559,6 +561,15 @@ void polymost_ambientOcclusionDepthWrite(bool enabled)
 {
     // A translucent particle must not make the sky/depth beneath it eligible.
     if (ambientOcclusionWorld) glStencilMask(enabled ? 128 : 0);
+}
+
+void polymost_setWorldEffectsView(float const projection[16], float const eyeToWorld[16], int const viewport[4])
+{
+    if (!ambientOcclusionWorld || !videoUsesPolymost()) return;
+    Bmemcpy(realtimeLightingProjection, projection, sizeof(realtimeLightingProjection));
+    Bmemcpy(realtimeLightingEyeToWorld, eyeToWorld, sizeof(realtimeLightingEyeToWorld));
+    Bmemcpy(realtimeLightingViewport, viewport, sizeof(realtimeLightingViewport));
+    realtimeLightingView = customWorldEffectsView = true;
 }
 
 static void polymost_captureLightingView()
@@ -716,13 +727,22 @@ static void polymost_ambientOcclusionTriangle()
 void polymost_applyAmbientOcclusion()
 {
     bool const eligible = ambientOcclusionWorld;
+    bool const customView = customWorldEffectsView;
     polymost_cancelAmbientOcclusion();
     if (!eligible || !r_ambientocclusion) return;
 
     float projection[16];
     GLint viewport[4];
-    glGetFloatv(GL_PROJECTION_MATRIX, projection);
-    glGetIntegerv(GL_VIEWPORT, viewport);
+    if (customView)
+    {
+        Bmemcpy(projection, realtimeLightingProjection, sizeof(projection));
+        Bmemcpy(viewport, realtimeLightingViewport, sizeof(viewport));
+    }
+    else
+    {
+        glGetFloatv(GL_PROJECTION_MATRIX, projection);
+        glGetIntegerv(GL_VIEWPORT, viewport);
+    }
     float const nearClip = projection[14] / (-1.f - projection[10]);
     if (viewport[2] <= 0 || viewport[3] <= 0 || nearClip <= 0.f ||
         projection[0] <= 0.f || projection[5] <= 0.f) return;

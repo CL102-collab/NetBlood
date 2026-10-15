@@ -15043,6 +15043,10 @@ int32_t videoSetRenderMode(int32_t renderer)
 #if defined(USE_VULKAN) || defined(USE_METAL)
     if (videoIsNativeRenderer(renderer) && !nativeSupported(renderer))
         return -1;
+    // An unavailable GL device must not turn a native API switch into an
+    // implicit, possibly scaled software mode with a different viewport.
+    if (renderer != REND_CLASSIC && !videoIsNativeRenderer(renderer) && nogl)
+        return -1;
     // Two accelerated backends can have identical resolution and pixel depth.
     // Changing the API still requires a new window, device and resource cache.
     if (bpp > 8 && renderer != REND_CLASSIC &&
@@ -15051,6 +15055,7 @@ int32_t videoSetRenderMode(int32_t renderer)
         int const previous = glrendmode;
         int const oldWidth = xres, oldHeight = yres, oldDepth = bpp, oldScale = upscalefactor;
         char const oldFullscreen = fullscreen;
+        vec2_t const oldViewStart = windowxy1, oldViewEnd = windowxy2;
         glrendmode = renderer;
         videoResetMode();
         if (videoSetGameMode(fullscreen, xres, yres, bpp, upscalefactor) < 0)
@@ -15062,8 +15067,13 @@ int32_t videoSetRenderMode(int32_t renderer)
                 LOG_F(ERROR, "Could not restore the previous renderer after a video mode failure.");
                 Bexit(EXIT_FAILURE);
             }
+            videoSetViewableArea(oldViewStart.x, oldViewStart.y, oldViewEnd.x, oldViewEnd.y);
             return -1;
         }
+        // Recreating the graphics API resets the view to the full window.
+        // Keep the game's HUD borders and camera projection when only the
+        // renderer changes, including console switches at the same pixel depth.
+        videoSetViewableArea(oldViewStart.x, oldViewStart.y, oldViewEnd.x, oldViewEnd.y);
     }
 #endif
     buildgl_resetStateAccounting();

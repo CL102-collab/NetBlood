@@ -55,7 +55,7 @@ static struct
     struct grpfile_t const * grp;
     char *gamedir;
     ud_setup_t shared;
-    int polymer;
+    int renderer;
 }
 settings;
 
@@ -94,6 +94,22 @@ static inline void getfilenames(char const *path)
 
 const char *controlstrings[] = { "Keyboard only", "Keyboard and mouse", "Keyboard and joystick", "All supported devices" };
 
+static const struct { const char *name; int mode; } renderers[] = {
+    { "Software", REND_CLASSIC },
+#ifdef USE_OPENGL
+    { "OpenGL", REND_POLYMOST },
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Vulkan", REND_VULKAN },
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Metal", REND_METAL },
+#endif
+#ifdef POLYMER
+    { "OpenGL (Polymer)", REND_POLYMER },
+#endif
+#endif
+};
+
 static void PopulateForm(int32_t pgs)
 {
     char buf[512];
@@ -129,9 +145,14 @@ static void PopulateForm(int32_t pgs)
     if (pgs & POPULATE_VIDEO)
     {
         HWND hwnd = GetDlgItem(pages[TAB_CONFIG], IDCVMODE);
+#ifdef USE_OPENGL
+        // Validate the pending choice without committing it before Start.
+        int const previousRenderer = glrendmode;
+        glrendmode = settings.renderer;
+#endif
         int mode = videoCheckMode(&settings.shared.xdim, &settings.shared.ydim, settings.shared.bpp, settings.shared.fullscreen, 1);
 
-        if (mode < 0 || (settings.shared.bpp < 15 && (settings.polymer)))
+        if (mode < 0)
         {
             int CONSTEXPR cd[] = { 32, 24, 16, 15, 8, 0 };
             int i;
@@ -143,25 +164,28 @@ static void PopulateForm(int32_t pgs)
             }
             for (; cd[i]; i++)
             {
+                if ((cd[i] == 8) != (settings.renderer == REND_CLASSIC)) continue;
                 mode = videoCheckMode(&settings.shared.xdim, &settings.shared.ydim, cd[i], settings.shared.fullscreen, 1);
                 if (mode < 0) continue;
                 settings.shared.bpp = cd[i];
                 break;
             }
         }
+#ifdef USE_OPENGL
+        glrendmode = previousRenderer;
+#endif
 
         Button_SetCheck(GetDlgItem(pages[TAB_CONFIG], IDCFULLSCREEN), ((settings.shared.fullscreen) ? BST_CHECKED : BST_UNCHECKED));
-        Button_SetCheck(GetDlgItem(pages[TAB_CONFIG], IDCPOLYMER), ((settings.polymer) ? BST_CHECKED : BST_UNCHECKED));
 
         (void)ComboBox_ResetContent(hwnd);
 
         for (int i=0; i<validmodecnt; i++)
         {
             if (validmode[i].fs != (settings.shared.fullscreen)) continue;
-            if ((validmode[i].bpp < 15) && (settings.polymer)) continue;
+            if ((validmode[i].bpp == 8) != (settings.renderer == REND_CLASSIC)) continue;
 
             // all modes get added to the 3D mode list
-            Bsprintf(buf, "%dx%d %s", validmode[i].xdim, validmode[i].ydim, validmode[i].bpp == 8 ? "software" : "OpenGL");
+            Bsprintf(buf, "%dx%d", validmode[i].xdim, validmode[i].ydim);
             int const j = ComboBox_AddString(hwnd, buf);
             (void)ComboBox_SetItemData(hwnd, j, i);
             if (i == mode)(void)ComboBox_SetCurSel(hwnd, j);
@@ -170,6 +194,15 @@ static void PopulateForm(int32_t pgs)
 
     if (pgs & POPULATE_CONFIG)
     {
+        HWND rendererCombo = GetDlgItem(pages[TAB_CONFIG], IDCRENDERER);
+        ComboBox_ResetContent(rendererCombo);
+        for (auto const &renderer : renderers)
+        {
+            int const index = ComboBox_AddString(rendererCombo, renderer.name);
+            ComboBox_SetItemData(rendererCombo, index, renderer.mode);
+            if (renderer.mode == settings.renderer)
+                ComboBox_SetCurSel(rendererCombo, index);
+        }
         Button_SetCheck(GetDlgItem(pages[TAB_CONFIG], IDCALWAYSSHOW), (settings.shared.forcesetup ? BST_CHECKED : BST_UNCHECKED));
         Button_SetCheck(GetDlgItem(pages[TAB_CONFIG], IDCAUTOLOAD), (!(settings.shared.noautoload) ? BST_CHECKED : BST_UNCHECKED));
 
@@ -226,10 +259,17 @@ static INT_PTR CALLBACK ConfigPageProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, L
             settings.shared.fullscreen = !settings.shared.fullscreen;
             PopulateForm(POPULATE_VIDEO);
             return TRUE;
-        case IDCPOLYMER:
-            settings.polymer = !settings.polymer;
-            if (settings.shared.bpp == 8) settings.shared.bpp = 32;
-            PopulateForm(POPULATE_VIDEO);
+        case IDCRENDERER:
+            if (HIWORD(wParam) == CBN_SELCHANGE)
+            {
+                int index = ComboBox_GetCurSel((HWND)lParam);
+                if (index != CB_ERR)
+                {
+                    settings.renderer = ComboBox_GetItemData((HWND)lParam, index);
+                    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
+                    PopulateForm(POPULATE_VIDEO);
+                }
+            }
             return TRUE;
         case IDCVMODE:
             if (HIWORD(wParam) == CBN_SELCHANGE)
@@ -344,7 +384,7 @@ static void EnableConfig(bool n)
     EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCFULLSCREEN), n);
     EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCGAMEDIR), n);
     EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCINPUT), n);
-    EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCPOLYMER), n);
+    EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCRENDERER), n);
     EnableWindow(GetDlgItem(pages[TAB_CONFIG], IDCVMODE), n);
 }
 
@@ -663,13 +703,14 @@ int32_t startwin_run(void)
     SetPage(TAB_CONFIG);
     EnableConfig(1);
 
-#ifdef POLYMER
-    settings.polymer = (glrendmode == REND_POLYMER);
+#ifdef USE_OPENGL
+    settings.renderer = ud.setup.bpp == 8 ? REND_CLASSIC : glrendmode;
 #else
-    settings.polymer = 0;
+    settings.renderer = REND_CLASSIC;
 #endif
 
     settings.shared = ud.setup;
+    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
     settings.grp = g_selectedGrp;
     settings.gamedir = g_modDir;
 
@@ -703,7 +744,8 @@ int32_t startwin_run(void)
     {
         ud.setup = settings.shared;
 #ifdef USE_OPENGL
-        glrendmode = (settings.polymer) ? REND_POLYMER : REND_POLYMOST;
+        if (settings.renderer != REND_CLASSIC)
+            glrendmode = settings.renderer;
 #endif
         g_selectedGrp = settings.grp;
         if (g_modDir != settings.gamedir)

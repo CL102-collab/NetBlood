@@ -100,7 +100,9 @@ def commands(args):
     if args.suite == "windows-runtime":
         return [["bash", str(ROOT / "platform/ci/validate-windows.sh"), str(output / "windows-work")]]
     if args.suite == "backend":
-        return [[str(ROOT / "tests/vulkan/backend-test.sh")]]
+        return [[str(ROOT / "tests/realtime-lighting/shadow-mesh-test.sh")],
+                [str(ROOT / "tests/vulkan/backend-test.sh")],
+                [str(ROOT / "tests/realtime-lighting/opengl-backend-test.sh")]]
     if args.suite in ("render-game", "render-fixtures", "render-ror"):
         extra = ["--validation", "--wait-ready", "--initial-delay-ms", "1000",
                  "--engine-data", str(ROOT), "--width", "800", "--height", "600"]

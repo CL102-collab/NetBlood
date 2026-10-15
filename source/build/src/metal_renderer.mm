@@ -484,7 +484,9 @@ void transformedPosition(NativeVertex const &vertex, NativeUniforms const &unifo
     double position[4], temporary[4];
     std::copy(vertex.position, vertex.position + 4, position);
     if (uniforms.misc[3] == 3.f) { std::copy(position, position + 4, result); return; }
-    if (uniforms.misc[3] == 1.f)
+    if (uniforms.misc[3] == 4.f)
+        multiply(uniforms.projection, position, result);
+    else if (uniforms.misc[3] == 1.f)
     {
         multiply(uniforms.rotation, position, temporary);
         multiply(uniforms.projection, temporary, result);

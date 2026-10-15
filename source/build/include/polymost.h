@@ -46,6 +46,10 @@ void polymost_beginAmbientOcclusion(void);
 void polymost_cancelAmbientOcclusion(void);
 void polymost_applyAmbientOcclusion(void);
 void polymost_ambientOcclusionDepthWrite(bool enabled);
+// Custom world renderers supply a positive-eye-Z perspective and its inverse
+// camera transform into isotropic Build coordinates (x, y, z / 16).
+// Call after beginAmbientOcclusion; both passes use this view until cancellation.
+void polymost_setWorldEffectsView(float const projection[16], float const eyeToWorld[16], int const viewport[4]);
 struct RealtimeLight;
 void polymost_applyRealtimeLighting(RealtimeLight const *lights, unsigned lightCount);
 void polymost_startBufferedDrawing(int nn);

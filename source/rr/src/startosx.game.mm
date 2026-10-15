@@ -182,10 +182,25 @@ static int retval = -1;
 
 static struct {
     grpfile_t const * grp;
-    int fullscreen;
-    int xdim3d, ydim3d, bpp3d;
-    int forcesetup;
+    ud_setup_t shared;
+    int renderer;
 } settings;
+
+static const struct { const char *name; int mode; } renderers[] = {
+    { "Software", REND_CLASSIC },
+#ifdef USE_OPENGL
+    { "OpenGL", REND_POLYMOST },
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Vulkan", REND_VULKAN },
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    { "Metal", REND_METAL },
+#endif
+#ifdef POLYMER
+    { "OpenGL (Polymer)", REND_POLYMER },
+#endif
+#endif
+};
 
 @interface StartupWindow : NSWindow <NSWindowDelegate>
 {
@@ -199,6 +214,7 @@ static struct {
     NSTabViewItem *tabViewItemSetup;
     NSTabViewItem *tabViewItemMessageLog;
     NSPopUpButton *videoMode3DPUButton;
+    NSPopUpButton *rendererPUButton;
     NSScrollView *gameList;
 
     NSButton *cancelButton;
@@ -211,6 +227,7 @@ static struct {
 - (void)populateVideoModes:(BOOL)firstTime;
 
 - (void)fullscreenClicked:(id)sender;
+- (void)rendererClicked:(id)sender;
 
 - (void)cancel:(id)sender;
 - (void)start:(id)sender;
@@ -327,12 +344,29 @@ static struct {
         NSRect const fullscreenButtonFrame = NSSizeAddXY(fullscreenButtonSize, tabViewItemSetupFrame.size.width - fullscreenButtonSize.width, videoMode3DPUButtonFrame.origin.y + rintf((videoMode3DPUButtonSize.height - fullscreenButtonSize.height) * 0.5f) + 1);
         [fullscreenButton setFrame:fullscreenButtonFrame];
 
+        NSTextField *labelRenderer = makeLabel(@"Renderer:");
+        [[tabViewItemSetup view] addSubview:labelRenderer];
+        rendererPUButton = makeComboBox();
+        [[tabViewItemSetup view] addSubview:rendererPUButton];
+        NSRect const rendererFrame = NSMakeRect(videoMode3DButtonX, videoMode3DPUButtonFrame.origin.y - videoMode3DPUButtonSize.height - 3,
+            tabViewItemSetupFrame.size.width - videoMode3DButtonX, videoMode3DPUButtonSize.height);
+        [rendererPUButton setFrame:rendererFrame];
+        [rendererPUButton setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+        [rendererPUButton setTarget:self];
+        [rendererPUButton setAction:@selector(rendererClicked:)];
+        [labelRenderer setFrame:NSSizeAddXY([labelRenderer frame].size, 0, rendererFrame.origin.y + 4)];
+        [labelRenderer setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
+        for (auto const &renderer : renderers)
+        {
+            [rendererPUButton addItemWithTitle:[NSString stringWithUTF8String:renderer.name]];
+            [[rendererPUButton lastItem] setTag:renderer.mode];
+        }
 
         // game selector and label
         NSTextField * labelGame = makeLabel(@"Game:");
         [[tabViewItemSetup view] addSubview:labelGame];
         NSSize const labelGameSize = [labelGame frame].size;
-        NSRect const labelGameFrame = NSSizeAddXY(labelGameSize, 0, videoMode3DPUButtonFrame.origin.y - labelGameSize.height);
+        NSRect const labelGameFrame = NSSizeAddXY(labelGameSize, 0, rendererFrame.origin.y - labelGameSize.height);
         [labelGame setFrame:labelGameFrame];
         [labelGame setAutoresizingMask:NSViewMaxXMargin | NSViewMinYMargin];
 
@@ -433,10 +467,10 @@ static struct {
     int xdim = 0, ydim = 0, bpp = 0;
 
     if (firstTime) {
-        xdim = settings.xdim3d;
-        ydim = settings.ydim3d;
-        bpp  = settings.bpp3d;
-    } else {
+        xdim = settings.shared.xdim;
+        ydim = settings.shared.ydim;
+        bpp  = settings.shared.bpp;
+    } else if ([videoMode3DPUButton indexOfSelectedItem] >= 0) {
         mode3d = [[modeslist3d objectAtIndex:[videoMode3DPUButton indexOfSelectedItem]] intValue];
         if (mode3d >= 0) {
             xdim = validmode[mode3d].xdim;
@@ -445,16 +479,25 @@ static struct {
         }
 
     }
+#ifdef USE_OPENGL
+    // Validate the pending choice without committing it before Start.
+    int const previousRenderer = glrendmode;
+    glrendmode = settings.renderer;
+#endif
     mode3d = videoCheckMode(&xdim, &ydim, bpp, fullscreen, 1);
     if (mode3d < 0) {
         int i, cd[] = { 32, 24, 16, 15, 8, 0 };
         for (i=0; cd[i]; ) { if (cd[i] >= bpp) i++; else break; }
         for ( ; cd[i]; i++) {
+            if ((cd[i] == 8) != (settings.renderer == REND_CLASSIC)) continue;
             mode3d = videoCheckMode(&xdim, &ydim, cd[i], fullscreen, 1);
             if (mode3d < 0) continue;
             break;
         }
     }
+#ifdef USE_OPENGL
+    glrendmode = previousRenderer;
+#endif
 
     [modeslist3d release];
     [videoMode3DPUButton removeAllItems];
@@ -462,15 +505,30 @@ static struct {
     modeslist3d = [[NSMutableArray alloc] init];
 
     for (i = 0; i < validmodecnt; i++) {
-        if (fullscreen == validmode[i].fs) {
+        if (fullscreen == validmode[i].fs && ((validmode[i].bpp == 8) == (settings.renderer == REND_CLASSIC))) {
             if (i == mode3d) idx3d = [modeslist3d count];
             [modeslist3d addObject:[NSNumber numberWithInt:i]];
-            [videoMode3DPUButton addItemWithTitle:[NSString stringWithFormat:@"%d %C %d %d-bpp",
-                                                   validmode[i].xdim, 0xd7, validmode[i].ydim, validmode[i].bpp]];
+            [videoMode3DPUButton addItemWithTitle:[NSString stringWithFormat:@"%d %C %d",
+                                                   validmode[i].xdim, 0xd7, validmode[i].ydim]];
         }
     }
 
     if (idx3d >= 0) [videoMode3DPUButton selectItemAtIndex:idx3d];
+}
+
+- (void)rendererClicked:(id)sender
+{
+    UNREFERENCED_PARAMETER(sender);
+    NSInteger selected = [videoMode3DPUButton indexOfSelectedItem];
+    if (selected >= 0)
+    {
+        int mode = [[modeslist3d objectAtIndex:selected] intValue];
+        settings.shared.xdim = validmode[mode].xdim;
+        settings.shared.ydim = validmode[mode].ydim;
+    }
+    settings.renderer = [[rendererPUButton selectedItem] tag];
+    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
+    [self populateVideoModes:YES];
 }
 
 - (void)fullscreenClicked:(id)sender
@@ -491,12 +549,14 @@ static struct {
 {
     UNREFERENCED_PARAMETER(sender);
 
+    if ([videoMode3DPUButton indexOfSelectedItem] < 0)
+        return;
     int mode = [[modeslist3d objectAtIndex:[videoMode3DPUButton indexOfSelectedItem]] intValue];
     if (mode >= 0) {
-        settings.xdim3d = validmode[mode].xdim;
-        settings.ydim3d = validmode[mode].ydim;
-        settings.bpp3d = validmode[mode].bpp;
-        settings.fullscreen = validmode[mode].fs;
+        settings.shared.xdim = validmode[mode].xdim;
+        settings.shared.ydim = validmode[mode].ydim;
+        settings.shared.bpp = validmode[mode].bpp;
+        settings.shared.fullscreen = validmode[mode].fs;
     }
 
     int row = [[gameList documentView] selectedRow];
@@ -504,7 +564,7 @@ static struct {
         settings.grp = [[gamelistsrc grpAtIndex:row] entryptr];
     }
 
-    settings.forcesetup = [alwaysShowButton state] == NSControlStateValueOn;
+    settings.shared.forcesetup = [alwaysShowButton state] == NSControlStateValueOn;
 
     retval = 1;
 }
@@ -513,8 +573,9 @@ static struct {
 {
     videoGetModes();
 
-    [fullscreenButton setState: (settings.fullscreen ? NSControlStateValueOn : NSControlStateValueOff)];
-    [alwaysShowButton setState: (settings.forcesetup ? NSControlStateValueOn : NSControlStateValueOff)];
+    [fullscreenButton setState: (settings.shared.fullscreen ? NSControlStateValueOn : NSControlStateValueOff)];
+    [alwaysShowButton setState: (settings.shared.forcesetup ? NSControlStateValueOn : NSControlStateValueOff)];
+    [rendererPUButton selectItemWithTag:settings.renderer];
     [self populateVideoModes:YES];
 
     // enable all the controls on the Configuration page
@@ -688,12 +749,14 @@ int startwin_run(void)
 {
     if (startwin == nil) return 0;
 
-    settings.fullscreen = ud.setup.fullscreen;
-    settings.xdim3d = ud.setup.xdim;
-    settings.ydim3d = ud.setup.ydim;
-    settings.bpp3d = ud.setup.bpp;
-    settings.forcesetup = ud.setup.forcesetup;
+    settings.shared = ud.setup;
     settings.grp = g_selectedGrp;
+#ifdef USE_OPENGL
+    settings.renderer = ud.setup.bpp == 8 ? REND_CLASSIC : glrendmode;
+#else
+    settings.renderer = REND_CLASSIC;
+#endif
+    settings.shared.bpp = settings.renderer == REND_CLASSIC ? 8 : 32;
 
     [startwin setupRunMode];
 
@@ -709,12 +772,12 @@ int startwin_run(void)
     [nsapp updateWindows];
 
     if (retval) {
-        ud.setup.fullscreen = settings.fullscreen;
-        ud.setup.xdim = settings.xdim3d;
-        ud.setup.ydim = settings.ydim3d;
-        ud.setup.bpp = settings.bpp3d;
-        ud.setup.forcesetup = settings.forcesetup;
+        ud.setup = settings.shared;
         g_selectedGrp = settings.grp;
+#ifdef USE_OPENGL
+        if (settings.renderer != REND_CLASSIC)
+            glrendmode = settings.renderer;
+#endif
     }
 
     return retval;

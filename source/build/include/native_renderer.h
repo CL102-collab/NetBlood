@@ -18,7 +18,7 @@ struct NativeVertex
 struct NativeUniforms
 {
     float modelView[16];
-    float projection[16]; // Polymost mode 1: precomposed projection * modelView; otherwise projection.
+    float projection[16]; // Polymost/Duke64 modes 1/4: projection * modelView; otherwise projection.
     float textureMatrix[3][16];
     float rotation[16];
     float texturePosSize[4];
@@ -27,10 +27,10 @@ struct NativeUniforms
     float shadeNumVis[4];
     float fog[4]; // enabled, end, scale, alpha cutoff
     float fogColor[4];
-    float effects[4]; // color only, palette, detail, glow
-    float npot[4];
+    float effects[4]; // color only, palette, detail, glow; Duke64: combiner color 1
+    float npot[4]; // Duke64: combiner color 2
     float correction[4];
-    float misc[4]; // brightness, shade interpolation, alpha test, program mode
+    float misc[4]; // brightness (Duke64: combiner), shade interpolation, alpha test, program mode
     float fixed[4]; // texture enabled, fog enabled, alpha comparison, fog mode
 };
 

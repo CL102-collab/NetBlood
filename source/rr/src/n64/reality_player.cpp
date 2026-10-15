@@ -3,6 +3,7 @@
 #include "compat.h"
 #include "build.h"
 #include "../duke3d.h"
+#include "../world_lighting.h"
 
 // int rt_pfade;
 
@@ -770,6 +771,22 @@ enddisplayweapon:
 
 static int lastvisinc;
 
+static void RT_RecordWeaponLight(int playerNum)
+{
+#ifdef USE_OPENGL
+    int color = 0x005fff;
+    switch (DYNAMICWEAPONMAP(g_player[playerNum].ps->curr_weapon))
+    {
+    case SHRINKER_WEAPON__STATIC:
+    case FREEZE_WEAPON__STATIC: color = 0x78fcb0; break;
+    case GROW_WEAPON__STATIC: color = 0x1434d8; break;
+    }
+    G_RecordWeaponLight(playerNum, color);
+#else
+    UNREFERENCED_PARAMETER(playerNum);
+#endif
+}
+
 void RT_P_ProcessWeapon(int playerNum)
 {
     DukePlayer_t *const pPlayer      = g_player[playerNum].ps;
@@ -1011,6 +1028,7 @@ void RT_P_ProcessWeapon(int playerNum)
                 A_PlaySound(2, pPlayer->i);
                 lastvisinc = (int32_t) totalclock+32;
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
                 pPlayer->dn64_370 = 2;
             }
             else if ((*weaponFrame) == 2 && numplayers == 1)
@@ -1069,6 +1087,7 @@ void RT_P_ProcessWeapon(int playerNum)
 
                 lastvisinc = (int32_t) totalclock + 32;
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
             }
 
             switch ((*weaponFrame))
@@ -1149,6 +1168,7 @@ void RT_P_ProcessWeapon(int playerNum)
                     pPlayer->dn64_370 = (RT_KRand2()&3);
                     lastvisinc = (int32_t) totalclock + 32;
                     pPlayer->visibility = 0;
+                    RT_RecordWeaponLight(playerNum);
                     P_CheckWeapon(pPlayer);
 
                     if (!TEST_SYNC_KEY(playerBits, SK_FIRE))
@@ -1187,6 +1207,7 @@ void RT_P_ProcessWeapon(int playerNum)
 
                 pPlayer->dn64_370 = (RT_KRand2()&1) * 2 - 1;
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
                 lastvisinc = (int32_t) totalclock + 32;
                 P_CheckWeapon(pPlayer);
             }
@@ -1206,6 +1227,7 @@ void RT_P_ProcessWeapon(int playerNum)
                 A_Shoot(pPlayer->i, SHRINKER);
 
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
                 lastvisinc = (int32_t) totalclock + 32;
                 P_CheckWeapon(pPlayer);
             }
@@ -1266,6 +1288,7 @@ void RT_P_ProcessWeapon(int playerNum)
                 if (pPlayer->ammo_amount[FREEZE_WEAPON] < 0)
                     pPlayer->ammo_amount[FREEZE_WEAPON] = 0;
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
                 lastvisinc = (int32_t) totalclock;
                 A_Shoot(pPlayer->i, DN64TILE3841);
                 FX_StopSound(pPlayer->dn_388);
@@ -1331,6 +1354,7 @@ void RT_P_ProcessWeapon(int playerNum)
                 pPlayer->ammo_amount[pPlayer->curr_weapon]--;
                 lastvisinc = (int32_t) totalclock + 32;
                 pPlayer->visibility = 0;
+                RT_RecordWeaponLight(playerNum);
                 if (pPlayer->curr_weapon == BOAT_WEAPON)
                     A_Shoot(pPlayer->i, DN64TILE2606);
                 else

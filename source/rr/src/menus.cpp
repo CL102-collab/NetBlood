@@ -635,15 +635,55 @@ static MenuOption_t MEO_VIDEOSETUP_RESOLUTION = MAKE_MENUOPTION( &MF_Redfont, &M
 static MenuEntry_t ME_VIDEOSETUP_RESOLUTION = MAKE_MENUENTRY( "Resolution:", &MF_Redfont, &MEF_BigOptionsRt, &MEO_VIDEOSETUP_RESOLUTION, Option );
 
 #ifdef USE_OPENGL
+static char const *MEOSN_VIDEOSETUP_RENDERER[] = {
+    "Classic",
 #ifdef POLYMER
-static char const *MEOSN_VIDEOSETUP_RENDERER[] = { "Classic", "Polymost", "Polymer", };
-static int32_t MEOSV_VIDEOSETUP_RENDERER[] = { REND_CLASSIC, REND_POLYMOST, REND_POLYMER, };
+    "Polymost", "Polymer",
 #else
-static char const *MEOSN_VIDEOSETUP_RENDERER[] = { "Classic", "OpenGL", };
-static int32_t MEOSV_VIDEOSETUP_RENDERER[] = { REND_CLASSIC, REND_POLYMOST, };
+    "OpenGL",
 #endif
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "Vulkan",
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "Metal",
+#endif
+};
+static int32_t MEOSV_VIDEOSETUP_RENDERER[] = {
+    REND_CLASSIC, REND_POLYMOST,
+#ifdef POLYMER
+    REND_POLYMER,
+#endif
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_VULKAN,
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_METAL,
+#endif
+};
 
 static MenuOptionSet_t MEOS_VIDEOSETUP_RENDERER = MAKE_MENUOPTIONSET( MEOSN_VIDEOSETUP_RENDERER, MEOSV_VIDEOSETUP_RENDERER, 0x2 );
+
+// Duke 64 uses its own accelerated scene renderer and cannot use Classic or Polymer.
+static char const *MEOSN_VIDEOSETUP_RENDERER_RT[] = {
+    "OpenGL",
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "Vulkan",
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    "Metal",
+#endif
+};
+static int32_t MEOSV_VIDEOSETUP_RENDERER_RT[] = {
+    REND_POLYMOST,
+#if defined(USE_VULKAN) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_VULKAN,
+#endif
+#if defined(USE_METAL) && defined(RENDERTYPESDL) && SDL_TARGET >= 2
+    REND_METAL,
+#endif
+};
+static MenuOptionSet_t MEOS_VIDEOSETUP_RENDERER_RT = MAKE_MENUOPTIONSET(MEOSN_VIDEOSETUP_RENDERER_RT, MEOSV_VIDEOSETUP_RENDERER_RT, 0x2);
 
 static MenuOption_t MEO_VIDEOSETUP_RENDERER = MAKE_MENUOPTION( &MF_Redfont, &MEOS_VIDEOSETUP_RENDERER, &newrendermode );
 static MenuEntry_t ME_VIDEOSETUP_RENDERER = MAKE_MENUENTRY( "Renderer:", &MF_Redfont, &MEF_BigOptionsRt, &MEO_VIDEOSETUP_RENDERER, Option );
@@ -775,7 +815,7 @@ static MenuEntry_t ME_DISPLAYSETUP_SCREENSETUP = MAKE_MENUENTRY( "HUD setup", &M
 #ifndef EDUKE32_SIMPLE_MENU
 #ifdef USE_OPENGL
 static MenuLink_t MEO_DISPLAYSETUP_ADVANCED_GL_POLYMOST = { MENU_POLYMOST, MA_Advance, };
-static MenuEntry_t ME_DISPLAYSETUP_ADVANCED_GL_POLYMOST = MAKE_MENUENTRY( "Polymost setup", &MF_Redfont, &MEF_BigOptionsRt, &MEO_DISPLAYSETUP_ADVANCED_GL_POLYMOST, Link );
+static MenuEntry_t ME_DISPLAYSETUP_ADVANCED_GL_POLYMOST = MAKE_MENUENTRY( "Renderer setup", &MF_Redfont, &MEF_BigOptionsRt, &MEO_DISPLAYSETUP_ADVANCED_GL_POLYMOST, Link );
 
 #ifdef POLYMER
 static MenuLink_t MEO_DISPLAYSETUP_ADVANCED_GL_POLYMER = { MENU_POLYMER, MA_Advance, };
@@ -913,6 +953,9 @@ static MenuEntry_t *MEL_DISPLAYSETUP_RT[] = {
     &ME_DISPLAYSETUP_FOV,
     &ME_DISPLAYSETUP_TEXFILTER,
     &ME_DISPLAYSETUP_ANISOTROPY,
+#ifndef EDUKE32_SIMPLE_MENU
+    &ME_DISPLAYSETUP_ADVANCED_GL_POLYMOST,
+#endif
 };
 
 #ifdef POLYMER
@@ -1180,7 +1223,7 @@ static MenuEntry_t ME_RENDERERSETUP_HIGHTILE = MAKE_MENUENTRY( "True color textu
 static char const *MEOSN_RENDERERSETUP_TEXQUALITY [] = { "Full", "Half", "Barf", };
 static MenuOptionSet_t MEOS_RENDERERSETUP_TEXQUALITY = MAKE_MENUOPTIONSET(MEOSN_RENDERERSETUP_TEXQUALITY, NULL, 0x2);
 static MenuOption_t MEO_RENDERERSETUP_TEXQUALITY = MAKE_MENUOPTION(&MF_Bluefont, &MEOS_RENDERERSETUP_TEXQUALITY, &r_downsize);
-static MenuEntry_t ME_RENDERERSETUP_TEXQUALITY = MAKE_MENUENTRY("GL texture quality:", &MF_Bluefont, &MEF_SmallOptions, &MEO_RENDERERSETUP_TEXQUALITY, Option);
+static MenuEntry_t ME_RENDERERSETUP_TEXQUALITY = MAKE_MENUENTRY("Texture quality:", &MF_Bluefont, &MEF_SmallOptions, &MEO_RENDERERSETUP_TEXQUALITY, Option);
 
 
 static MenuOption_t MEO_RENDERERSETUP_PRECACHE = MAKE_MENUOPTION( &MF_Bluefont, &MEOS_OffOn, &ud.config.useprecache );
@@ -1199,6 +1242,10 @@ static MenuEntry_t ME_RENDERERSETUP_GLOWTEX = MAKE_MENUENTRY("Glow textures:", &
 # endif
 static MenuOption_t MEO_RENDERERSETUP_MODELS = MAKE_MENUOPTION( &MF_Bluefont, &MEOS_NoYes, &usemodels );
 static MenuEntry_t ME_RENDERERSETUP_MODELS = MAKE_MENUENTRY( "3D models:", &MF_Bluefont, &MEF_SmallOptions, &MEO_RENDERERSETUP_MODELS, Option );
+static MenuOption_t MEO_RENDERERSETUP_AMBIENTOCCLUSION = MAKE_MENUOPTION(&MF_Bluefont, &MEOS_OffOn, &r_ambientocclusion);
+static MenuEntry_t ME_RENDERERSETUP_AMBIENTOCCLUSION = MAKE_MENUENTRY("Ambient occlusion:", &MF_Bluefont, &MEF_SmallOptions, &MEO_RENDERERSETUP_AMBIENTOCCLUSION, Option);
+static MenuOption_t MEO_RENDERERSETUP_REALTIMELIGHTING = MAKE_MENUOPTION(&MF_Bluefont, &MEOS_OffOn, &r_realtimelighting);
+static MenuEntry_t ME_RENDERERSETUP_REALTIMELIGHTING = MAKE_MENUENTRY("Lighting and shadows:", &MF_Bluefont, &MEF_SmallOptions, &MEO_RENDERERSETUP_REALTIMELIGHTING, Option);
 #endif
 
 #ifdef POLYMER
@@ -1235,6 +1282,13 @@ static MenuEntry_t *MEL_RENDERERSETUP_POLYMOST[] = {
 # endif
     &ME_Space4_Bluefont,
     &ME_RENDERERSETUP_MODELS,
+    &ME_RENDERERSETUP_AMBIENTOCCLUSION,
+    &ME_RENDERERSETUP_REALTIMELIGHTING,
+};
+
+static MenuEntry_t *MEL_RENDERERSETUP_RT[] = {
+    &ME_RENDERERSETUP_AMBIENTOCCLUSION,
+    &ME_RENDERERSETUP_REALTIMELIGHTING,
 };
 
 #ifdef POLYMER
@@ -1629,7 +1683,7 @@ static MenuMenu_t M_KEYBOARDKEYS = MAKE_MENUMENU( "Key Configuration", &MMF_Keyb
 static MenuMenu_t M_MOUSEBTNS = MAKE_MENUMENU( "Mouse Buttons", &MMF_MouseJoySetupBtns, MEL_MOUSESETUPBTNS );
 static MenuMenu_t M_JOYSTICKAXIS = MAKE_MENUMENU( NULL, &MMF_BigSliders, MEL_JOYSTICKAXIS );
 #ifdef USE_OPENGL
-static MenuMenu_t M_RENDERERSETUP_POLYMOST = MAKE_MENUMENU( "Polymost Setup", &MMF_SmallOptions, MEL_RENDERERSETUP_POLYMOST );
+static MenuMenu_t M_RENDERERSETUP_POLYMOST = MAKE_MENUMENU( "Renderer Setup", &MMF_SmallOptions, MEL_RENDERERSETUP_POLYMOST );
 # ifdef POLYMER
 static MenuMenu_t M_RENDERERSETUP_POLYMER = MAKE_MENUMENU("Polymer Setup", &MMF_SmallOptions, MEL_RENDERERSETUP_POLYMER );
 # endif
@@ -2455,8 +2509,15 @@ static void Menu_Pre(MenuID_t cm)
 #endif
         break;
 
-    case MENU_POLYMER:
     case MENU_POLYMOST:
+        if (REALITY)
+            MenuMenu_ChangeEntryList(M_RENDERERSETUP_POLYMOST, MEL_RENDERERSETUP_RT);
+        else
+            MenuMenu_ChangeEntryList(M_RENDERERSETUP_POLYMOST, MEL_RENDERERSETUP_POLYMOST);
+        fallthrough__;
+    case MENU_POLYMER:
+        MenuEntry_DisableOnCondition(&ME_RENDERERSETUP_AMBIENTOCCLUSION, !videoUsesPolymost());
+        MenuEntry_DisableOnCondition(&ME_RENDERERSETUP_REALTIMELIGHTING, !videoUsesPolymost());
         MenuEntry_DisableOnCondition(&ME_RENDERERSETUP_TEXQUALITY, !usehightile);
         MenuEntry_DisableOnCondition(&ME_RENDERERSETUP_PRECACHE, !usehightile);
 # ifndef EDUKE32_GLES
@@ -2532,7 +2593,7 @@ static void Menu_Pre(MenuID_t cm)
         MenuEntry_DisableOnCondition(&ME_VIDEOSETUP_BORDERLESS, newfullscreen);
         // MenuEntry_DisableOnCondition(&ME_VIDEOSETUP_FRAMELIMITOFFSET, r_maxfps <= 0);
 #ifdef USE_OPENGL
-        MenuEntry_HideOnCondition(&ME_VIDEOSETUP_RENDERER, REALITY);
+        MEO_VIDEOSETUP_RENDERER.options = REALITY ? &MEOS_VIDEOSETUP_RENDERER_RT : &MEOS_VIDEOSETUP_RENDERER;
 #endif
         break;
     }
@@ -4320,12 +4381,20 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
         int32_t prend = videoGetRenderMode();
         int32_t pvsync = vsync;
         int pborderless = r_borderless;
+#ifdef USE_OPENGL
+        int32_t previousAcceleratedRenderer = glrendmode;
+#endif
 
         resolution_t n = { resolution[newresolution].xdim, resolution[newresolution].ydim,
                            (resolution[newresolution].flags & RES_FS) ? newfullscreen : 0,
                            (newrendermode == REND_CLASSIC) ? 8 : resolution[newresolution].bppmax, 0 };
 
-        if (r_borderless != newborderless)
+#ifdef USE_OPENGL
+        if (newrendermode != REND_CLASSIC)
+            glrendmode = newrendermode;
+#endif
+        // Switching graphics APIs needs a new device even at the same resolution.
+        if (r_borderless != newborderless || newrendermode != prend)
             videoResetMode();
 
         r_borderless = newborderless;
@@ -4333,6 +4402,10 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
         if (videoSetGameMode(n.flags, n.xdim, n.ydim, n.bppmax, upscalefactor) < 0)
         {
             r_borderless = pborderless;
+#ifdef USE_OPENGL
+            glrendmode = previousAcceleratedRenderer;
+#endif
+            videoResetMode();
 
             if (videoSetGameMode(p.flags, p.xdim, p.ydim, p.bppmax, upscalefactor) < 0)
             {
@@ -4341,6 +4414,7 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
             }
             else
             {
+                videoSetRenderMode(prend);
                 onvideomodechange(p.bppmax > 8);
                 vsync = videoSetVsync(pvsync);
             }

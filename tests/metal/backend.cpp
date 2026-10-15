@@ -837,6 +837,65 @@ void materialPrograms()
     pixel("fixed-function linear fog", 128, 0, 128);
 }
 
+
+void realityMaterials()
+{
+    auto state = defaults();
+    state.uniforms.misc[3] = 4.f;
+    // Duke64 supplies a precomposed projection and raw texture coordinates.
+    // These deliberately non-identity legacy matrices must not be applied twice.
+    state.uniforms.modelView[12] = 100.f;
+    state.uniforms.textureMatrix[0][12] = 0.5f;
+    state.samplers[0].texture = 42;
+    unsigned char const texel[] = {128, 64, 192, 128};
+    metalUploadTexture(42, 0, 1, 1, texel);
+    triangle(state, 0.5f, 0.25f, 1.f, 0.5f);
+    pixel("Duke64 texture modulation and precomposed transform", 64, 16, 192);
+    unsigned char rgba[4];
+    require(metalReadPixels(32, 32, 1, 1, rgba), "read Duke64 material alpha");
+    require(std::abs(int(rgba[3]) - 64) <= 2, "Duke64 multiplies texture and vertex alpha");
+
+    state.uniforms.effects[0] = 1.f; // First combiner color: red.
+    state.uniforms.npot[2] = 1.f; // Second combiner color: blue.
+    state.uniforms.misc[0] = 1.f;
+    triangle(state, 0.5f, 0.25f, 1.f, 0.5f);
+    pixel("Duke64 intensity combiner interpolates colors without vertex RGB", 127, 0, 128);
+    state.uniforms.misc[0] = 0.5f;
+    triangle(state, 0.5f, 0.25f, 1.f, 0.5f);
+    pixel("Duke64 combiner blends regular and intensity materials", 95, 8, 160);
+
+    float const green[] = {0.f, 1.f, 0.f, 1.f};
+    metalClear(GL_COLOR_BUFFER_BIT, green, 1.f, 0, state);
+    state.uniforms.misc[2] = 1.f;
+    state.uniforms.fixed[2] = GL_GREATER;
+    state.uniforms.fog[3] = 0.3f;
+    triangle(state, 1.f, 1.f, 1.f, 0.5f);
+    pixel("Duke64 alpha test uses combined texture and vertex alpha", 0, 255, 0);
+
+    unsigned char const repeatTexture[] = {255, 0, 0, 255, 0, 0, 255, 255};
+    metalUploadTexture(42, 0, 2, 1, repeatTexture);
+    state.uniforms.misc[0] = state.uniforms.misc[2] = 0.f;
+    state.samplers[0].wrapS = GL_REPEAT;
+    NativeVertex vertices[3] = {};
+    float const positions[3][2] = {{-1.f, -1.f}, {3.f, -1.f}, {-1.f, 3.f}};
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        vertices[i].position[0] = positions[i][0];
+        vertices[i].position[1] = positions[i][1];
+        vertices[i].position[3] = 1.f;
+        std::fill(vertices[i].color, vertices[i].color + 4, 1.f);
+        vertices[i].texcoord[0][0] = 1.25f;
+        vertices[i].texcoord[0][1] = 0.5f;
+        vertices[i].texcoord[0][3] = 1.f;
+    }
+    metalDraw(vertices, 3, state);
+    pixel("Duke64 repeats raw texture coordinates", 255, 0, 0);
+    state.uniforms.palswapSizeClamp[2] = 1.f;
+    metalDraw(vertices, 3, state);
+    pixel("Duke64 per-axis texture clamp overrides wrapping", 0, 0, 255);
+    metalDeleteTexture(42);
+}
+
 void pendingResources()
 {
     NativeDrawState state = defaults();
@@ -1132,6 +1191,7 @@ int main(int argc, char **argv)
     polygonPoints();
     reversedDepthRange();
     materialPrograms();
+    realityMaterials();
     ordering();
     pendingResources();
     streamRollover();
