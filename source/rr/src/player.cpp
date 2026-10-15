@@ -23,6 +23,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "duke3d.h"
 #include "demo.h"
 #include "world_lighting.h"
+#include "rnet.h"
+#include "rnet_rules.h"
+#include "render_bounds.h"
 
 #ifdef __ANDROID__
 #include "android.h"
@@ -131,6 +134,8 @@ static void P_IncurDamage(DukePlayer_t * const pPlayer)
 
 void P_QuickKill(DukePlayer_t * const pPlayer)
 {
+    if (rnet::active() && !rnet::rules::damageAllowed(P_Get(pPlayer->i), -1))
+        return;
     P_PalFrom(pPlayer, 48, 48,48,48);
 
     sprite[pPlayer->i].extra = 0;
@@ -2119,6 +2124,9 @@ void P_DisplayWeapon(void)
     DukePlayer_t *const  pPlayer     = g_player[screenpeek].ps;
     const int16_t *const weaponFrame = &pPlayer->kickback_pic;
 
+    if (*weaponFrame < 0)
+        return;
+
     int currentWeapon, quickKickFrame;
 
 #ifdef SPLITSCREEN_MOD_HACKS
@@ -2368,6 +2376,7 @@ void P_DisplayWeapon(void)
                 static int weaponFrames[] = { 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7 };
                 static int offsetX[] = { 310,342,364,418,350,316,282,288,0,0 };
                 static int offsetY[] = { 300,362,320,268,248,248,277,420,0,0 };
+                if (!renderbounds::frameIndex(weaponFrames, *weaponFrame)) break;
                 weaponX = weaponX + ((offsetX[weaponFrames[*weaponFrame]]>>1) - 12);
                 weaponY = weaponY + 200 - (244-offsetY[weaponFrames[*weaponFrame]]);
                 guniqhudid = currentWeapon;
@@ -2384,6 +2393,7 @@ void P_DisplayWeapon(void)
                     static int weaponFrames[] = { 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7 };
                     static int offsetX[] = { 580,676,310,491,356,210,310,614 };
                     static int offsetY[] = { 369,363,300,323,371,400,300,440 };
+                    if (!renderbounds::frameIndex(weaponFrames, *weaponFrame)) break;
                     weaponX = weaponX + ((offsetX[weaponFrames[*weaponFrame]]>>1) - 12);
                     weaponY = weaponY + 210 - (244-offsetY[weaponFrames[*weaponFrame]]);
                     guniqhudid = currentWeapon;
@@ -2434,6 +2444,7 @@ void P_DisplayWeapon(void)
                 if (!(duke3d_globalflags & DUKE3D_NO_WIDESCREEN_PINNING))
                     weaponBits |= 512;
                 static int frames[] = { 0,1,1,2,2,3,2,3,2,3,2,2,2,2,2,2,2,2,2,4,4,4,4,5,5,5,5,6,6,6,6,6,6,7,7,7,7,7,7 };
+                if (!renderbounds::frameIndex(frames, *weaponFrame)) break;
                 int frame = frames[*weaponFrame];
                 if (frame == 2 || frame == 3)
                 {
@@ -2461,6 +2472,7 @@ void P_DisplayWeapon(void)
                 if (*weaponFrame)
                 {
                     static int frames[] = { 0,1,1,2,2,3,2,3,2,3,2,2,2,2,2,2,2,2,2,4,4,4,4,5,5,5,5,6,6,6,6,6,6,7,7,7,7,7,7 };
+                    if (!renderbounds::frameIndex(frames, *weaponFrame)) break;
                     int frame = frames[*weaponFrame];
                     if (frame == 2 || frame == 3)
                     {
@@ -2520,6 +2532,7 @@ void P_DisplayWeapon(void)
                     static int kb_oy[] = { 315,300,302,305,302,302,303,306,302,404,384 };
                     if (pPlayer->shotgun_state[1])
                     {
+                        if (!renderbounds::frameIndex(kb_frames, *weaponFrame)) break;
                         if (*weaponFrame < 26)
                         {
                             int frm = kb_frames[*weaponFrame];
@@ -2559,6 +2572,7 @@ void P_DisplayWeapon(void)
                         {
                             if (pPlayer->shotgun_state[0])
                             {
+                                if (!renderbounds::frameIndex(kb_frames2, *weaponFrame)) break;
                                 int frm = kb_frames2[*weaponFrame];
                                 if (frm == 3 || frm == 4)
                                     weaponShade = 0;
@@ -2567,6 +2581,7 @@ void P_DisplayWeapon(void)
                             }
                             else
                             {
+                                if (!renderbounds::frameIndex(kb_frames3, *weaponFrame)) break;
                                 int frm = kb_frames3[*weaponFrame];
                                 if (frm == 1 || frm == 2)
                                     weaponShade = 0;
@@ -2576,6 +2591,7 @@ void P_DisplayWeapon(void)
                         }
                         else if (pPlayer->shotgun_state[0])
                         {
+                            if (!renderbounds::frameIndex(kb_frames2, *weaponFrame)) break;
                             int frm;
                             if (kb_frames2[*weaponFrame] > 0)
                                 frm = kb_frames2[(*weaponFrame) - 11];
@@ -2605,6 +2621,7 @@ void P_DisplayWeapon(void)
             case CHAINGUN_WEAPON__STATIC:
                 if (*weaponFrame > 0)
                 {
+                    if (!renderbounds::frameIndex(sintable, int64_t(*weaponFrame) * 128)) break;
                     weaponYOffset -= sintable[(*weaponFrame)<<7]>>12;
 
                     if (doAnim)
@@ -2636,6 +2653,7 @@ void P_DisplayWeapon(void)
                     static int frames[] = { 0,0,1,1,2,2,3,3,4,4,6,6,6,6,5,5,4,4,3,3,0,0 };
                     static int offsetX[] = { 194,190,185,208,215,215,216,216,201,170 };
                     static int offsetY[] = { 256,249,248,238,228,218,208,256,245,258 };
+                    if (!renderbounds::frameIndex(frames, *weaponFrame)) break;
                     int frame = frames[*weaponFrame];
 
                     if (frame)
@@ -2652,6 +2670,7 @@ void P_DisplayWeapon(void)
                     static int offsetX[] = { 244,244,244 };
                     static int offsetY[] = { 256,249,248 };
                     int dx, dy;
+                    if (!renderbounds::frameIndex(frames, int(*weaponFrame) - 22)) break;
                     int frame = frames[(*weaponFrame) - 22];
                     switch (*weaponFrame)
                     {
@@ -2716,7 +2735,7 @@ void P_DisplayWeapon(void)
                 {
                     static uint8_t remoteFrames[] = { 1,1,1,1,1,2,2,2,2,3,3,3,4,4,4,5,5,5,5,5,6,6,6 };
 
-                    if (*weaponFrame >= ARRAY_SIZE(remoteFrames))
+                    if (!renderbounds::frameIndex(remoteFrames, *weaponFrame))
                         break;
 
                     if (*weaponFrame < 5)
@@ -2745,6 +2764,7 @@ void P_DisplayWeapon(void)
                 if ((*weaponFrame) > 0)
                 {
                     static uint8_t freezerFrames[] = { 0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+                    if (!renderbounds::frameIndex(freezerFrames, *weaponFrame)) break;
 
                     G_DrawWeaponTileWithID(currentWeapon, weaponX + 260 - (pPlayer->look_ang >> 1), weaponY + 215 - weaponYOffset,
                                             FREEZE + freezerFrames[*weaponFrame], -32, weaponBits, weaponPal, 32768);
@@ -2775,6 +2795,7 @@ void P_DisplayWeapon(void)
                     else
                     {
                         static int frames[] = { 1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,0,0,0,0,0,0,0,0,0,0 };
+                        if (!renderbounds::frameIndex(frames, *weaponFrame)) break;
                         G_DrawWeaponTileWithID(currentWeapon, weaponX + 184 - halfLookAng, weaponY + 240 - weaponYOffset,
                             SHRINKER + frames[*weaponFrame], weaponShade, weaponBits, 0, 44040);
                     }
@@ -2861,7 +2882,10 @@ void P_DisplayWeapon(void)
                     int const reloadTime = PWEAPON(screenpeek, pPlayer->curr_weapon, Reload);
 
                     if (*weaponFrame > 0)
+                    {
+                        if (!renderbounds::frameIndex(sintable, int64_t(*weaponFrame) * 128)) break;
                         weaponYOffset -= sintable[(*weaponFrame)<<7]>>12;
+                    }
 
                     if (*weaponFrame > 0 && doAnim)
                         weaponX += 1-(wrand()&3);
@@ -2962,6 +2986,7 @@ void P_DisplayWeapon(void)
             case CHAINGUN_WEAPON__STATIC:
                 if (*weaponFrame > 0)
                 {
+                    if (!renderbounds::frameIndex(sintable, int64_t(*weaponFrame) * 128)) break;
                     weaponYOffset -= sintable[(*weaponFrame)<<7]>>12;
 
                     if (doAnim)
@@ -3089,13 +3114,15 @@ void P_DisplayWeapon(void)
                 if ((*weaponFrame) < 5)
                 {
                     static uint8_t pistolFrames[] = { 0, 1, 2 };
+                    int const frame = *weaponFrame > 2 ? 0 : *weaponFrame;
+                    if (!renderbounds::frameIndex(pistolFrames, frame)) break;
                     int pistolOffset = 195-12+weaponX;
 
                     if ((*weaponFrame) == 2)
                         pistolOffset -= 3;
 
                     G_DrawWeaponTileWithID(currentWeapon, (pistolOffset - (pPlayer->look_ang >> 1)), (weaponY + 244 - weaponYOffset),
-                                            FIRSTGUN + pistolFrames[*weaponFrame > 2 ? 0 : *weaponFrame], weaponShade, 2,
+                                            FIRSTGUN + pistolFrames[frame], weaponShade, 2,
                                             weaponPal);
 
                     break;
@@ -3148,7 +3175,7 @@ void P_DisplayWeapon(void)
                 {
                     static uint8_t pipebombFrames [] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
 
-                    if (*weaponFrame >= ARRAY_SIZE(pipebombFrames))
+                    if (!renderbounds::frameIndex(pipebombFrames, *weaponFrame))
                         break;
 
                     if (WW2GI && *weaponFrame >= PWEAPON(screenpeek, pPlayer->curr_weapon, TotalTime))
@@ -3201,7 +3228,7 @@ void P_DisplayWeapon(void)
                 {
                     static uint8_t remoteFrames[] = { 0, 1, 1, 2, 1, 1, 0, 0, 0, 0, 0 };
 
-                    if (*weaponFrame >= ARRAY_SIZE(remoteFrames))
+                    if (!renderbounds::frameIndex(remoteFrames, *weaponFrame))
                         break;
 
                     weaponX = -48;
@@ -3264,7 +3291,7 @@ void P_DisplayWeapon(void)
                 {
                     static uint8_t const devastatorFrames[] = { 0, 4, 12, 24, 12, 4, 0 };
 
-                    if (*weaponFrame >= ARRAY_SIZE(devastatorFrames))
+                    if (!renderbounds::frameIndex(devastatorFrames, *weaponFrame))
                         break;
 
                     int const tileOffset = ksgn((*weaponFrame) >> 2);
@@ -3303,7 +3330,7 @@ void P_DisplayWeapon(void)
                 {
                     static uint8_t freezerFrames[] = { 0, 0, 1, 1, 2, 2 };
 
-                    if (*weaponFrame % 6 >= ARRAY_SIZE(freezerFrames))
+                    if (!renderbounds::frameIndex(freezerFrames, *weaponFrame % 6))
                         break;
 
                     if (doAnim)
@@ -5449,6 +5476,8 @@ int P_FindOtherPlayer(int playerNum, int32_t *pDist)
 
     for (bssize_t TRAVERSE_CONNECT(otherPlayer))
     {
+        if (rnet::active() && (rnet::rules::downed(otherPlayer) || rnet::rules::spectating(otherPlayer)))
+            continue;
         if (playerNum != otherPlayer && sprite[g_player[otherPlayer].ps->i].extra > 0)
         {
             int otherPlayerDist = klabs(g_player[otherPlayer].ps->opos.x - g_player[playerNum].ps->pos.x) +
@@ -5514,7 +5543,8 @@ void P_FragPlayer(int playerNum)
 
     if (pPlayer->scream_voice > FX_Ok)
     {
-        FX_StopSound(pPlayer->scream_voice);
+        if (rnet::active()) S_StopEnvSound(REALITY ? 196 : DUKE_SCREAM, pPlayer->i);
+        else FX_StopSound(pPlayer->scream_voice);
         S_Cleanup();
         pPlayer->scream_voice = -1;
     }
@@ -7350,6 +7380,8 @@ static void P_DoJetpack(int const playerNum, int const playerBits, int const pla
 
 static void P_Dead(int const playerNum, int const sectorLotag, int const floorZ, int const ceilZ)
 {
+    if (rnet::active() && rnet::rules::death(playerNum))
+        return;
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
     spritetype *const   pSprite = &sprite[pPlayer->i];
 
@@ -7424,6 +7456,8 @@ extern char g_demo_legacy;
 
 void P_ProcessInput(int playerNum)
 {
+    if (rnet::active() && (rnet::rules::frozen() || rnet::rules::downed(playerNum) || rnet::rules::spectating(playerNum)))
+        return;
     if (DEER)
     {
         P_DHProcessInput(playerNum);
@@ -8620,7 +8654,8 @@ check_enemy_sprite:
 
             if (pPlayer->scream_voice > FX_Ok)
             {
-                FX_StopSound(pPlayer->scream_voice);
+                if (rnet::active()) S_StopEnvSound(REALITY ? 196 : DUKE_SCREAM, pPlayer->i);
+                else FX_StopSound(pPlayer->scream_voice);
                 S_Cleanup();
                 pPlayer->scream_voice = -1;
             }

@@ -37,7 +37,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 extern ENetHost       *g_netClient;
 extern ENetHost       *g_netServer;
 extern ENetPeer       *g_netClientPeer;
-extern char           g_netPassword[32];
+extern char           g_netPassword[129];
 extern int32_t        g_netDisconnect;
 extern int32_t        g_netPlayersWaiting;
 extern enet_uint16    g_netPort;

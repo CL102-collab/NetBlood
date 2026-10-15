@@ -22,6 +22,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define actors_c_
 
+#include "rnet.h"
+#include "rnet_rules.h"
+#include "rnet_sound.h"
 #include "duke3d.h"
 
 #if KRANDDEBUG
@@ -536,6 +539,7 @@ void A_DeleteSprite(int spriteNum)
     //    return;
     //}
 
+    rnet::audio::deleted(spriteNum);
     deletesprite(spriteNum);
 }
 
@@ -982,10 +986,22 @@ int A_IncurDamage(int const spriteNum)
 
         int const playerNum = P_GetP(pSprite);
 
+        if (rnet::active())
+        {
+            int const attacker = (unsigned(pActor->owner) < MAXSPRITES && sprite[pActor->owner].picnum == APLAYER)
+                ? P_Get(pActor->owner) : -1;
+            if (!rnet::rules::damageAllowed(playerNum, attacker))
+            {
+                pActor->extra = -1;
+                return -1;
+            }
+        }
+
         if (pActor->owner >= 0 && (sprite[pActor->owner].picnum == APLAYER))
         {
             if (
                 (ud.ffire == 0) &&
+                (!rnet::active() || P_Get(pActor->owner) != playerNum) &&
                 ((g_gametypeFlags[ud.coop] & GAMETYPE_PLAYERSFRIENDLY) ||
                 ((g_gametypeFlags[ud.coop] & GAMETYPE_TDM) && g_player[playerNum].ps->team == g_player[P_Get(pActor->owner)].ps->team))
                 )
@@ -1140,6 +1156,15 @@ ACTOR_STATIC void G_MovePlayers(void)
         spritetype *const   pSprite    = &sprite[spriteNum];
         DukePlayer_t *const pPlayer    = g_player[P_GetP(pSprite)].ps;
 
+        // A kneeling player is still alive for revival, but must not execute
+        // weapon/actor scripts or enter the legacy shrinking/death behavior.
+        if (rnet::active() && pSprite->owner >= 0 &&
+            (rnet::rules::downed(P_GetP(pSprite)) || rnet::rules::spectating(P_GetP(pSprite))))
+        {
+            spriteNum = nextSprite;
+            continue;
+        }
+
         if (pSprite->owner >= 0)
         {
             if (pPlayer->newowner >= 0)  //Looking thru the camera
@@ -1182,6 +1207,12 @@ ACTOR_STATIC void G_MovePlayers(void)
 
                 if (G_HaveActor(sprite[spriteNum].picnum))
                     A_Execute(spriteNum, P_GetP(pSprite), otherPlayerDist);
+
+                if (rnet::active() && pSprite->extra <= 0 && rnet::rules::death(P_GetP(pSprite)))
+                {
+                    spriteNum = nextSprite;
+                    continue;
+                }
 
                 if (g_netServer || ud.multimode > 1)
                 {
@@ -1343,7 +1374,7 @@ ACTOR_STATIC void G_MoveFX(void)
             int32_t const       spriteHitag = (uint16_t)pSprite->hitag;
             DukePlayer_t *const pPlayer     = g_player[screenpeek].ps;
 
-            if (T2(spriteNum) != ud.config.SoundToggle)
+            if (!rnet::server() && T2(spriteNum) != ud.config.SoundToggle)
             {
                 // If sound playback was toggled, restart.
                 T2(spriteNum) = ud.config.SoundToggle;
@@ -1352,7 +1383,7 @@ ACTOR_STATIC void G_MoveFX(void)
 
             if (pSprite->lotag >= 1000 && pSprite->lotag < 2000)
             {
-                if (!REALITY)
+                if (!REALITY && !rnet::dedicated())
                 {
                     int32_t playerDist = ldist(&sprite[pPlayer->i], pSprite);
 
@@ -1379,11 +1410,11 @@ ACTOR_STATIC void G_MoveFX(void)
                 }
             }
             else if (pSprite->lotag < 999 && (unsigned)sector[pSprite->sectnum].lotag < 9 &&  // ST_9_SLIDING_ST_DOOR
-                         ud.config.AmbienceToggle && sector[SECT(spriteNum)].floorz != sector[SECT(spriteNum)].ceilingz)
+                         (rnet::server() || ud.config.AmbienceToggle) && sector[SECT(spriteNum)].floorz != sector[SECT(spriteNum)].ceilingz)
             {
                 if (g_sounds[pSprite->lotag].m & SF_MSFX)
                 {
-                    int playerDist = dist(&sprite[pPlayer->i], pSprite);
+                    int playerDist = rnet::server() ? 0 : dist(&sprite[pPlayer->i], pSprite);
 
 #ifdef SPLITSCREEN_MOD_HACKS
                     if (g_fakeMultiMode==2)
@@ -1394,12 +1425,12 @@ ACTOR_STATIC void G_MoveFX(void)
                     }
 #endif
 
-                    if (playerDist < spriteHitag && T1(spriteNum) == 0 && FX_VoiceAvailable(g_sounds[pSprite->lotag].pr-1))
+                    if (playerDist < spriteHitag && T1(spriteNum) == 0 && (rnet::server() || FX_VoiceAvailable(g_sounds[pSprite->lotag].pr-1)))
                     {
                         // Start playing an ambience sound.
 
                         char om = g_sounds[pSprite->lotag].m;
-                        if (g_numEnvSoundsPlaying == ud.config.NumVoices)
+                        if (!rnet::server() && g_numEnvSoundsPlaying == ud.config.NumVoices)
                         {
                             int32_t j;
 
@@ -1439,10 +1470,11 @@ ACTOR_STATIC void G_MoveFX(void)
                     else
                     {
                         for (int TRAVERSE_CONNECT(playerNum))
-                            if (playerNum == myconnectindex && g_player[playerNum].ps->cursectnum == pSprite->sectnum)
+                            if ((rnet::server() || playerNum == myconnectindex) && g_player[playerNum].ps->cursectnum == pSprite->sectnum)
                             {
                                 S_PlaySound(pSprite->lotag + (unsigned)g_globalRandom % (pSprite->hitag+1));
                                 T5(spriteNum) = GAMETICSPERSEC*40 + g_globalRandom%(GAMETICSPERSEC*40);
+                                break;
                             }
                     }
                 }
@@ -6207,14 +6239,14 @@ DETONATEB:
 
                 if (pData[4] > 20)
                 {
-                    if (RR || pSprite->owner != spriteNum || ud.respawn_items == 0)
+                    if (RR || pSprite->owner != spriteNum || (rnet::active() ? !rnet::rules::respawnSprite(spriteNum) : ud.respawn_items == 0))
                     {
                         DELETE_SPRITE_AND_CONTINUE(spriteNum);
                     }
                     else
                     {
                         pData[4] = g_itemRespawnTime;
-                        A_Spawn(spriteNum,RESPAWNMARKERRED);
+                        if (rnet::rules::respawnMarker(spriteNum)) A_Spawn(spriteNum,RESPAWNMARKERRED);
                         pSprite->cstat = 32768;
                         pSprite->yrepeat = 9;
                         goto next_sprite;
@@ -6262,7 +6294,7 @@ DETONATEB:
                         }
 
                         if ((RR && actor[pSprite->owner].picnum != HEAVYHBOMB) || (!RR && pSprite->owner != spriteNum)
-                            || ud.respawn_items == 0)
+                            || (rnet::active() ? !rnet::rules::respawnSprite(spriteNum) : ud.respawn_items == 0))
                         {
                             if ((!RR || (pSprite->picnum == HEAVYHBOMB && sprite[pSprite->owner].picnum != APLAYER)) && (RR || pSprite->owner == spriteNum) && (g_gametypeFlags[ud.coop] & GAMETYPE_WEAPSTAY))
                                 goto next_sprite;
@@ -6271,7 +6303,7 @@ DETONATEB:
                         else
                         {
                             pData[2] = g_itemRespawnTime;
-                            A_Spawn(spriteNum, RESPAWNMARKERRED);
+                            if (rnet::rules::respawnMarker(spriteNum)) A_Spawn(spriteNum, RESPAWNMARKERRED);
                             pSprite->cstat = 32768;
                         }
                     }

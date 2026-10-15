@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 //-------------------------------------------------------------------------
 
 #include "duke3d.h"
+#include "rnet.h"
 #include "demo.h"
 #include "screens.h"
 #include "renderlayer.h"
@@ -47,6 +48,16 @@ void G_ShowParameterHelp(void)
         "-clipmap [file.map]\tLoad an additional clipping map for use with clipshape\n"
 #endif
         "-connect [host]\tConnect to a multiplayer game\n"
+        "-client [host:port]\tJoin a running server (alias for -connect)\n"
+        "-dedicated\tHost without a game window or audio device\n"
+        "-port [1-65535]\tMultiplayer UDP port (default 23513)\n"
+        "-password [text]\tRequire or supply the server password\n"
+        "-gametype [mode]\tServer mode: coop, deathmatch, or teams\n"
+        "-maprotation [list]\tComma-separated server map rotation\n"
+        "-stunserver [value]\tPublic endpoint discovery: auto, off, or host:port\n"
+        "-register-uri\tRegister rednukem:// links for this OS user\n"
+        "-connect-uri [URI]\tJoin from a rednukem:// link\n"
+        "-discord-appid [ID]\tDiscord application ID for presence and joining\n"
         "-c#\t\tMultiplayer mode #, 1 = DM, 2 = Co-op, 3 = DM(no spawn)\n"
         "-d [file.edm or #]\tPlay a demo\n"
         "-g [file.grp]\tLoad additional game data\n"
@@ -60,7 +71,7 @@ void G_ShowParameterHelp(void)
         "-rts [file.rts]\tLoad a custom Remote Ridicule sound bank\n"
         "-r\t\tRecord demo\n"
         "-s#\t\tStart game on skill level #\n"
-        "-server\t\tStart a multiplayer server\n"
+        "-server [1-16]\tStart a server with optional player capacity\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif
@@ -71,7 +82,8 @@ void G_ShowParameterHelp(void)
         "-x [game.con]\tLoad custom CON script\n"
         "-#\t\tLoad and run a game from slot # (0-9)\n"
         //              "\n-?/--help\tDisplay this help message and exit\n"
-        "\nSee " APPBASENAME " -debughelp for additional parameters for debugging"
+        "\nSee docs/rednukem-networking.md for multiplayer rules and commands.\n"
+        "See " APPBASENAME " -debughelp for additional parameters for debugging"
         ;
 #ifdef WM_MSGBOX_WINDOW
     Bsnprintf(tempbuf, sizeof(tempbuf), HEAD2 " %s", s_buildRev);
@@ -145,7 +157,7 @@ static void G_AddDemo(const char* param)
 
 void G_CheckCommandLine(int32_t argc, char const * const * argv)
 {
-    int16_t i = 1, j;
+    int i = 1, j;
     const char *c, *k;
 
     ud.fta_on = 1;
@@ -182,13 +194,18 @@ void G_CheckCommandLine(int32_t argc, char const * const * argv)
     if (argc > 1)
     {
         initprintf("Application parameters: ");
-        while (i < argc)
-            initprintf("%s ", argv[i++]);
+        while (i < argc) {
+            bool const password = i > 1 && !Bstrcasecmp(argv[i-1], "-password");
+            initprintf("%s ", password ? "[redacted]" : argv[i]);
+            ++i;
+        }
         initprintf("\n");
 
         i = 1;
         do
         {
+            int networkArg = i;
+            if (rnet::argument(argc, argv, networkArg)) { i = networkArg; continue; }
             const char *const oc = argv[i];
             int32_t shortopt = 0, ignored_short_opt = 0;
 

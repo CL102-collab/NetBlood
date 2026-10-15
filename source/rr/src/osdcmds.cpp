@@ -24,8 +24,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "cmdline.h"
 #include "demo.h"  // g_firstDemoFile[]
 #include "duke3d.h"
+#include "rnet.h"
 #include "menus.h"
 #include "osdcmds.h"
+#include "osd_redact.h"
 #include "osdfuncs.h"
 #include "savegame.h"
 #include "sbar.h"
@@ -53,6 +55,18 @@ static inline int osdcmd_quit(osdcmdptr_t UNUSED(parm))
 
 static int osdcmd_changelevel(osdcmdptr_t parm)
 {
+    if (rnet::active())
+    {
+        if (parm->numparms != 2 && !(VOLUMEONE && parm->numparms == 1)) return OSDCMD_SHOWHELP;
+        char* end = nullptr;
+        long const episode = parm->numparms == 2 ? strtol(parm->parms[0], &end, 10) : 1;
+        if (end && *end) return OSDCMD_SHOWHELP;
+        long const level = strtol(parm->parms[parm->numparms-1], &end, 10);
+        if (*end || episode < 1 || episode > MAXVOLUMES || level < 1 || level > MAXLEVELS) return OSDCMD_SHOWHELP;
+        const char* map = g_mapInfo[(episode-1)*MAXLEVELS + level-1].filename;
+        if (map) rnet::queueMap(map);
+        return OSDCMD_OK;
+    }
     int32_t volume=0,level;
     char *p;
 
@@ -162,6 +176,11 @@ static int osdcmd_changelevel(osdcmdptr_t parm)
 
 static int osdcmd_map(osdcmdptr_t parm)
 {
+    if (rnet::active()) {
+        if (parm->numparms != 1) return OSDCMD_SHOWHELP;
+        rnet::queueMap(parm->parms[0]);
+        return OSDCMD_OK;
+    }
     int32_t i;
     char filename[BMAX_PATH];
 
@@ -437,6 +456,12 @@ int osdcmd_restartmap(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
 
+    if (rnet::active())
+    {
+        rnet::queueMap(rnet::mapName(), true);
+        return OSDCMD_OK;
+    }
+
     if (g_player[myconnectindex].ps->gm & MODE_GAME && ud.multimode == 1)
         g_player[myconnectindex].ps->gm = MODE_RESTART;
 
@@ -644,7 +669,7 @@ static int osdcmd_crosshaircolor(osdcmdptr_t parm)
     G_SetCrosshairColor(r,g,b);
 
     if (!OSD_ParsingScript())
-        OSD_Printf("%s\n", parm->raw);
+        OSD_Printf("%s\n", OSD_RedactPasswords(parm->raw).c_str());
 
     return OSDCMD_OK;
 }
@@ -857,7 +882,7 @@ static int osdcmd_bind(osdcmdptr_t parm)
         CONTROL_BindMouse(i, tempbuf, repeat, ConsoleButtons[i]);
 
         if (!OSD_ParsingScript())
-            OSD_Printf("%s\n",parm->raw);
+            OSD_Printf("%s\n",OSD_RedactPasswords(parm->raw).c_str());
         return OSDCMD_OK;
     }
 
@@ -922,7 +947,7 @@ static int osdcmd_bind(osdcmdptr_t parm)
     }
 
     if (!OSD_ParsingScript())
-        OSD_Printf("%s\n",parm->raw);
+        OSD_Printf("%s\n",OSD_RedactPasswords(parm->raw).c_str());
 
     return OSDCMD_OK;
 }
@@ -1044,7 +1069,7 @@ static int osdcmd_inittimer(osdcmdptr_t parm)
 
     G_InitTimer(Batol(parm->parms[0]));
 
-    OSD_Printf("%s\n",parm->raw);
+    OSD_Printf("%s\n",OSD_RedactPasswords(parm->raw).c_str());
     return OSDCMD_OK;
 }
 #endif
@@ -1053,6 +1078,11 @@ static int osdcmd_inittimer(osdcmdptr_t parm)
 static int osdcmd_disconnect(osdcmdptr_t UNUSED(parm))
 {
     UNREFERENCED_CONST_PARAMETER(parm);
+    if (rnet::active())
+    {
+        rnet::disconnect();
+        return OSDCMD_OK;
+    }
     // NUKE-TODO:
     if (g_player[myconnectindex].ps->gm&MODE_MENU)
         g_netDisconnect = 1;
@@ -1071,12 +1101,22 @@ static int osdcmd_connect(osdcmdptr_t parm)
 
 static int osdcmd_password(osdcmdptr_t parm)
 {
-    if (parm->numparms < 1)
+    if (parm->numparms > 1)
+        return OSDCMD_SHOWHELP;
+    const char* value = parm->numparms ? parm->parms[0] : "";
+    if (Bstrlen(value) >= sizeof(g_netPassword))
     {
-        Bmemset(g_netPassword, 0, sizeof(g_netPassword));
+        OSD_Printf("Password must be at most 128 bytes.\n");
         return OSDCMD_OK;
     }
-    Bstrncpy(g_netPassword, (parm->raw) + 9, sizeof(g_netPassword)-1);
+    for (const unsigned char* ch = (const unsigned char*)value; *ch; ++ch)
+        if (*ch < 32 || *ch == 127)
+        {
+            OSD_Printf("Password cannot contain control characters.\n");
+            return OSDCMD_OK;
+        }
+    Bmemset(g_netPassword, 0, sizeof(g_netPassword));
+    Bstrncpyz(g_netPassword, value, sizeof(g_netPassword));
 
     return OSDCMD_OK;
 }
@@ -1088,6 +1128,12 @@ static int osdcmd_listplayers(osdcmdptr_t parm)
 
     if (parm && parm->numparms != 0)
         return OSDCMD_SHOWHELP;
+
+    if (rnet::active())
+    {
+        rnet::status();
+        return OSDCMD_OK;
+    }
 
     if (!g_netServer)
     {
@@ -1606,7 +1652,7 @@ int32_t registerosdcommands(void)
     OSD_RegisterFunction("noclip","noclip: toggles clipping mode", osdcmd_noclip);
 
 #if !defined NETCODE_DISABLE
-    OSD_RegisterFunction("password","password: sets multiplayer game password", osdcmd_password);
+    OSD_RegisterFunction("password","password [\"value\"]: set or clear the multiplayer password (up to 128 bytes; quote spaces)", osdcmd_password);
 #endif
 
     OSD_RegisterFunction("printtimes", "printtimes: prints VM timing statistics", osdcmd_printtimes);

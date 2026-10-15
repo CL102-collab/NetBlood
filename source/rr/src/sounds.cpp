@@ -23,6 +23,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "compat.h"
 
 #include "duke3d.h"
+#include "rnet.h"
+#include "rnet_sound.h"
 #include "renderlayer.h" // for win_gethwnd()
 #include "al_midi.h"
 #include <atomic>
@@ -668,6 +670,10 @@ sound_further_processing:
 
 int S_PlaySound3D(int num, int spriteNum, const vec3_t *pos)
 {
+    rnet::audio::Scope scope;
+    int routed = rnet::audio::start(num, spriteNum);
+    if (rnet::dedicated()) return routed >= 0 ? routed : -1;
+    if (routed == -1 || (unsigned)num >= MAXSOUNDS) return -1;
     int32_t j;
 
     if (!ud.config.SoundToggle) // check that the user returned -1, but only if -1 wasn't playing already (in which case, warn)
@@ -684,7 +690,7 @@ int S_PlaySound3D(int num, int spriteNum, const vec3_t *pos)
 
     const DukePlayer_t *const pPlayer = g_player[myconnectindex].ps;
 
-    if (((snd.m & SF_ADULT) && ud.lockout) || (unsigned)spriteNum >= MAXSPRITES || (pPlayer->gm & MODE_MENU) || !FX_VoiceAvailable(snd.pr)
+    if (((snd.m & SF_ADULT) && ud.lockout) || (unsigned)spriteNum >= MAXSPRITES || ((pPlayer->gm & MODE_MENU) && !rnet::active()) || !FX_VoiceAvailable(snd.pr)
         || (pPlayer->timebeforeexit > 0 && pPlayer->timebeforeexit <= GAMETICSPERSEC * 3))
         return -1;
 
@@ -800,6 +806,10 @@ int S_PlaySound3D(int num, int spriteNum, const vec3_t *pos)
 
 int S_PlaySound(int num)
 {
+    rnet::audio::Scope scope;
+    int routed = rnet::audio::start(num, -1);
+    if (rnet::dedicated()) return routed >= 0 ? routed : -1;
+    if (routed == -1 || (unsigned)num >= MAXSOUNDS) return -1;
     int sndnum;
 
     if (!ud.config.SoundToggle) // check that the user returned -1, but only if -1 wasn't playing already (in which case, warn)
@@ -877,6 +887,9 @@ int A_PlaySound(int soundNum, int spriteNum)
 
 void S_StopEnvSound(int32_t num, int32_t i)
 {
+    rnet::audio::Scope scope;
+    rnet::audio::stop(num, i);
+    if (rnet::dedicated()) return;
     if (EDUKE32_PREDICT_FALSE((unsigned)num > (unsigned)g_highestSoundIdx) || g_sounds[num].num <= 0)
         return;
 
@@ -908,11 +921,17 @@ void S_StopEnvSound(int32_t num, int32_t i)
 // Do not remove this or make it inline.
 void S_StopAllSounds(void)
 {
+    rnet::audio::Scope scope;
+    rnet::audio::stopAll();
+    if (rnet::dedicated()) return;
     FX_StopAllSounds();
 }
 
 void S_ChangeSoundPitch(int soundNum, int spriteNum, int pitchoffset)
 {
+    rnet::audio::Scope scope;
+    rnet::audio::pitch(soundNum, spriteNum, pitchoffset);
+    if (rnet::dedicated()) return;
     if ((unsigned)soundNum > (unsigned)g_highestSoundIdx || g_sounds[soundNum].num <= 0)
         return;
 
@@ -924,7 +943,7 @@ void S_ChangeSoundPitch(int soundNum, int spriteNum, int pitchoffset)
                 initprintf(OSD_ERROR "S_ChangeSoundPitch(): bad voice %d for sound ID %d!\n", voice.id, soundNum);
             else if (voice.id > FX_Ok && FX_SoundActive(voice.id))
             {
-                if (g_sounds[spriteNum].m & SF_REALITY_INTERNAL)
+                if (g_sounds[soundNum].m & SF_REALITY_INTERNAL)
                     FX_SetFrequency(voice.id, rt_soundrate[soundNum] + pitchoffset);
                 else
                     FX_SetPitch(voice.id, pitchoffset);
@@ -1021,6 +1040,7 @@ void S_ClearSoundLocks(void)
 
 bool A_CheckSoundPlaying(int spriteNum, int soundNum)
 {
+    if (rnet::audio::authoritative()) return rnet::audio::playing(soundNum, spriteNum);
     if (EDUKE32_PREDICT_FALSE((unsigned)soundNum > (unsigned)g_highestSoundIdx)) return 0;
 
     if (g_sounds[soundNum].num > 0 && spriteNum >= 0)
@@ -1036,6 +1056,7 @@ bool A_CheckSoundPlaying(int spriteNum, int soundNum)
 // Check if actor <i> is playing any sound.
 bool A_CheckAnySoundPlaying(int spriteNum)
 {
+    if (rnet::audio::authoritative()) return rnet::audio::playing(-1, spriteNum);
     int const msp = g_highestSoundIdx;
 
     for (int j = 0; j <= msp; ++j)
@@ -1050,6 +1071,7 @@ bool A_CheckAnySoundPlaying(int spriteNum)
 
 bool S_CheckSoundPlaying(int spriteNum, int soundNum)
 {
+    if (rnet::audio::authoritative()) return rnet::audio::playing(soundNum, -1);
     if (EDUKE32_PREDICT_FALSE((unsigned)soundNum > (unsigned)g_highestSoundIdx)) return 0;
     return (spriteNum == -1) ? (g_soundlocks[soundNum] > 200) : (g_sounds[soundNum].num != 0);
 }

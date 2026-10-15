@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "osdcmds.h"
 #include "renderlayer.h"
 #include "cmdline.h"
+#include "../../blood/src/netlag.h"
 
 #ifdef __ANDROID__
 # include "android.h"
@@ -167,6 +168,11 @@ void CONFIG_SetDefaultKeys(const char (*keyptr)[MAXGAMEFUNCLEN], bool lazy/*=fal
 
         int const default0 = KB_StringToScanCode(keyptr[i<<1]);
         int const default1 = KB_StringToScanCode(keyptr[(i<<1)+1]);
+
+        // Adding the scoreboard default must also preserve custom console
+        // commands on F11, not only other game-function bindings.
+        if (lazy && i == gamefunc_Show_DukeMatch_Scores && CONTROL_KeyIsBound(default0))
+            continue;
 
         // skip the function if the default key is already used
         // or the function is assigned to another key
@@ -873,6 +879,8 @@ int32_t CONFIG_ReadSetup(void)
 #endif
 
     SCRIPT_GetNumber(ud.config.scripthandle, "Misc", "Executions",&ud.executions);
+    SCRIPT_GetNumber(ud.config.scripthandle, "Network", "Lagometer", &gNetLagometer);
+    gNetLagometer = !!gNetLagometer;
 
 #ifdef _WIN32
     SCRIPT_GetNumber(ud.config.scripthandle, "Updates", "CheckForUpdates", &ud.config.CheckForUpdates);
@@ -950,6 +958,7 @@ void CONFIG_WriteSetup(uint32_t flags)
         ud.config.scripthandle = SCRIPT_Init(g_setupFileName);
 
     SCRIPT_PutNumber(ud.config.scripthandle, "Misc", "Executions",ud.executions,FALSE,FALSE);
+    SCRIPT_PutNumber(ud.config.scripthandle, "Network", "Lagometer", gNetLagometer, FALSE, FALSE);
 
     SCRIPT_PutNumber(ud.config.scripthandle, "Setup","ConfigVersion",BYTEVERSION_EDUKE32,FALSE,FALSE);
     SCRIPT_PutNumber(ud.config.scripthandle, "Setup", "ForceSetup", ud.setup.forcesetup, FALSE, FALSE);

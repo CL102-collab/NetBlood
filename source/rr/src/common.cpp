@@ -20,6 +20,10 @@
 #include "common.h"
 #include "common_game.h"
 #include "n64/reality.h"
+#include <string>
+
+void (*rnetTrackGroup)(const char*, bool, bool) = nullptr;
+bool (*rnetPreloadArchives)(std::string&) = nullptr;
 
 struct grpfile_t const *g_selectedGrp;
 
@@ -352,7 +356,10 @@ static int32_t G_TryLoadingGrp(char const * const grpfile)
     if ((i = initgroupfile(grpfile)) == -1)
         initprintf("Warning: could not find main data file \"%s\"!\n", grpfile);
     else
+    {
         initprintf("Using \"%s\" as main game data file.\n", grpfile);
+        if (rnetTrackGroup) rnetTrackGroup(grpfile, true, false);
+    }
 
     return i;
 }
@@ -468,6 +475,12 @@ void G_LoadGroups(int32_t autoload)
         }
     }
 
+    if (rnetPreloadArchives)
+    {
+        std::string error;
+        if (!rnetPreloadArchives(error))
+            initprintf("Cannot activate server addon: %s\n", error.c_str());
+    }
     loaddefinitions_game(G_DefFile(), TRUE);
 
     struct strllist *s;
@@ -486,6 +499,7 @@ void G_LoadGroups(int32_t autoload)
         else
         {
             g_groupFileHandle = j;
+            if (rnetTrackGroup) rnetTrackGroup(CommandGrps->str, false, false);
             initprintf("Using file \"%s\" as game data.\n", CommandGrps->str);
             if (autoload)
                 G_DoAutoload(CommandGrps->str);
@@ -997,7 +1011,8 @@ void G_LoadGroupsInDir(const char *dirname)
         {
             Bsnprintf(buf, sizeof(buf), "%s/%s", dirname, rec->name);
             initprintf("Using group file \"%s\".\n", buf);
-            initgroupfile(buf);
+            if (initgroupfile(buf) >= 0 && rnetTrackGroup)
+                rnetTrackGroup(buf, false, true);
         }
 
         fnlist_clearnames(&fnlist);

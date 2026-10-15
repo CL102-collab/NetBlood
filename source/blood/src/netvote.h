@@ -38,12 +38,13 @@ struct Cooldown
     }
 };
 
-class Vote
+template<size_t Capacity>
+class BasicVote
 {
 public:
-    bool start(uint32_t now, const Roster& roster, size_t callerSlot, uint32_t callerGeneration)
+    bool start(uint32_t now, const std::array<uint32_t, Capacity>& roster, size_t callerSlot, uint32_t callerGeneration)
     {
-        if (active_ || callerSlot >= MaxPlayers || !callerGeneration ||
+        if (active_ || callerSlot >= Capacity || !callerGeneration ||
             roster[callerSlot] != callerGeneration)
             return false;
 
@@ -101,7 +102,7 @@ public:
     // ballot. Zero denotes an absent player in the roster frozen at start.
     bool eligible(size_t slot, uint32_t generation) const
     {
-        return slot < MaxPlayers && generation && roster_[slot] == generation;
+        return slot < Capacity && generation && roster_[slot] == generation;
     }
 
     bool hasVoted(size_t slot, uint32_t generation) const
@@ -122,10 +123,11 @@ public:
     }
 
 private:
-    Roster roster_{};
-    std::array<int8_t, MaxPlayers> ballots_{};
+    std::array<uint32_t, Capacity> roster_{};
+    std::array<int8_t, Capacity> ballots_{};
     uint32_t started_ = 0;
     unsigned eligibleCount_ = 0, yesCount_ = 0, noCount_ = 0;
     bool active_ = false;
 };
+using Vote = BasicVote<MaxPlayers>;
 }

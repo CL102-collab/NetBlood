@@ -944,6 +944,24 @@ rr_common_editor_objs := \
     m32vars.cpp \
 
 rr_game_objs := \
+    rnet.cpp \
+    rnet_addon.cpp \
+    rnet_codec.cpp \
+    rnet_content.cpp \
+    rnet_country.cpp \
+    rnet_demo.cpp \
+    rnet_disabled.cpp \
+    rnet_discord.cpp \
+    rnet_lag.cpp \
+    rnet_prediction.cpp \
+    rnet_presence.cpp \
+    rnet_restart.cpp \
+    rnet_rules.cpp \
+    rnet_snapshot.cpp \
+    rnet_social.cpp \
+    rnet_sound.cpp \
+    rnet_stun.cpp \
+    rnet_urireg.cpp \
     game.cpp \
     global.cpp \
     actors.cpp \

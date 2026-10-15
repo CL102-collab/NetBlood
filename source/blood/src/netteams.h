@@ -19,11 +19,12 @@ using Roster = std::array<Member, MaxPlayers>;
 
 // Use a private PRNG so a vote never advances the deterministic game RNG.
 // Inactive slots retain -1; every active slot receives a valid, balanced team.
-inline std::array<int, MaxPlayers> shuffleTeams(const Roster& roster, uint32_t seed)
+template<size_t Capacity>
+inline std::array<int, Capacity> shuffleTeams(const std::array<Member, Capacity>& roster, uint32_t seed)
 {
-    std::array<int, MaxPlayers> teams;
+    std::array<int, Capacity> teams;
     teams.fill(-1);
-    std::array<size_t, MaxPlayers> slots{};
+    std::array<size_t, Capacity> slots{};
     size_t count = 0;
     for (size_t slot = 0; slot < roster.size(); ++slot)
         if (roster[slot].active)
@@ -74,7 +75,8 @@ inline std::array<int, MaxPlayers> shuffleTeams(const Roster& roster, uint32_t s
 // The server supplies a monotonically increasing join order, preserved across
 // deaths and map changes. A disconnected or departing player is inactive.
 // Return the newest player on the larger team, or -1 if no move is needed.
-inline int selectBalancePlayer(const Roster& roster)
+template<size_t Capacity>
+inline int selectBalancePlayer(const std::array<Member, Capacity>& roster)
 {
     unsigned count[2] = {};
     for (const auto& member : roster)

@@ -20,6 +20,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
 
+#include "rnet.h"
+#include "rnet_rules.h"
+#include "rnet_content.h"
 #include "duke3d.h"
 #include "anim.h"
 #include "menus.h"
@@ -466,6 +469,7 @@ static void G_PrecacheSprites(void)
 
 static void G_DoLoadScreen(const char *statustext, int32_t percent)
 {
+    if (rnet::dedicated()) return;
     if (ud.recstat != 2)
     {
         int32_t i = 0;
@@ -564,6 +568,7 @@ static void G_DoLoadScreen(const char *statustext, int32_t percent)
 
 void G_CacheMapData(void)
 {
+    if (rnet::dedicated()) return;
     int32_t i,j,pc=0;
     int32_t tc;
     uint32_t starttime, endtime;
@@ -725,6 +730,7 @@ extern int32_t fragbarheight(void)
 
 void G_UpdateScreenArea(void)
 {
+    if (rnet::dedicated()) return;
     if (!in3dmode())
         return;
 
@@ -813,7 +819,12 @@ static inline void P_ResetTintFade(DukePlayer_t *const pPlayer)
 
 void P_ResetPlayer(int playerNum)
 {
+    if (rnet::active() && !rnet::rules::allowRespawn(playerNum))
+        return;
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
+    int16_t const savedAccess = pPlayer->got_access;
+    uint8_t savedKeys[5];
+    Bmemcpy(savedKeys, pPlayer->keys, sizeof(savedKeys));
     spritetype *const   pSprite = &sprite[pPlayer->i];
     vec3_t              tmpvect = pPlayer->pos;
 
@@ -872,6 +883,13 @@ void P_ResetPlayer(int playerNum)
 
     P_ResetInventory(playerNum);
     P_ResetWeapons(playerNum);
+
+    if (rnet::rules::keepKeys())
+    {
+        pPlayer->got_access = savedAccess;
+        Bmemcpy(pPlayer->keys, savedKeys, sizeof(savedKeys));
+    }
+    if (rnet::active()) rnet::rules::respawned(playerNum);
 
     //pPlayer->reloading     = 0;
     pPlayer->movement_lock = 0;
@@ -1937,7 +1955,7 @@ static void prelevel(char g)
 
     if (RR && !g_thunderOn)
     {
-        videoSetPalette(ud.brightness >> 2,BASEPAL,0);
+        if (!rnet::dedicated()) videoSetPalette(ud.brightness >> 2,BASEPAL,0);
         g_visibility = g_player[screenpeek].ps->visibility;
     }
     if (RR)
@@ -1999,11 +2017,11 @@ void G_NewGame(int volumeNum, int levelNum, int skillNum)
 
     int const UserMap = Menu_HaveUserMap();
 
-    if (REALITY && (!g_netServer && ud.multimode < 2) && UserMap == 0 && levelNum == 0)
+    if (!rnet::active() && REALITY && (!g_netServer && ud.multimode < 2) && UserMap == 0 && levelNum == 0)
         RT_Intro();
 
     // we don't want the intro to play after the multiplayer setup screen
-    if (!RR && (!g_netServer && ud.multimode < 2) && UserMap == 0 &&
+    if (!rnet::active() && !RR && (!g_netServer && ud.multimode < 2) && UserMap == 0 &&
         levelNum == 0 && volumeNum == 3 && ud.lockout == 0)
     {
         S_PlaySpecialMusicOrNothing(MUS_BRIEFING);
@@ -2403,8 +2421,30 @@ void G_SetupFilenameBasedMusic(char *nameBuf, const char *fileName, int levelNum
     realloc_copy(&g_mapInfo[levelNum].musicfn, "dethtoll.mid");
 }
 
+static int32_t G_LoadNetworkBoard(const char* filename,char flags,vec3_t* position,int16_t* angle,int16_t* sectorNumber)
+{
+    if(rnet::client()||rnet::playback())
+    {
+        // CON enter-level events and special endings can change the eventual
+        // filename. Validate the exact file and lookup mode used by loadboard.
+        std::string error;
+        if(!rnet::content::validateMapForLoad(filename,error,flags&3))
+        {rnet::fail("Invalid multiplayer map: "+error);return -3;}
+        // A downloaded archive must not execute an embedded map-name.cfg.
+        flags|=8;
+    }
+    int32_t const result=engineLoadBoard(filename,flags,position,angle,sectorNumber);
+    if(result>=0&&rnet::server())
+    {
+        rnet::mapLoaded(filename);
+        rnet::content::mapLoaded(flags&3);
+    }
+    return result;
+}
+
 int G_EnterLevel(int gameMode)
 {
+    if (rnet::active()) rnet::rules::applySettings();
     int32_t i, mii;
     char levelName[BMAX_PATH];
 
@@ -2434,7 +2474,7 @@ int G_EnterLevel(int gameMode)
 
     VM_OnEvent(EVENT_ENTERLEVEL);
 
-    //if (g_networkMode != NET_DEDICATED_SERVER)
+    if (!rnet::dedicated())
     {
         S_PauseSounds(false);
         FX_StopAllSounds();
@@ -2519,7 +2559,7 @@ int G_EnterLevel(int gameMode)
 
     if (RR && g_lastLevel)
     {
-        if (engineLoadBoard("endgame.map", 0, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
+        if (G_LoadNetworkBoard("endgame.map", 0, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
         {
             OSD_Printf(OSD_ERROR "Map \"endgame.map\" not found or invalid map version!\n");
             return 1;
@@ -2530,7 +2570,7 @@ int G_EnterLevel(int gameMode)
     }
     else if (!VOLUMEONE && Menu_HaveUserMap())
     {
-        if (engineLoadBoard(boardfilename, 0, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
+        if (G_LoadNetworkBoard(boardfilename, 0, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
         {
             OSD_Printf(OSD_ERROR "Map \"%s\" not found or invalid map version!\n", boardfilename);
             return 1;
@@ -2543,7 +2583,7 @@ int G_EnterLevel(int gameMode)
     {
         RT_LoadBoard(rt_levelnum);
     }
-    else if (engineLoadBoard(g_mapInfo[mii].filename, VOLUMEONE, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
+    else if (G_LoadNetworkBoard(g_mapInfo[mii].filename, VOLUMEONE, &pPlayer->pos, &lbang, &pPlayer->cursectnum) < 0)
     {
         OSD_Printf(OSD_ERROR "Map \"%s\" not found or invalid map version!\n", g_mapInfo[mii].filename);
         return 1;
@@ -2592,7 +2632,7 @@ int G_EnterLevel(int gameMode)
     G_CacheMapData();
     // G_FadeLoad(0,0,0, 0,252, 28, 4, -2);
 
-    if (ud.recstat != 2)
+    if (!rnet::dedicated() && ud.recstat != 2)
     {
         if (g_mapInfo[g_musicIndex].musicfn == NULL ||
             g_mapInfo[mii].musicfn == NULL || // intentional, to pass control further while avoiding the strcmp on null
@@ -2604,7 +2644,7 @@ int G_EnterLevel(int gameMode)
         }
     }
 
-    if (RR && !(gameMode & MODE_DEMO))
+    if (!rnet::dedicated() && RR && !(gameMode & MODE_DEMO))
         S_PlayRRMusic();
 
     if (gameMode & (MODE_GAME|MODE_EOL))
@@ -2656,9 +2696,12 @@ int G_EnterLevel(int gameMode)
 
     //g_player[myconnectindex].ps->palette = palette;
     //G_FadePalette(0,0,0,0);
-    P_SetGamePalette(g_player[myconnectindex].ps, BASEPAL, 0);    // JBF 20040308
-    P_UpdateScreenPal(g_player[myconnectindex].ps);
-    renderFlushPerms();
+    if (!rnet::dedicated())
+    {
+        P_SetGamePalette(g_player[myconnectindex].ps, BASEPAL, 0);
+        P_UpdateScreenPal(g_player[myconnectindex].ps);
+        renderFlushPerms();
+    }
 
     everyothertime = 0;
     g_globalRandom = 0;
@@ -2696,10 +2739,13 @@ int G_EnterLevel(int gameMode)
 
     g_restorePalette = -1;
 
-    G_UpdateScreenArea();
-    videoClearViewableArea(0L);
-    G_DrawBackground();
-    G_DrawRooms(myconnectindex,65536);
+    if (!rnet::dedicated())
+    {
+        G_UpdateScreenArea();
+        videoClearViewableArea(0L);
+        G_DrawBackground();
+        G_DrawRooms(myconnectindex,65536);
+    }
 
     if (REALITY)
         RT_ResetBarScroll();

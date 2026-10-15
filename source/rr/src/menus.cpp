@@ -30,6 +30,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "input.h"
 #include "menus.h"
 #include "cheats.h"
+#include "../../blood/src/netlag.h"
+#include "rnet.h"
+#include "rnet_uri.h"
 
 #include "in_android.h"
 #ifndef __ANDROID__
@@ -445,6 +448,9 @@ static char const s_Options[] = "Options";
 static char const s_Credits[] = "Credits";
 
 MAKE_MENU_TOP_ENTRYLINK( s_NewGame, MEF_MainMenu, MAIN_NEWGAME, MENU_EPISODE );
+#ifndef NETCODE_DISABLE
+MAKE_MENU_TOP_ENTRYLINK( "Join Game", MEF_MainMenu, MAIN_JOINGAME, MENU_NETJOIN );
+#endif
 //#ifdef EDUKE32_SIMPLE_MENU
 MAKE_MENU_TOP_ENTRYLINK( "Resume Game", MEF_MainMenu, MAIN_RESUMEGAME, MENU_CLOSE );
 //#endif
@@ -469,6 +475,9 @@ MAKE_MENU_TOP_ENTRYLINK( "Trophies", MEF_MainMenu, MAIN_DHTROPHIES, MENU_DHTROPH
 
 static MenuEntry_t *MEL_MAIN[] = {
     &ME_MAIN_NEWGAME,
+#ifndef NETCODE_DISABLE
+    &ME_MAIN_JOINGAME,
+#endif
     &ME_MAIN_LOADGAME,
     &ME_MAIN_OPTIONS,
     &ME_MAIN_HELP,
@@ -789,6 +798,8 @@ static MenuRangeInt32_t MEO_SCREENSETUP_TEXTSIZE = MAKE_MENURANGE( &ud.textscale
 static MenuEntry_t ME_SCREENSETUP_TEXTSIZE = MAKE_MENUENTRY( s_Scale, &MF_Redfont, &MEF_BigOptions_Apply, &MEO_SCREENSETUP_TEXTSIZE, RangeInt32 );
 static MenuOption_t MEO_SCREENSETUP_LEVELSTATS = MAKE_MENUOPTION(&MF_Redfont, &MEOS_OffOn, &ud.levelstats);
 static MenuEntry_t ME_SCREENSETUP_LEVELSTATS = MAKE_MENUENTRY( "Level stats:", &MF_Redfont, &MEF_BigOptionsRt, &MEO_SCREENSETUP_LEVELSTATS, Option );
+static MenuOption_t MEO_SCREENSETUP_LAGOMETER = MAKE_MENUOPTION(&MF_Redfont, &MEOS_OffOn, &gNetLagometer);
+static MenuEntry_t ME_SCREENSETUP_LAGOMETER = MAKE_MENUENTRY("Lagometer:", &MF_Redfont, &MEF_BigOptionsRt, &MEO_SCREENSETUP_LAGOMETER, Option);
 
 
 static MenuOption_t MEO_SCREENSETUP_SHOWPICKUPMESSAGES = MAKE_MENUOPTION(&MF_Redfont, &MEOS_OffOn, &ud.fta_on);
@@ -1367,6 +1378,7 @@ static MenuEntry_t *MEL_SCREENSETUP[] = {
     &ME_SCREENSETUP_TEXTSIZE,
 
     &ME_SCREENSETUP_SHOWPICKUPMESSAGES,
+    &ME_SCREENSETUP_LAGOMETER,
 };
 
 // Save and load will be filled in before every viewing of the save/load screen.
@@ -1605,14 +1617,17 @@ static char MenuServer[BMAX_PATH] = "localhost";
 static MenuString_t MEO_NETJOIN_SERVER = MAKE_MENUSTRING( MenuServer, &MF_Bluefont, BMAX_PATH, 0 );
 static MenuEntry_t ME_NETJOIN_SERVER = MAKE_MENUENTRY( "Server", &MF_Redfont, &MEF_VideoSetup, &MEO_NETJOIN_SERVER, String );
 #define MAXPORTSTRINGLENGTH 6 // unsigned 16-bit integer
-static char MenuPort[MAXPORTSTRINGLENGTH] = "19014";
+static char MenuPort[MAXPORTSTRINGLENGTH] = "23513";
 static MenuString_t MEO_NETJOIN_PORT = MAKE_MENUSTRING( MenuPort, &MF_Bluefont, MAXPORTSTRINGLENGTH, INPUT_NUMERIC );
 static MenuEntry_t ME_NETJOIN_PORT = MAKE_MENUENTRY( "Port", &MF_Redfont, &MEF_VideoSetup, &MEO_NETJOIN_PORT, String );
+static MenuLink_t MEO_NETJOIN_PASSWORD = { MENU_NETPASSWORD, MA_None, };
+static MenuEntry_t ME_NETJOIN_PASSWORD = MAKE_MENUENTRY( "Password (optional)", &MF_Redfont, &MEF_VideoSetup, &MEO_NETJOIN_PASSWORD, Link );
 static MenuEntry_t ME_NETJOIN_CONNECT = MAKE_MENUENTRY( "Connect", &MF_Redfont, &MEF_VideoSetup_Apply, &MEO_NULL, Link );
 
 static MenuEntry_t *MEL_NETJOIN[] = {
     &ME_NETJOIN_SERVER,
     &ME_NETJOIN_PORT,
+    &ME_NETJOIN_PASSWORD,
     &ME_NETJOIN_CONNECT,
 };
 
@@ -1771,6 +1786,7 @@ static MenuMessage_t M_NETWAITVOTES = { CURSOR_BOTTOMRIGHT, MENU_NULL, MA_None, 
 static MenuMessage_t M_BUYDUKE = { CURSOR_BOTTOMRIGHT, MENU_EPISODE, MA_Return, };
 
 static MenuTextForm_t M_ADULTPASSWORD = { NULL, "Enter Password:", MAXPWLOCKOUT, MTF_Password };
+static MenuTextForm_t M_NETPASSWORD = { NULL, "Server password (empty clears):", 129, MTF_Password };
 static MenuTextForm_t M_CHEATENTRY = { NULL, "Enter Cheat Code:", MAXCHEATLEN, 0 };
 static MenuTextForm_t M_CHEAT_WARP = { NULL, "Enter Warp #:", 3, 0 };
 static MenuTextForm_t M_CHEAT_SKILL = { NULL, "Enter Skill #:", 1, 0 };
@@ -1893,7 +1909,8 @@ static Menu_t Menus[] = {
     { &M_NETHOST, MENU_NETHOST, MENU_NETWORK, MA_Return, Menu },
     { &M_NETOPTIONS, MENU_NETOPTIONS, MENU_NETWORK, MA_Return, Menu },
     { &M_USERMAP, MENU_NETUSERMAP, MENU_NETOPTIONS, MA_Return, FileSelect },
-    { &M_NETJOIN, MENU_NETJOIN, MENU_NETWORK, MA_Return, Menu },
+    { &M_NETJOIN, MENU_NETJOIN, MENU_MAIN, MA_Return, Menu },
+    { &M_NETPASSWORD, MENU_NETPASSWORD, MENU_NETJOIN, MA_Return, TextForm },
     { &M_DHHUNTING, MENU_DHHUNTING, MENU_MAIN, MA_Return, Menu },
     { &M_DHTARGET, MENU_DHTARGET, MENU_MAIN, MA_Return, Menu },
     { &M_DHWEAPON, MENU_DHWEAPON, MENU_PREVIOUS, MA_Return, Menu },
@@ -2430,7 +2447,7 @@ static void Menu_Pre(MenuID_t cm)
         MenuEntry_DisableOnCondition(&ME_MAIN_QUITTOTITLE, g_netServer || numplayers > 1);
         fallthrough__;
     case MENU_MAIN:
-        if ((g_netServer || ud.multimode > 1) && ud.recstat != 2)
+        if ((rnet::active() || g_netServer || ud.multimode > 1) && ud.recstat != 2)
         {
             ME_MAIN_NEWGAME.entry = &MEO_MAIN_NEWGAME_NETWORK;
             ME_MAIN_NEWGAME_INGAME.entry = &MEO_MAIN_NEWGAME_NETWORK;
@@ -2659,6 +2676,10 @@ static void Menu_Pre(MenuID_t cm)
             ME_NETOPTIONS_MARKERS.flags &= ~MEF_Disabled;
         }
         MEL_NETOPTIONS[5] = (g_gametypeFlags[ud.m_coop] & (GAMETYPE_PLAYERSFRIENDLY|GAMETYPE_TDM)) ? &ME_NETOPTIONS_FRFIRE : &ME_NETOPTIONS_MAPEXITS;
+        break;
+
+    case MENU_PLAYER:
+        MEOS_PLAYER_TEAM.numOptions = rnet::active() ? 2 : ARRAY_SIZE(MEOSN_PLAYER_TEAM);
         break;
 
     case MENU_OPTIONS:
@@ -4486,8 +4507,42 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
         CONFIG_SetDefaultKeys(keydefaults);
     else if (entry == &ME_KEYBOARDSETUP_RESETCLASSIC)
         CONFIG_SetDefaultKeys(oldkeydefaults);
+    else if (entry == &ME_NETJOIN_PASSWORD)
+    {
+        rnet::cancelPasswordPrompt();
+        M_NETPASSWORD.instructions = "Server password (empty clears):";
+    }
+    else if (entry == &ME_NETJOIN_CONNECT)
+    {
+        rnet::uri::Endpoint endpoint;
+        std::string error;
+        char* end = nullptr;
+        long const port = Bstrtol(MenuPort, &end, 10);
+        if (!MenuPort[0] || *end || port < 1 || port > 65535)
+            OSD_Printf("Server port must be between 1 and 65535.\n");
+        else if (!rnet::uri::parse(std::string("rednukem://") + MenuServer, endpoint, error))
+            OSD_Printf("Invalid server address: %s\n", error.c_str());
+        else
+        {
+            endpoint.port = uint16_t(port);
+            rnet::connect(rnet::uri::address(endpoint));
+        }
+    }
     else if (entry == &ME_NETHOST_LAUNCH)
     {
+        if (rnet::active())
+        {
+            if (rnet::server())
+            {
+                Net_FillNewGame(&pendingnewgame, 1);
+                Net_StartNewGame();
+            }
+            else Net_SendMapVoteInitiate();
+            // Vote progress is shown in the live HUD. The legacy waiting menu
+            // depends on legacy voting packets and cannot close this vote.
+            Menu_Close(myconnectindex);
+            return;
+        }
         // master does whatever it wants
         if (g_netServer)
         {
@@ -5013,6 +5068,23 @@ static void Menu_TextFormSubmit(char *input)
 {
     switch (g_currentMenu)
     {
+    case MENU_NETPASSWORD:
+    {
+        bool const retry = rnet::passwordRetryPending();
+        bool valid = Bstrlen(input) < sizeof(g_netPassword);
+        for (const unsigned char* ch = (const unsigned char*)input; *ch; ++ch)
+            valid &= *ch >= 32 && *ch != 127;
+        if (valid)
+        {
+            Bmemset(g_netPassword, 0, sizeof(g_netPassword));
+            Bstrncpyz(g_netPassword, input, sizeof(g_netPassword));
+        }
+        Bmemset(input, 0, M_NETPASSWORD.bufsize);
+        Menu_Change(retry ? MENU_MAIN : MENU_NETJOIN);
+        if (valid && retry) rnet::retryPassword();
+        else if (!valid) { rnet::cancelPasswordPrompt(); OSD_Printf("Invalid server password.\n"); }
+        break;
+    }
     case MENU_ADULTPASSWORD:
         if (Bstrlen(input) && (ud.pwlockout[0] == 0 || ud.lockout == 0))
             Bstrcpy(&ud.pwlockout[0], input);
@@ -5760,6 +5832,15 @@ void Menu_Open(uint8_t playerID)
     m_logosoundcnt = 0;
 
     mouseLockToWindow(0);
+}
+
+void Menu_NetworkPasswordPrompt(bool incorrect)
+{
+    M_NETPASSWORD.instructions = incorrect ? "Incorrect password. Try again:" : "Server password required:";
+    Menu_Open(myconnectindex);
+    Menu_Change(MENU_MAIN);
+    Menu_Change(MENU_NETPASSWORD);
+    OSD_Printf("NET password prompt (%s)\n", incorrect ? "incorrect" : "required");
 }
 
 void Menu_Close(uint8_t playerID)
@@ -6966,6 +7047,7 @@ static void Menu_Recurse(MenuID_t cm, const vec2_t origin)
     case MENU_COLCORRRESETVERIFY:
     case MENU_JOYDEFAULTVERIFY:
     case MENU_ADULTPASSWORD:
+    case MENU_NETPASSWORD:
     case MENU_CHEATENTRY:
     case MENU_CHEAT_WARP:
     case MENU_CHEAT_SKILL:
@@ -7798,6 +7880,17 @@ static void Menu_RunInput(Menu_t *cm)
                 m_mousecaught = 1;
 
                 S_PlaySound(EXITMENUSOUND);
+
+                if (cm->menuID == MENU_NETPASSWORD)
+                {
+                    bool const retry = rnet::passwordRetryPending();
+                    rnet::cancelPasswordPrompt();
+                    Bmemset(object->input, 0, object->bufsize);
+                    object->input = NULL;
+                    Menu_Change(retry ? MENU_MAIN : MENU_NETJOIN);
+                    Menu_StopTextInput();
+                    break;
+                }
 
                 object->input = NULL;
 

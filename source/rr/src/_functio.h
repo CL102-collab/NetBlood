@@ -160,7 +160,7 @@ char keydefaults[NUMGAMEFUNCTIONS*2][MAXGAMEFUNCLEN] =
    "'", "",
    ";", "",
    "`", "",
-   "", "",
+   "F11", "", // Show_DukeMatch_Scores (remappable)
    "", "",
    "", "",
    "", "",
@@ -227,7 +227,7 @@ char oldkeydefaults[NUMGAMEFUNCTIONS*2][MAXGAMEFUNCLEN] =
    "'", "",
    ";", "",
    "C", "",
-   "", "",
+   "F11", "", // Show_DukeMatch_Scores (remappable)
    "", "",
    "", "",
    "", "",

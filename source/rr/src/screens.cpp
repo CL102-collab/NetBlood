@@ -20,6 +20,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
 
+#include "rnet.h"
+#include "rnet_rules.h"
 #include "duke3d.h"
 #include "compat.h"
 #include "screens.h"
@@ -902,6 +904,14 @@ static void G_PrintFPS(void)
 
 void G_DisplayRest(int32_t smoothratio)
 {
+    // An external invitation can open the menu before any level has been loaded.
+    // World HUD drawing below requires a valid player sector and sprite lists.
+    if (numsectors <= 0)
+    {
+        M_DisplayMenus();
+        return;
+    }
+
     int32_t i, j;
     palaccum_t tint = PALACCUM_INITIALIZER;
 
@@ -1371,7 +1381,7 @@ void G_DisplayRest(int32_t smoothratio)
     }
 
     if (BUTTON(gamefunc_Show_DukeMatch_Scores))
-        G_ShowScores();
+        if (!rnet::active()) G_ShowScores();
 
     if (g_Debug)
         G_ShowCacheLocks();
@@ -1967,7 +1977,7 @@ static void G_BonusCutscenes(void)
 {
     if (RRRA)
         return;
-    if (!(numplayers < 2 && ud.eog && ud.from_bonus == 0))
+    if (!((numplayers < 2 || (rnet::active() && rnet::rules::coop())) && ud.eog && ud.from_bonus == 0))
         return;
 
     if (RR)
@@ -2436,6 +2446,8 @@ const char* G_PrintBestTime(void)
 
 void G_BonusScreen(int32_t bonusonly)
 {
+    // Online results and cinematics are driven by the server, including hot-joiners.
+    if (rnet::active()) return;
     int32_t gfx_offset;
     int32_t bonuscnt;
     int32_t clockpad = 2;
@@ -3024,6 +3036,7 @@ void G_ShowMapFrame(void)
 
 void G_BonusScreenRRRA(int32_t bonusonly)
 {
+    if (rnet::active()) return;
     int32_t gfx_offset;
     int32_t bonuscnt;
     int32_t showMap = 0;
@@ -3452,3 +3465,30 @@ void G_BonusScreenRRRA(int32_t bonusonly)
         g_vixenLevel = 0;
 }
 
+
+void rnet::rules::playCutscene()
+{
+    if (!rnet::active() || rnet::dedicated()) return;
+    if (!RR && !ud.eog && ud.volume_number == 3 && ud.level_number == 0)
+    {
+        S_PlaySpecialMusicOrNothing(MUS_BRIEFING);
+        const char* const parts[] = { "vol41a.anm", "vol42a.anm", "vol43a.anm" };
+        for (const char* part : parts)
+        {
+            videoClearViewableArea(0);
+            videoNextPage();
+            if (Anim_Play(part)) break;
+        }
+        FX_StopAllSounds();
+        S_ClearSoundLocks();
+        S_PlayLevelMusicOrNothing(ud.volume_number*MAXLEVELS + ud.level_number);
+    }
+    else if (RRRA)
+        G_PlayMapAnim();
+    else
+        G_BonusCutscenes();
+    I_ClearAllInput();
+    P_UpdateScreenPal(g_player[myconnectindex].ps);
+    P_SetGamePalette(g_player[myconnectindex].ps, g_player[myconnectindex].ps->palette, 8+2+1);
+    G_UpdateScreenArea();
+}

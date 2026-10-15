@@ -20,6 +20,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 //-------------------------------------------------------------------------
 
+#include "rnet.h"
+#include "rnet_rules.h"
 #include "colmatch.h"
 #include "compat.h"
 
@@ -1281,7 +1283,7 @@ static void VM_Fall(int const spriteNum, spritetype * const pSprite)
 static int32_t VM_ResetPlayer(int const playerNum, int32_t vmFlags)
 {
     //AddLog("resetplayer");
-    if (!g_netServer && ud.multimode < 2)
+    if (!rnet::active() && !g_netServer && ud.multimode < 2)
     {
         if (g_quickload && g_quickload->isValid() && ud.recstat != 2)
         {
@@ -1867,12 +1869,12 @@ GAMEEXEC_STATIC void VM_Execute(native_t loop)
                     insptr++;
                     continue;
                 }
-                if (vm.playerNum == screenpeek || (g_gametypeFlags[ud.coop] & GAMETYPE_COOPSOUND)
+                if (rnet::server() || vm.playerNum == screenpeek || (g_gametypeFlags[ud.coop] & GAMETYPE_COOPSOUND)
 #ifdef SPLITSCREEN_MOD_HACKS
                     || (g_fakeMultiMode == 2)
 #endif
                     )
-                    A_PlaySound(*insptr, g_player[screenpeek].ps->i);
+                    A_PlaySound(*insptr, g_player[rnet::server() ? vm.playerNum : screenpeek].ps->i);
                 insptr++;
                 continue;
 
@@ -2327,7 +2329,9 @@ GAMEEXEC_STATIC void VM_Execute(native_t loop)
                     insptr++;
                     continue;
                 }
-                A_Spawn(vm.spriteNum, *insptr++);
+                if (!rnet::active() || *insptr != RESPAWNMARKERRED || rnet::rules::respawnMarker(vm.spriteNum))
+                    A_Spawn(vm.spriteNum, *insptr);
+                ++insptr;
                 continue;
 
             case CON_IFWASWEAPON:
@@ -2628,7 +2632,9 @@ GAMEEXEC_STATIC void VM_Execute(native_t loop)
             case CON_IFBULLETNEAR: VM_CONDITIONAL(A_Dodge(vm.pSprite) == 1); continue;
 
             case CON_IFRESPAWN:
-                if (A_CheckEnemySprite(vm.pSprite))
+                if (rnet::active())
+                    VM_CONDITIONAL(rnet::rules::respawnSprite(vm.spriteNum))
+                else if (A_CheckEnemySprite(vm.pSprite))
                     VM_CONDITIONAL(ud.respawn_monsters)
                 else if (A_CheckInventorySprite(vm.pSprite))
                     VM_CONDITIONAL(ud.respawn_inventory)
@@ -3450,12 +3456,12 @@ GAMEEXEC_STATIC void RT_VM_Execute(native_t loop)
                     insptr++;
                     continue;
                 }
-                if (vm.playerNum == screenpeek || (g_gametypeFlags[ud.coop] & GAMETYPE_COOPSOUND)
+                if (rnet::server() || vm.playerNum == screenpeek || (g_gametypeFlags[ud.coop] & GAMETYPE_COOPSOUND)
 #ifdef SPLITSCREEN_MOD_HACKS
                     || (g_fakeMultiMode == 2)
 #endif
                     )
-                    A_PlaySound(*insptr, g_player[screenpeek].ps->i);
+                    A_PlaySound(*insptr, g_player[rnet::server() ? vm.playerNum : screenpeek].ps->i);
                 insptr++;
                 continue;
 
@@ -3621,7 +3627,9 @@ GAMEEXEC_STATIC void RT_VM_Execute(native_t loop)
                     insptr++;
                     continue;
                 }
-                A_Spawn(vm.spriteNum, *insptr++);
+                if (!rnet::active() || *insptr != RESPAWNMARKERRED || rnet::rules::respawnMarker(vm.spriteNum))
+                    A_Spawn(vm.spriteNum, *insptr);
+                ++insptr;
                 continue;
 
             case RT_CON_IFWASWEAPON:

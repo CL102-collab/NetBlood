@@ -23,6 +23,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define game_c_
 
 #include "duke3d.h"
+#include "rnet.h"
+#include "rnet_content.h"
+#include "rnet_rules.h"
+#include "rnet_social.h"
+#include "rnet_sound.h"
+#include "rnet_presence.h"
+#include "render_bounds.h"
 #include "compat.h"
 #include "renderlayer.h"
 #include "osdfuncs.h"
@@ -228,7 +235,7 @@ void G_HandleSpecialKeys(void)
 
 void G_GameQuit(void)
 {
-    if (numplayers < 2)
+    if (rnet::active() || numplayers < 2)
         G_GameExit(" ");
 
     if (g_gameQuit == 0)
@@ -404,7 +411,7 @@ void G_GameExit(const char *msg)
     // JBF: fixes crash on demo playback
     // PK: modified from original
 
-    if (!g_quickExit)
+    if (!g_quickExit && !rnet::dedicated())
     {
         if (g_mostConcurrentPlayers > 1 && g_player[myconnectindex].ps->gm&MODE_GAME && GTFLAGS(GAMETYPE_SCORESHEET) && *msg == ' ')
         {
@@ -419,12 +426,12 @@ void G_GameExit(const char *msg)
 
     if (*msg != 0) initprintf("%s\n",msg);
 
-    if (in3dmode())
+    if (in3dmode() || rnet::dedicated())
         G_Shutdown();
 
     if (*msg != 0)
     {
-        if (!(msg[0] == ' ' && msg[1] == 0))
+        if (!rnet::dedicated() && !(msg[0] == ' ' && msg[1] == 0))
         {
             char titlebuf[256];
             Bsprintf(titlebuf,HEAD2 " %s",s_buildRev);
@@ -1227,7 +1234,7 @@ void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
 
     int viewingRange = viewingrange;
 
-    //if (g_networkMode == NET_DEDICATED_SERVER) return;
+    if (rnet::dedicated() || numsectors <= 0 || (rnet::active() && !rnet::inGame())) return;
 
     totalclocklock = totalclock;
 
@@ -1498,7 +1505,7 @@ void G_DrawRooms(int32_t playerNum, int32_t smoothRatio)
 
         if (pPlayer->newowner < 0)
         {
-            if (playerNum == myconnectindex && numplayers > 1)
+            if (playerNum == myconnectindex && (rnet::client() || (!rnet::active() && numplayers > 1)))
             {
                 vec3_t const camVect = { omypos.x + mulscale16(mypos.x - omypos.x, smoothRatio),
                                          omypos.y + mulscale16(mypos.y - omypos.y, smoothRatio),
@@ -5520,6 +5527,7 @@ default_case1:
         case FORCESPHERE__STATIC:
             if (t->statnum == STAT_MISC)
             {
+                if ((unsigned)pSprite->owner >= MAXSPRITES) { t->xrepeat = t->yrepeat = 0; continue; }
                 int16_t const sqa = getangle(sprite[pSprite->owner].x - g_player[screenpeek].ps->pos.x,
                                        sprite[pSprite->owner].y - g_player[screenpeek].ps->pos.y);
                 int16_t const sqb = getangle(sprite[pSprite->owner].x - t->x, sprite[pSprite->owner].y - t->y);
@@ -5533,9 +5541,10 @@ default_case1:
             if (RR) goto default_case2;
             fallthrough__;
         case BURNING__STATIC:
-            if (sprite[pSprite->owner].statnum == STAT_PLAYER)
+            if ((unsigned)pSprite->owner < MAXSPRITES && sprite[pSprite->owner].statnum == STAT_PLAYER)
             {
                 int const playerNum = P_Get(pSprite->owner);
+                if ((unsigned)playerNum >= MAXPLAYERS) { t->xrepeat = t->yrepeat = 0; continue; }
 
                 if (display_mirror == 0 && playerNum == screenpeek && g_player[playerNum].ps->over_shoulder_on == 0)
                     t->xrepeat = 0;
@@ -5565,7 +5574,7 @@ default_case1:
             int const viewscrShift = G_GetViewscreenSizeShift(t);
             int const viewscrTile = TILE_VIEWSCR-viewscrShift;
 
-            if (g_curViewscreen >= 0 && actor[OW(i)].t_data[0] == 1)
+            if (g_curViewscreen >= 0 && (unsigned)OW(i) < MAXSPRITES && actor[OW(i)].t_data[0] == 1)
             {
                 t->picnum = STATIC;
                 t->cstat |= (wrand()&12);
@@ -5600,7 +5609,8 @@ default_case1:
         case SHRINKSPARK__STATIC:
             if (RR)
             {
-                if (RRRA && (sprite[pSprite->owner].picnum == CHEER || sprite[pSprite->owner].picnum == CHEERSTAYPUT))
+                if (RRRA && (unsigned)pSprite->owner < MAXSPRITES &&
+                    (sprite[pSprite->owner].picnum == CHEER || sprite[pSprite->owner].picnum == CHEERSTAYPUT))
                 {
                     t->picnum = CHEERBLADE + (((int32_t) totalclock >> 4) & 3);
                     t->shade = -127;
@@ -5622,7 +5632,7 @@ default_case1:
         case SPIT__STATIC:
             if (!RR) goto default_case2;
             t->picnum = SPIT + (((int32_t) totalclock >> 4) & 3);
-            if (RRRA)
+            if (RRRA && (unsigned)pSprite->owner < MAXSPRITES)
             {
                 if (sprite[pSprite->owner].picnum == MINION && sprite[pSprite->owner].pal == 8)
                     t->picnum = RRTILE3500 + (((int32_t) totalclock >> 4) % 6);
@@ -5759,7 +5769,7 @@ default_case1:
                 else
 #endif
                     t->cstat |= 2;
-                if (screenpeek == myconnectindex && numplayers >= 2)
+                if (screenpeek == myconnectindex && (rnet::client() || (!rnet::active() && numplayers >= 2)))
                 {
                     t->x = omypos.x+mulscale16(mypos.x-omypos.x,smoothratio);
                     t->y = omypos.y+mulscale16(mypos.y-omypos.y,smoothratio);
@@ -6133,6 +6143,11 @@ default_case2:
             uint16_t const action_flags = apScript[scrofs_action + ACTION_FLAGS];
 
             int const invertp = l < 0;
+            if (l == INT32_MIN)
+            {
+                t->xrepeat = t->yrepeat = 0;
+                continue;
+            }
             l = klabs(l);
 
 #ifdef USE_OPENGL
@@ -6194,12 +6209,14 @@ default_case2:
                 }
             }
 
-            t->picnum += frameOffset + apScript[scrofs_action + ACTION_STARTFRAME] + l*curframe;
-            // XXX: t->picnum can be out-of-bounds by bad user code.
-
-            if (l > 0)
-                while (tilesiz[t->picnum].x == 0 && t->picnum > 0)
-                    t->picnum -= l;       //Hack, for actors
+            int const frameTile = renderbounds::actionTile(t->picnum, frameOffset,
+                apScript[scrofs_action + ACTION_STARTFRAME], l, curframe, tilesiz);
+            if (frameTile < 0)
+            {
+                t->xrepeat = t->yrepeat = 0;
+                continue;
+            }
+            t->picnum = frameTile;
 
             if (actor[i].dispicnum >= 0)
                 actor[i].dispicnum = t->picnum;
@@ -6313,6 +6330,7 @@ skip:
         {
         case LASERLINE__STATIC:
             if (RR) break;
+            if ((unsigned)pSprite->owner >= MAXSPRITES) { t->xrepeat = t->yrepeat = 0; break; }
             if (sector[t->sectnum].lotag == ST_2_UNDERWATER) t->pal = 8;
             t->z = sprite[pSprite->owner].z-(3<<8);
             if (g_tripbombLaserMode == 2 && g_player[screenpeek].ps->heat_on == 0)
@@ -6373,7 +6391,8 @@ rrcoolexplosion1:
         case BURNING__STATIC:
         case BURNING2__STATIC:
             if (RR && pSprite->picnum == BURNING2) break;
-            if (sprite[pSprite->owner].picnum != TREE1 && sprite[pSprite->owner].picnum != TREE2)
+            if ((unsigned)pSprite->owner >= MAXSPRITES ||
+                (sprite[pSprite->owner].picnum != TREE1 && sprite[pSprite->owner].picnum != TREE2))
                 t->z = sector[t->sectnum].floorz;
             t->shade = -127;
             fallthrough__;
@@ -6485,7 +6504,7 @@ rrcoolexplosion1:
                 frameOffset = getofs_viewtype_mirrored<5>(t->cstat, t->ang - oura);
 
             t->picnum = pSprite->picnum+frameOffset+((T1(i)<4)*5);
-            t->shade = sprite[pSprite->owner].shade;
+            if ((unsigned)pSprite->owner < MAXSPRITES) t->shade = sprite[pSprite->owner].shade;
 
             break;
 
@@ -6648,6 +6667,7 @@ void G_PrintCurrentMusic(void)
 
 void G_HandleLocalKeys(void)
 {
+    rnet::social::input();
 //    CONTROL_ProcessBinds();
 
     if (DEER)
@@ -6897,6 +6917,11 @@ void G_HandleLocalKeys(void)
                     return;
                 }
 
+                if (rnet::active())
+                {
+                    rnet::social::sendChat(ud.ridecule[ridiculeNum-1]);
+                    return;
+                }
                 G_AddUserQuote(ud.ridecule[ridiculeNum-1]);
 
 #ifndef NETCODE_DISABLE
@@ -6923,6 +6948,12 @@ void G_HandleLocalKeys(void)
             // Not SHIFT -- that is, either some ALT or WIN.
             if (G_StartRTS(ridiculeNum, 1))
             {
+                if (rnet::active())
+                {
+                    rnet::audio::taunt(ridiculeNum);
+                    pus = pub = NUMPAGES;
+                    return;
+                }
 #ifndef NETCODE_DISABLE
                 if ((g_netServer || ud.multimode > 1))
                 {
@@ -7087,7 +7118,8 @@ FAKE_F3:
         {
             CONTROL_ClearButton(gamefunc_Third_Person_View);
 
-            if (!RRRA || (!g_player[myconnectindex].ps->on_motorcycle && !g_player[myconnectindex].ps->on_boat))
+            if ((!rnet::active() || rnet::rules::canChase()) &&
+                (!RRRA || (!g_player[myconnectindex].ps->on_motorcycle && !g_player[myconnectindex].ps->on_boat)))
             {
                 g_player[myconnectindex].ps->over_shoulder_on = !g_player[myconnectindex].ps->over_shoulder_on;
 
@@ -7291,6 +7323,7 @@ static int parsedefinitions_game(scriptfile *, int);
 static void parsedefinitions_game_include(const char *fileName, scriptfile *pScript, const char *cmdtokptr, int const firstPass)
 {
     scriptfile *included = scriptfile_fromfile(fileName);
+    if (included) rnet::content::trackFile(fileName);
 
     if (!included)
     {
@@ -7455,12 +7488,13 @@ static int parsedefinitions_game(scriptfile *pScript, int firstPass)
             char *fileName;
 
             pathsearchmode = 1;
-            if (!scriptfile_getstring(pScript,&fileName) && firstPass)
+            if (!scriptfile_getstring(pScript,&fileName) && firstPass && !rnet::content::restartActive())
             {
                 if (initgroupfile(fileName) == -1)
                     initprintf("Could not find file \"%s\".\n", fileName);
                 else
                 {
+                    rnet::content::trackGroup(fileName, false, true);
                     initprintf("Using file \"%s\" as game data.\n", fileName);
                     if (!g_noAutoLoad && !ud.setup.noautoload)
                         G_DoAutoload(fileName);
@@ -7696,7 +7730,9 @@ static int parsedefinitions_game(scriptfile *pScript, int firstPass)
 
 int loaddefinitions_game(const char *fileName, int32_t firstPass)
 {
+    rnet::content::captureSelections();
     scriptfile *pScript = scriptfile_fromfile(fileName);
+    if (pScript) rnet::content::trackFile(fileName);
 
     if (pScript)
         parsedefinitions_game(pScript, firstPass);
@@ -7792,12 +7828,15 @@ static void G_Cleanup(void)
 
 void G_Shutdown(void)
 {
+    rnet::shutdown();
     CONFIG_WriteSetup(0);
-    S_SoundShutdown();
-    S_MusicShutdown();
-    CONTROL_Shutdown();
-    KB_Shutdown();
-    G_SetFog(0);
+    if (!rnet::dedicated()) {
+        S_SoundShutdown();
+        S_MusicShutdown();
+        CONTROL_Shutdown();
+        KB_Shutdown();
+        G_SetFog(0);
+    }
     engineUnInit();
     G_Cleanup();
     FreeGroups();
@@ -8416,6 +8455,8 @@ EDUKE32_STATIC_ASSERT(sizeof(DukePlayer_t)%4 == 0);
 
 int app_main(int argc, char const * const * argv)
 {
+    int networkExit = 0;
+    if (rnet::earlyArguments(argc, argv, networkExit)) return networkExit;
 #ifndef NETCODE_DISABLE
     if (enet_initialize() != 0)
         initprintf("An error occurred while initializing ENet.\n");
@@ -8575,7 +8616,8 @@ int app_main(int argc, char const * const * argv)
     G_ScanGroups();
 
 #ifdef STARTUP_SETUP_WINDOW
-    if (readSetup < 0 || (!g_noSetup && (ud.configversion != BYTEVERSION_EDUKE32 || ud.setup.forcesetup)) || g_commandSetup)
+    if (!rnet::dedicated() && !rnet::presence::externalLaunch() &&
+        (readSetup < 0 || (!g_noSetup && (ud.configversion != BYTEVERSION_EDUKE32 || ud.setup.forcesetup)) || g_commandSetup))
     {
         if (quitevent || !startwin_run())
         {
@@ -8621,15 +8663,7 @@ int app_main(int argc, char const * const * argv)
         initprintf("CON debugging activated (level %d).\n",g_scriptDebug);
 
 #ifndef NETCODE_DISABLE
-    if (g_networkMode == NET_SERVER/* || g_networkMode == NET_DEDICATED_SERVER*/)
-    {
-        ENetAddress address = { ENET_HOST_ANY, g_netPort };
-        g_netServer = enet_host_create(&address, MAXPLAYERS, CHAN_MAX, 0, 0);
-
-        if (g_netServer == NULL)
-            initprintf("An error occurred while trying to create an ENet server host.\n");
-        else initprintf("Multiplayer server initialized\n");
-    }
+    // The authoritative transport starts after scripts, resources and settings are loaded.
 #endif
     numplayers = 1;
     g_mostConcurrentPlayers = ud.multimode;  // Lunatic needs this (player[] bound)
@@ -8733,8 +8767,9 @@ int app_main(int argc, char const * const * argv)
     OSD_SetVersion(tempbuf, 10,0);
     OSD_SetParameters(0, 0, 0, 12, 2, 12, OSD_ERROR, OSDTEXT_RED, OSDTEXT_DARKRED, gamefunctions[gamefunc_Show_Console][0] == '\0' ? OSD_PROTECTED : 0);
     registerosdcommands();
+    rnet::registerCommands();
 
-    //if (g_networkMode != NET_DEDICATED_SERVER)
+    if (!rnet::dedicated())
     {
         if (CONTROL_Startup(controltype_keyboardandmouse, &BGetTime, TICRATE))
         {
@@ -8775,8 +8810,10 @@ int app_main(int argc, char const * const * argv)
 
     Xfree(setupFileName);
 
-    OSD_Exec(tempbuf);
-    OSD_Exec("autoexec.cfg");
+    if (!rnet::content::restartActive()) {
+        OSD_Exec(tempbuf);
+        OSD_Exec("autoexec.cfg");
+    }
 
     CONFIG_SetDefaultKeys(keydefaults, true);
 
@@ -8792,7 +8829,7 @@ int app_main(int argc, char const * const * argv)
 #endif
     }
 
-    //if (g_networkMode != NET_DEDICATED_SERVER)
+    if (!rnet::dedicated())
     {
         if (videoSetGameMode(ud.setup.fullscreen, ud.setup.xdim, ud.setup.ydim, ud.setup.bpp, ud.detail) < 0)
         {
@@ -8849,10 +8886,10 @@ int app_main(int argc, char const * const * argv)
     for (bssize_t i = MINIFONT + ('a'-'!'); minitext_lowercase && i < MINIFONT + ('z'-'!') + 1; ++i)
         minitext_lowercase &= (int)tileLoad(i);
 
-    if (RRRA)
+    if (RRRA && !rnet::dedicated())
         playmve("REDINT.MVE");
 
-    //if (g_networkMode != NET_DEDICATED_SERVER)
+    if (!rnet::dedicated())
     {
         Menu_Init();
     }
@@ -8885,6 +8922,8 @@ int app_main(int argc, char const * const * argv)
 
     //    getpackets();
 
+    rnet::startup();
+
 MAIN_LOOP_RESTART:
     totalclock = 0;
     ototalclock = 0;
@@ -8895,20 +8934,27 @@ MAIN_LOOP_RESTART:
         q = 0;
 
     Menu_Change(MENU_MAIN);
+    // External Discord launches skip the attract/demo loop that normally
+    // initializes menu mode. Stay in the menu until its IPC invite is applied.
+    if (rnet::presence::externalLaunch() && !rnet::active())
+    {
+        g_player[myconnectindex].ps->gm = MODE_MENU;
+        Menu_Open(myconnectindex);
+    }
 
-    //if (g_networkMode != NET_DEDICATED_SERVER)
+    if (!rnet::dedicated())
     {
         G_GetCrosshairColor();
         G_SetCrosshairColor(CrosshairColors.r, CrosshairColors.g, CrosshairColors.b);
     }
 
-    if (ud.warp_on == 1)
+    if (!rnet::active() && ud.warp_on == 1)
     {
         G_NewGame_EnterLevel();
         // may change ud.warp_on in an error condition
     }
 
-    if (ud.warp_on == 0)
+    if (!rnet::active() && !rnet::presence::externalLaunch() && ud.warp_on == 0)
     {
         if ((g_netServer || ud.multimode > 1) && boardfilename[0] != 0)
         {
@@ -8942,21 +8988,23 @@ MAIN_LOOP_RESTART:
             }
         }
     }
-    else G_UpdateScreenArea();
+    else if (!rnet::dedicated()) G_UpdateScreenArea();
 
 //    G_GameExit(" "); ///
 
 //    ud.auto_run = ud.config.RunMode;
     ud.showweapons = ud.config.ShowOpponentWeapons;
     P_SetupMiscInputSettings();
-    g_player[myconnectindex].pteam = ud.team;
-
-    if (g_gametypeFlags[ud.coop] & GAMETYPE_TDM)
-        g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor = G_GetTeamPalette(g_player[myconnectindex].pteam);
-    else
+    if (!rnet::active())
     {
-        if (ud.color) g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor = ud.color;
-        else g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor;
+        g_player[myconnectindex].pteam = ud.team;
+        if (g_gametypeFlags[ud.coop] & GAMETYPE_TDM)
+            g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor = G_GetTeamPalette(g_player[myconnectindex].pteam);
+        else
+        {
+            if (ud.color) g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor = ud.color;
+            else g_player[myconnectindex].ps->palookup = g_player[myconnectindex].pcolor;
+        }
     }
 
     ud.warp_on = 0;
@@ -8964,7 +9012,8 @@ MAIN_LOOP_RESTART:
 
     do //main loop
     {
-        if (handleevents() && quitevent)
+        if (rnet::dedicated()) { handleevents(); if (quitevent) G_GameExit(" "); }
+        if (!rnet::dedicated() && handleevents() && quitevent)
         {
             KB_KeyDown[sc_Escape] = 1;
             quitevent = 0;
@@ -9004,8 +9053,7 @@ MAIN_LOOP_RESTART:
         else
 #endif
         {
-            MUSIC_Update();
-            G_HandleLocalKeys();
+            if (!rnet::dedicated()) { MUSIC_Update(); G_HandleLocalKeys(); }
         }
 
         OSD_DispatchQueued();
@@ -9013,7 +9061,8 @@ MAIN_LOOP_RESTART:
         static bool frameJustDrawn;
         char gameUpdate = false;
         double const gameUpdateStartTime = timerGetFractionalTicks();
-        if (((g_netClient || g_netServer) || !(g_player[myconnectindex].ps->gm & (MODE_MENU|MODE_DEMO))) && totalclock >= ototalclock+TICSPERFRAME)
+        rnet::gameTick();
+        if (!rnet::active() && !rnet::dedicated() && ((!(g_player[myconnectindex].ps->gm & (MODE_MENU|MODE_DEMO)))) && totalclock >= ototalclock+TICSPERFRAME)
         {
             do
             {
@@ -9074,9 +9123,13 @@ MAIN_LOOP_RESTART:
             } while(0);
         }
 
-        G_DoCheats();
+        if (!rnet::active() && !rnet::dedicated()) G_DoCheats();
 
-        if (g_player[myconnectindex].ps->gm & (MODE_EOL|MODE_RESTART))
+        if (rnet::server() && (g_player[myconnectindex].ps->gm & (MODE_EOL|MODE_RESTART))) {
+            rnet::rules::levelEnded();
+            for (int p = 0; p < MAXPLAYERS; ++p) g_player[p].ps->gm &= ~(MODE_EOL|MODE_RESTART);
+        }
+        if (!rnet::active() && !rnet::dedicated() && (g_player[myconnectindex].ps->gm & (MODE_EOL|MODE_RESTART)))
         {
             switch (G_EndOfLevel())
             {
@@ -9089,7 +9142,7 @@ MAIN_LOOP_RESTART:
         {
             idle();
         }
-        else */if (engineFPSLimit() || g_saveRequested)
+        else */if (!rnet::dedicated() && (engineFPSLimit() || g_saveRequested))
         {
             int const smoothRatio = calc_smoothratio(totalclock, ototalclock);
 
@@ -9097,6 +9150,7 @@ MAIN_LOOP_RESTART:
             if (videoGetRenderMode() >= REND_POLYMOST)
                 G_DrawBackground();
             G_DisplayRest(smoothRatio);
+            rnet::draw();
             videoNextPage();
 
             if (gameUpdate)
@@ -9111,7 +9165,7 @@ MAIN_LOOP_RESTART:
         }
 
         // handle CON_SAVE and CON_SAVENN
-        if (g_saveRequested)
+        if (g_saveRequested && !rnet::active() && !rnet::dedicated())
         {
             KB_FlushKeyboardQueue();
             videoNextPage();
@@ -9128,7 +9182,14 @@ MAIN_LOOP_RESTART:
             g_saveRequested = false;
         }
 
-        if (g_player[myconnectindex].ps->gm&MODE_DEMO)
+        if (rnet::content::restartReady()) {
+            G_Shutdown();
+            std::string error;
+            if (!rnet::content::launchRestart(error)) { initprintf("%s\n", error.c_str()); app_exit(1); }
+            app_exit(0);
+        }
+        if (rnet::dedicated()) idle();
+        if (!rnet::active() && (g_player[myconnectindex].ps->gm&MODE_DEMO))
             goto MAIN_LOOP_RESTART;
     }
     while (1);
@@ -9160,16 +9221,8 @@ GAME_STATIC GAME_INLINE int32_t G_MoveLoop()
     return 0;
 }
 
-int G_DoMoveThings(void)
+void G_TickQuotes(void)
 {
-    if (DEER)
-        sub_579A0();
-    ud.camerasprite = -1;
-    lockclock += TICSPERFRAME;
-
-    // Moved lower so it is restored correctly by demo diffs:
-    //if (g_earthquakeTime > 0) g_earthquakeTime--;
-
     if (g_RTSPlaying > 0)
         g_RTSPlaying--;
 
@@ -9182,6 +9235,17 @@ int G_DoMoveThings(void)
             if (!i) pub = NUMPAGES;
         }
     }
+}
+
+int G_DoMoveThings(void)
+{
+    if (DEER)
+        sub_579A0();
+    ud.camerasprite = -1;
+    lockclock += TICSPERFRAME;
+
+    // Quote expiry also runs for authoritative clients, which do not simulate.
+    G_TickQuotes();
 
     // Name display when aiming at opponents
     if (ud.idplayers && (g_netServer || ud.multimode > 1)
@@ -9285,7 +9349,8 @@ int G_DoMoveThings(void)
 
     for (bssize_t TRAVERSE_CONNECT(i))
     {
-        if (g_player[i].inputBits->extbits&(1<<6))
+        if (rnet::server() && !rnet::playing(i)) continue;
+        if (!rnet::active() && (g_player[i].inputBits->extbits&(1<<6)))
         {
             g_player[i].ps->team = g_player[i].pteam;
             if (g_gametypeFlags[ud.coop] & GAMETYPE_TDM)

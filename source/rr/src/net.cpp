@@ -24,6 +24,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "game.h"
 #include "gamedef.h"
 #include "net.h"
+#include "rnet.h"
+#include "rnet_social.h"
 #include "premap.h"
 #include "savegame.h"
 #include "input.h"
@@ -40,7 +42,7 @@ ENetPeer *g_netClientPeer = NULL;
 ENetPeer* g_netPlayerPeer[MAXPLAYERS];
 enet_uint16 g_netPort = 23513;
 int32_t g_netDisconnect = 0;
-char g_netPassword[32];
+char g_netPassword[129];
 int32_t g_netPlayersWaiting = 0;
 #ifndef NETCODE_DISABLE
 int32_t g_networkMode = NET_CLIENT;
@@ -147,6 +149,7 @@ void faketimerhandler(void)
 
 void Net_WaitForEverybody(void)
 {
+    if (rnet::active()) return;
     if (numplayers < 2) return;
 
     packbuf[0] = PACKET_TYPE_PLAYER_READY;
@@ -1334,6 +1337,7 @@ ENDFAKEPROCESSINPUT:
 
 void Net_CorrectPrediction(void)
 {
+    if (rnet::active()) return;
     if (numplayers < 2)
         return;
 
@@ -1574,6 +1578,7 @@ static char(*SyncFunc[MAXSYNCBYTES + 1])(void) =
 
 void Net_GetSyncStat(void)
 {
+    if (rnet::active()) return;
     int i;
     playerdata_t *pp = &g_player[myconnectindex];
     unsigned int val;
@@ -1779,6 +1784,7 @@ void Net_ClearFIFO(void)
 
 void Net_GetInput(void)
 {
+    if (rnet::active()) return;
     input_t* osyn, * nsyn;
 
     if (numplayers > 1)
@@ -2740,6 +2746,8 @@ void Net_ParsePacket(uint8_t *packbuf, int packbufleng)
 
 void Net_Connect(const char *srvaddr)
 {
+    rnet::connect(srvaddr);
+    return;
     ENetAddress address;
     ENetEvent event;
     char *addrstr = NULL;
@@ -2797,6 +2805,7 @@ void Net_Connect(const char *srvaddr)
 
 void Net_Disconnect(void)
 {
+    if (rnet::active()) { rnet::disconnect(); return; }
     if (g_netClient)
     {
         ENetEvent event;
@@ -2902,6 +2911,11 @@ void Net_ReceiveDisconnect(ENetEvent *event)
 
 void Net_GetPackets(void)
 {
+    rnet::pump();
+    if (rnet::active()) {
+        if (g_netDisconnect) { g_netDisconnect = 0; rnet::disconnect(); }
+        return;
+    }
     if (g_netDisconnect)
     {
         Net_Disconnect();
@@ -3448,6 +3462,7 @@ void Net_ReceivePlayerIndex(uint8_t *pbuf, int32_t packbufleng)
 
 void Net_SendClientInfo(void)
 {
+    if (rnet::active()) { rnet::social::profile(); return; }
     int32_t i,l;
 
     for (l=0; (unsigned)l<sizeof(szPlayerName)-1; l++)
@@ -3525,6 +3540,7 @@ void Net_ReceiveClientInfo(uint8_t *pbuf, int32_t packbufleng, int32_t fromserve
 
 void Net_SendUserMapName(void)
 {
+    if (rnet::active()) return;
     int32_t j;
 
     if (numplayers < 2)
@@ -3574,6 +3590,7 @@ void Net_ReceiveUserMapName(uint8_t *pbuf, int32_t packbufleng)
 
 void Net_SendMessage(void)
 {
+    if (rnet::active()) { rnet::social::chatInput(); return; }
 
     if (g_player[myconnectindex].ps->gm&MODE_SENDTOWHOM)
     {
@@ -3735,8 +3752,47 @@ void Net_ReceiveMessage(uint8_t *pbuf, int32_t packbufleng)
 ////////////////////////////////////////////////////////////////////////////////
 // New Game Packets
 
+static std::string Net_AuthoritativeMap(int volume, int level)
+{
+    if (volume == 0 && level == 7 && boardfilename[0])
+    {
+        // Downloaded maps may be mounted at a private cache path locally.
+        // An unchanged current-map selection votes for the server's map name.
+        if (rnet::active() && !Bstrcmp(boardfilename, currentboardfilename)) return rnet::mapName();
+        return boardfilename;
+    }
+    if (unsigned(volume) < MAXVOLUMES && unsigned(level) < MAXLEVELS)
+    {
+        const char* name = g_mapInfo[volume * MAXLEVELS + level].filename;
+        if (name && *name) return name[0] == '/' ? name + 1 : name;
+    }
+    return {};
+}
+
+static void Net_VoteForAuthoritativeMap(const std::string& map)
+{
+    // A server may host an absolute user-map path. Restart that already
+    // authorized map without submitting a filesystem path as a map vote.
+    if (map == rnet::mapName() && !map.empty() && (map[0] == '/' || map.find(':') != std::string::npos))
+        rnet::social::requestVote("restart");
+    else rnet::social::requestVote("map", map);
+}
+
+static void Net_RequestAuthoritativeMap(int volume, int level)
+{
+    std::string map = Net_AuthoritativeMap(volume, level);
+    if (map.empty()) { OSD_Printf("The selected multiplayer map is unavailable.\n"); return; }
+    if (rnet::server()) rnet::queueMap(map, true);
+    else Net_VoteForAuthoritativeMap(map);
+}
+
 void Net_StartNewGame()
 {
+    if (rnet::active())
+    {
+        Net_RequestAuthoritativeMap(pendingnewgame.volume_number, pendingnewgame.level_number);
+        return;
+    }
     int32_t i;
 
     for (TRAVERSE_CONNECT(i))
@@ -3764,6 +3820,14 @@ void Net_NotifyNewGame()
 
 void Net_SendNewGame(int32_t frommenu, ENetPeer *peer)
 {
+    if (rnet::active())
+    {
+        // Per-peer map bootstraps belong to the authenticated Welcome/content
+        // path. Menu requests are handled centrally on the next server tick.
+        if (!peer) Net_RequestAuthoritativeMap(frommenu ? ud.m_volume_number : ud.volume_number,
+                                              frommenu ? ud.m_level_number : ud.level_number);
+        return;
+    }
     newgame_t newgame;
 
     newgame.header = PACKET_NEW_GAME;
@@ -3862,6 +3926,12 @@ void Net_ExtractNewGame(newgame_t *newgame, int32_t menuonly)
 
 void Net_SendMapVoteInitiate(void)
 {
+    if (rnet::active())
+    {
+        std::string map = Net_AuthoritativeMap(ud.m_volume_number, ud.m_level_number);
+        if (!map.empty()) Net_VoteForAuthoritativeMap(map);
+        return;
+    }
     newgame_t newgame;
 
     if (!g_netClient)
@@ -3909,6 +3979,7 @@ void Net_ReceiveMapVoteInitiate(uint8_t *pbuf)
 
 void Net_SendMapVote(int32_t votefor)
 {
+    if (rnet::active()) { rnet::social::castBallot(votefor != 0); return; }
     voting = -1;
     g_player[myconnectindex].gotvote = 1;
     g_player[myconnectindex].vote = votefor;
@@ -3950,6 +4021,7 @@ void Net_ReceiveMapVote(uint8_t *pbuf)
 
 void Net_CheckForEnoughVotes()
 {
+    if (rnet::active()) return;
     int32_t i;
     int32_t requiredvotes;
     int32_t numfor, numagainst;
@@ -4006,6 +4078,7 @@ void Net_CheckForEnoughVotes()
 // If failed is true, that means the vote lost. Otherwise it was cancelled by the client who initiated it.
 void Net_SendMapVoteCancel(int32_t failed)
 {
+    if (rnet::active()) return; // Authoritative votes keep their fixed deadline.
     // Only the server or the client that initiated the vote can cancel the vote
     if (g_netClient && voting != myconnectindex)
     {

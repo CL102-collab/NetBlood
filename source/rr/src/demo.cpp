@@ -505,6 +505,7 @@ static void Demo_ReadSyncLegacy(void)
 ////////// DEMO PROFILING (TIMEDEMO MODE) //////////
 static struct {
     int32_t numtics, numframes;
+    uint32_t seedsChecked, seedMismatches;
     double totalgamems;
     double totalroomsdrawms, totalrestdrawms;
     double starthiticks;
@@ -577,6 +578,8 @@ static void Demo_FinishProfile(void)
         if (nt > 0)
         {
             OSD_Printf("== demo %d: %d gametics\n", dn, nt);
+            OSD_Printf("DEMO sync seeds_checked=%u mismatches=%u diffs=%d\n",
+                       g_prof.seedsChecked, g_prof.seedMismatches, demo_hasdiffs);
             OSD_Printf("== demo %d game times: %.03f ms (%.03f us/gametic)\n",
                        dn, gms, (gms*1000.0)/nt);
         }
@@ -878,7 +881,14 @@ nextdemo_nomenu:
                     }
 
                     if (demo_hasseeds)
+                    {
                         outofsync = ((uint8_t)(randomseed>>24) != g_demo_seedbuf[bigi]);
+                        if (Demo_IsProfiling())
+                        {
+                            ++g_prof.seedsChecked;
+                            g_prof.seedMismatches += outofsync != 0;
+                        }
+                    }
                 }
 
                 for (TRAVERSE_CONNECT(j))

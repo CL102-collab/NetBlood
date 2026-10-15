@@ -139,6 +139,7 @@ enum MenuIndex_t {
     MENU_NETOPTIONS     = 20011,
     MENU_NETUSERMAP     = 20012,
     MENU_NETJOIN        = 20020,
+    MENU_NETPASSWORD    = 20021,
     MENU_DHHUNTING      = 30000,
     MENU_DHTARGET       = 30001,
     MENU_DHWEAPON       = 30002,
@@ -503,6 +504,7 @@ int32_t Menu_IsTextInput(Menu_t *cm);
 int G_CheckPlayerColor(int color);
 void Menu_Init(void);
 void Menu_Open(uint8_t playerID);
+void Menu_NetworkPasswordPrompt(bool incorrect);
 void Menu_Close(uint8_t playerID);
 void M_DisplayMenus(void);
 

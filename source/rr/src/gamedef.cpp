@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "savegame.h"
 #include "common.h"
 #include "common_game.h"
+#include "rnet_content.h"
 #include "cheats.h"
 
 #include "osd.h"
@@ -957,6 +958,7 @@ static void C_Include(const char *confile)
         return;
     }
 
+    rnet::content::trackFile(confile);
     int32_t j = kfilelength(fp);
 
     char *mptr = (char *)Xmalloc(j+1);
@@ -2852,6 +2854,7 @@ void C_Compile(const char *fileName)
         return; //Not there
     }
 
+    rnet::content::trackFile(fileName);
     int const kFileLen = kfilelength(kFile);
 
     initprintf("Compiling: %s (%d bytes)\n", fileName, kFileLen);

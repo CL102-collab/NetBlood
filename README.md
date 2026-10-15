@@ -154,6 +154,14 @@ A port of several BUILD Engine games derived from the Duke Nukem 3D codebase, ba
     * World War II GI: WW2GI.GRP, WW2GI.RTS, CON files
 3. Launch Rednukem
 
+### Multiplayer
+
+Rednukem supports dedicated servers and hot-join, custom map and addon downloads,
+voting, team chat, a scoreboard and lagometer, co-op lives and revival, map
+rotation, STUN discovery, and Discord/URI joining. See the
+[multiplayer guide](docs/rednukem-networking.md) for setup, supported game modes,
+server rules, password protection, and packet/legacy demo compatibility.
+
 ## Building from source
 See: https://wiki.eduke32.com/wiki/Main_Page
 

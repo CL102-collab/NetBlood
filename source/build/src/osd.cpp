@@ -3,6 +3,7 @@
 // by Jonathon Fowler (jf@jonof.id.au)
 
 #include "osd.h"
+#include "osd_redact.h"
 
 #include "build.h"
 #include "cache1d.h"
@@ -291,7 +292,8 @@ static int osdfunc_exec(osdcmdptr_t parm)
 
 static int osdfunc_echo(osdcmdptr_t parm)
 {
-    LOG_F(INFO, "%s", parm->raw + 5);
+    std::string const visible = OSD_RedactPasswords(parm->raw);
+    LOG_F(INFO, "%s", visible.c_str() + (visible.size() < 5 ? visible.size() : 5));
 
     return OSDCMD_OK;
 }
@@ -505,7 +507,7 @@ static int osdfunc_alias(osdcmdptr_t parm)
     OSD_RegisterFunction(Xstrdup(parm->parms[0]), Xstrdup(parm->parms[1]), OSD_ALIAS);
 
     if (!osd->execdepth)
-        LOG_F(INFO, "%s", parm->raw);
+        LOG_F(INFO, "%s", OSD_RedactPasswords(parm->raw).c_str());
 
     return OSDCMD_OK;
 }
@@ -641,7 +643,7 @@ static int osdfunc_history(osdcmdptr_t UNUSED(parm))
     for (int i=osd->history.maxlines-1, j=0; i>=0; i--)
     {
         if (h.buf[i])
-            LOG_F(INFO, "%4d '%s'", h.total - h.lines + (++j), h.buf[i]);
+            LOG_F(INFO, "%4d '%s'", h.total - h.lines + (++j), OSD_RedactPasswords(h.buf[i]).c_str());
     }
 
     return OSDCMD_OK;
@@ -1098,7 +1100,7 @@ int OSD_HandleChar(char ch)
 
         case asc_Ctrl_C:  // discard line
             ed.buf[ed.len] = 0;
-            OSD_Printf("%s\n", ed.buf);
+            OSD_Printf("%s\n", OSD_RedactPasswords(ed.buf).c_str());
 
             ed.len    = 0;
             ed.pos    = 0;
@@ -1930,7 +1932,16 @@ void OSD_DispatchQueued(void)
     osd->history.exec = 0;
 
     for (; cmd >= 0; cmd--)
-        OSD_Dispatch((const char *)osd->history.buf[cmd]);
+    {
+        std::string const original = osd->history.buf[cmd];
+        std::string const visible = OSD_RedactPasswords(original);
+        if (visible != original)
+        {
+            Xfree(osd->history.buf[cmd]);
+            OSD_SetHistory(cmd, visible.c_str());
+        }
+        OSD_Dispatch(original.c_str());
+    }
 }
 
 //
@@ -2039,7 +2050,7 @@ void OSD_Dispatch(const char *cmd, bool silent)
     int restart = 0;
 
     if (!osd->execdepth && !silent)
-        LOG_F(INFO, "  >%s", cmd);
+        LOG_F(INFO, "  >%s", OSD_RedactPasswords(cmd).c_str());
 
     do
     {

@@ -63,7 +63,7 @@ static inline void RANDOMSCRAP(spritetype *s, int i)
 
 #define TRAVERSE_SPRITE_SECT(l, o, n)    (o) = (l); ((o) != -1) && ((n) = nextspritesect[o]); (o) = (n)
 #define TRAVERSE_SPRITE_STAT(l, o, n)    (o) = (l); ((o) != -1) && ((n) = nextspritestat[o]); (o) = (n)
-#define TRAVERSE_CONNECT(i)              i = 0; i != -1; i = connectpoint2[i]
+#define TRAVERSE_CONNECT(i)              i = connecthead; i != -1; i = connectpoint2[i]
 
 #define TEST(flags,mask) ((flags) & (mask))
 #define SET(flags,mask) ((flags) |= (mask))

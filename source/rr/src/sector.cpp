@@ -22,6 +22,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define sector_c_
 
+#include "rnet.h"
+#include "rnet_rules.h"
 #include "duke3d.h"
 #include "input.h"
 
@@ -374,6 +376,8 @@ int __fastcall A_FindPlayer(const spritetype *pSprite, int32_t *dist)
 
     for (bssize_t TRAVERSE_CONNECT(j))
     {
+        if (rnet::active() && (rnet::rules::downed(j) || rnet::rules::spectating(j)))
+            continue;
         DukePlayer_t *const pPlayer    = g_player[j].ps;
         int32_t             playerDist = A_FP_ManhattanDist(pPlayer, pSprite);
 
@@ -3700,6 +3704,8 @@ int P_HandleSubweapon(DukePlayer_t *const pPlayer, int weapon, int subweapon)
 
 void P_HandleKeys(int playerNum)
 {
+    if (rnet::active() && (rnet::rules::frozen() || rnet::rules::downed(playerNum) || rnet::rules::spectating(playerNum)))
+        return;
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
 
     if (pPlayer->cheat_phase == 1) return;
@@ -4085,6 +4091,13 @@ CHECKINV1:
 
 void P_HandleSharedKeys(int playerNum)
 {
+    if (rnet::active())
+    {
+        if (rnet::rules::frozen() || rnet::rules::downed(playerNum) || rnet::rules::spectating(playerNum))
+            return;
+        if (!rnet::rules::canHolster())
+            g_player[playerNum].inputBits->bits &= ~BIT(SK_HOLSTER);
+    }
     if (REALITY)
         return P_HandleKeys(playerNum);
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
@@ -4833,6 +4846,8 @@ static void G_ClearCameras(DukePlayer_t *p)
 
 void P_CheckSectors(int playerNum)
 {
+    if (rnet::active() && (rnet::rules::frozen() || rnet::rules::downed(playerNum) || rnet::rules::spectating(playerNum)))
+        return;
     DukePlayer_t *const pPlayer = g_player[playerNum].ps;
 
     if (REALITY && pPlayer->cursectnum == -1)
