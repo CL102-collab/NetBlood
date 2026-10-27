@@ -373,7 +373,7 @@ void viewToggle(int viewMode)
     }
 }
 
-void viewInitializePrediction(void)
+void viewInitializePrediction(bool resetInterpolation)
 {
     predict.at30 = gMe->q16ang;
     predict.at20 = gMe->q16look;
@@ -410,7 +410,8 @@ void viewInitializePrediction(void)
     predict.at3c = gMe->zViewVel;
     predict.at40 = gMe->zWeapon;
     predict.at44 = gMe->zWeaponVel;
-    predictOld = predict;
+    if (resetInterpolation)
+        predictOld = predict;
     if (numplayers != 1 || netPredictActive())
     {
         gViewAngle = predict.at30;

@@ -195,7 +195,10 @@ void netPredictSnapshot(uint32_t acknowledgedCommand, uint32_t serverTick, bool 
     // A teleport still replays inputs newer than the authoritative ACK.
     const vec3_t oldPosition = viewPredictionPosition();
     const vec2_t pendingLook = viewPredictionPendingLook();
-    viewInitializePrediction();
+    // A normal ACK may consume every pending command midway through the
+    // current local interpolation interval. Keep its previous endpoint until
+    // a fresh command (or a replay below) naturally replaces it.
+    viewInitializePrediction(first || discontinuity);
     WeaponPredictReset(gMe);
     if (!overflowed)
         for (auto const &command : commands) { predict(command, true); ++stats.replayedCommands; }

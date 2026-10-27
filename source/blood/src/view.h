@@ -128,7 +128,10 @@ void viewUpdatePages(void);
 void viewToggle(int viewMode);
 void viewUpdateCoopSpectator();
 void viewCycleCoopSpectator();
-void viewInitializePrediction(void);
+// Ordinary snapshot reconciliation keeps the previous local command's view
+// endpoint when its ACK leaves no commands to replay. Offline initialization
+// and explicit discontinuities retain the default interpolation reset.
+void viewInitializePrediction(bool resetInterpolation = true);
 void viewUpdatePrediction(GINPUT *pInput);
 vec3_t viewPredictionPosition();
 vec2_t viewPredictionPendingLook();

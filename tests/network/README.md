@@ -12,6 +12,8 @@ tests/network/protocol-test.sh
 SANITIZE=1 tests/network/protocol-test.sh
 tests/network/prediction-test.sh
 SANITIZE=1 tests/network/prediction-test.sh
+tests/network/camera-test.sh
+SANITIZE=1 tests/network/camera-test.sh
 tests/network/lagcomp-test.sh
 SANITIZE=1 tests/network/lagcomp-test.sh
 tests/network/events-test.sh
@@ -72,6 +74,10 @@ The checks include:
   requires no licensed game data or display. The sanitizer build excludes
   legacy negative fixed-point shifts in `engine.cpp` from shift-base checks;
   the new rewind code receives full ASan/UBSan instrumentation.
+- Local camera continuity across zero-error snapshot acknowledgements with no
+  pending input, one or multiple replayed commands, and real corrections.
+  The separate camera fixture exercises production view initialization and
+  position, angle, pitch, bob and weapon interpolation; teleports still snap.
 - Scoreboard row limits, unique ordered player slots, names and country codes,
   signed scores, latency bounds, truncated packets, atomic rejection and
   connection-minute boundaries using a clock independent of map resets.

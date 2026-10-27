@@ -36,7 +36,7 @@ int32_t gViewInterpolate = 1;
 bool gPrediction = true;
 static bool client = true, playback = false, intermission = false;
 static uint32_t clockMs = 0, generations[MAXSPRITES];
-static vec3_t predicted;
+static vec3_t predicted, predictedOld;
 static unsigned liveWeaponCalls = 0, replayWeaponCalls = 0;
 static std::vector<std::array<int, 3>> liveWeaponChoices, replayWeaponChoices;
 static std::vector<int> liveWeaponSounds;
@@ -48,12 +48,21 @@ uint32_t timerGetTicks() { return clockMs; }
 uint32_t netSnapshotSpriteGeneration(int n) { return generations[n]; }
 void netLagFrame(int) {}
 void viewBackupView(int) {}
-void viewInitializePrediction() { predicted = { gMe->pSprite->x, gMe->pSprite->y, gMe->pSprite->z }; }
-void viewUpdatePrediction(GINPUT *input) { predicted.x += input->forward; predicted.y += input->strafe; }
+void viewInitializePrediction(bool resetInterpolation)
+{
+    predicted = { gMe->pSprite->x, gMe->pSprite->y, gMe->pSprite->z };
+    if (resetInterpolation) predictedOld = predicted;
+}
+void viewUpdatePrediction(GINPUT *input)
+{
+    predictedOld = predicted;
+    predicted.x += input->forward;
+    predicted.y += input->strafe;
+}
 vec3_t viewPredictionPosition() { return predicted; }
 vec2_t viewPredictionPendingLook() { return {0, 0}; }
 void viewPredictionApplyPendingLook(vec2_t) {}
-void viewPredictionSnap() {}
+void viewPredictionSnap() { predictedOld = predicted; }
 void WeaponPredictReset(PLAYER const *) {}
 void WeaponPredictCommand(PLAYER *, GINPUT const &, bool replay)
 {
@@ -93,7 +102,7 @@ static void reset(uint32_t ack = 0)
     sprite[1].index = 1; sprite[1].sectnum = 0; sprite[1].statnum = 6;
     gMe = &gPlayer[0]; gMe->pSprite = &sprite[0]; gMe->pXSprite = &localXSprite;
     localXSprite.health = 100;
-    predicted = {};
+    predicted = predictedOld = {};
     liveWeaponCalls = replayWeaponCalls = 0;
     liveWeaponChoices.clear(); replayWeaponChoices.clear(); liveWeaponSounds.clear();
     netPredictSnapshot(ack, 1, true);
@@ -234,6 +243,48 @@ static void checkPredictedCosmetics()
           "live prediction and replay leave every legacy RNG state untouched");
 }
 
+static int renderedLocalX()
+{
+    return predictedOld.x + int(int64_t(predicted.x - predictedOld.x) * netPredictLocalFraction() / 65536);
+}
+
+static void checkLocalCameraReconciliation()
+{
+    reset();
+    clockMs = 33;
+    netPredictCommand(1, input(100));
+    clockMs = 43;
+    int const before = renderedLocalX();
+    netPredictBeforeSnapshot(); sprite[0].x = 100; netPredictSnapshot(1, 2, false);
+    check(netPredictGetStats().pendingCommands == 0 && netPredictGetStats().lastCorrection == 0,
+          "localhost ACK can retire every command without a prediction error");
+    check(before > 0 && before < 100 && renderedLocalX() == before,
+          "zero-error ACK preserves the in-progress camera blend instead of jumping to its endpoint");
+    clockMs = 48;
+    netPredictBeforeSnapshot(); netPredictSnapshot(1, 3, false);
+    check(predictedOld.x == 0 && renderedLocalX() > before && renderedLocalX() < 100,
+          "repeated ACKs preserve camera progress within the local command interval");
+
+    clockMs = 67; netPredictCommand(2, input(100)); clockMs = 77;
+    int const pendingBefore = renderedLocalX();
+    netPredictBeforeSnapshot(); netPredictSnapshot(1, 4, false);
+    check(netPredictGetStats().pendingCommands == 1 && renderedLocalX() == pendingBefore && predictedOld.x == 100,
+          "one pending command reconstructs the same camera endpoints during replay");
+    clockMs = 100; netPredictCommand(3, input(100));
+    clockMs = 133; netPredictCommand(4, input(100)); clockMs = 143;
+    int const multipleBefore = renderedLocalX();
+    netPredictBeforeSnapshot(); sprite[0].x = 200; netPredictSnapshot(2, 5, false);
+    check(netPredictGetStats().pendingCommands == 2 && predictedOld.x == 300 && renderedLocalX() == multipleBefore,
+          "multiple replayed commands preserve the final command's camera interpolation pair");
+
+    netPredictBeforeSnapshot(); sprite[0].x = 390; netPredictSnapshot(4, 6, false);
+    check(predicted.x == 390 && predictedOld.x == 300 && netPredictGetStats().lastCorrection == 10,
+          "preserving the earlier endpoint still installs a real authoritative position correction");
+    netPredictBeforeSnapshot(); sprite[0].x = 20000; netPredictSnapshot(4, 7, false);
+    check(predictedOld.x == 20000 && predicted.x == 20000 && renderedLocalX() == 20000,
+          "teleports snap both camera endpoints instead of blending across the map");
+}
+
 static void checkRenderedCommandTime()
 {
     reset();
@@ -272,6 +323,7 @@ int main()
 {
     checkCosmeticRandom();
     checkPredictedCosmetics();
+    checkLocalCameraReconciliation();
     checkRenderedCommandTime();
     picanm[100].num = 3; picanm[104].num = 2;
     check(viewAnimatedTile(100, 2) == 107, "ordinary chained sprite animation preserves artwork");

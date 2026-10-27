@@ -7,6 +7,11 @@ then reconcile with acknowledged server snapshots. Remote players and moving
 geometry interpolate between snapshots. Prediction never applies damage or
 runs weapon callbacks on a client.
 
+View interpolation is enabled by default (`cl_interpolate 1`). Ordinary
+snapshot acknowledgements preserve the local camera's movement blend, including
+when the server has acknowledged every pending input. First snapshots and
+teleports still reset the view immediately.
+
 All participants need this protocol and matching game content. Missing or
 different maps are downloaded automatically. Older lockstep multiplayer clients
 cannot connect. Legacy demo playback remains available.
@@ -358,6 +363,7 @@ game uses its usual in-game console. Settings can also be placed in
 | Command or setting | Meaning |
 | --- | --- |
 | `net_status` | Session, player, scoreboard, snapshot, prediction and UDP statistics. |
+| `cl_interpolate 1` | Client view interpolation; enabled by default. |
 | `net_packetcopies 3` | Total identical UDP copies per transmission; range 1–8, default 3. |
 | `net_snapshotrate 20` | Server snapshots per second; range 1–30, default 20. Simulation stays at 30 Hz. |
 | `net_lagometer 1` | Enable the network graph; `0` hides it. |
