@@ -1406,7 +1406,7 @@ void PrintHelp(void)
         "-record\t\tRecord demo\n"
         "-rff\t\tSpecify an RFF file for Blood game resources\n"
         "-s\t\tStart game on difficulty level; Range:0..4; Default:2;\n\n"
-        "-server [players]\tStart a multiplayer server (maximum players)\n"
+        "-server [players]\tStart a multiplayer server (maximum players; implies -quick and -nodemo)\n"
         "-dedicated\tRun a server without a window or audio device\n"
         "-gametype [type]\tServer mode: coop (default), bloodbath, or teams\n"
         "-port [port]\tUDP listen/connect port; Range:1..65535; Default:23513\n"
@@ -1560,6 +1560,7 @@ void ParseOptions(void)
                 ThrowError("Missing argument for -server");
             netServerParseOption("server", OptArgv[0]);
             gNetMode = NETWORK_SERVER;
+            bQuickStart = bNoDemo = true;
             break;
         case 31:
             if (OptArgc < 1)
