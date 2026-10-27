@@ -50,6 +50,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "nnexts.h"
 #endif
 #include "view.h"
+#include "netlagcomp.h"
 #include "netpredict.h"
 #include "warp.h"
 
@@ -570,6 +571,11 @@ void UpdateAimVector(PLAYER * pPlayer)
     spritetype *pSprite;
     dassert(pPlayer != NULL);
     spritetype *pPSprite = pPlayer->pSprite;
+    // Hitscan autoaim must select the same historical targets as the trace.
+    // Restore before weapon callbacks can apply damage or spawn projectiles.
+    bool const hitscanWeapon = pPlayer->curWeapon == kWeaponPitchfork || pPlayer->curWeapon == kWeaponShotgun
+        || pPlayer->curWeapon == kWeaponTommy || pPlayer->curWeapon == kWeaponBeast;
+    NetLagCompensationScope lagCompensation(hitscanWeapon ? pPSprite : nullptr);
     int x = pPSprite->x;
     int y = pPSprite->y;
     int z = pPlayer->zWeapon;

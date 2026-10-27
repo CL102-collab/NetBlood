@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "globals.h"
 #include "levels.h"
 #include "loadsave.h"
+#include "netlagcomp.h"
 #include "player.h"
 #include "seq.h"
 #include "qav.h"
@@ -1570,6 +1571,7 @@ void OperateTeleport(unsigned int nSector, XSECTOR *pXSector)
             {
                 if (!(gGameOptions.uNetGameFlags&2))
                     TeleFrag(pXSector->data, pDest->sectnum);
+                if (pPlayer) netLagCompensationInvalidatePlayer(pPlayer->nPlayer);
                 pSprite->x = pDest->x;
                 pSprite->y = pDest->y;
                 pSprite->z += sector[pDest->sectnum].floorz-sector[nSector].floorz;

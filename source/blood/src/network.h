@@ -177,6 +177,8 @@ bool netDemoReplayPacket(const uint8_t *data, size_t size);
 void netBroadcastEvent(const uint8_t *data, size_t size);
 bool netInServerTick();
 uint32_t netAppliedCommandSequence(int player);
+struct NetLagCompensationTime;
+bool netGetLagCompensationTime(int player, NetLagCompensationTime &time);
 void netPrepareCurrentMapSettings();
 int netTeamShufflePlayerCount();
 bool netShuffleTeams(std::string& error);

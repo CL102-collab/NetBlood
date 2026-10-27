@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "build.h"
 #include "controls.h"
+#include "netcommandtime.h"
 
 struct NetPredictionStats
 {
@@ -23,6 +24,9 @@ void netPredictBeforeSnapshot();
 void netPredictSnapshot(uint32_t acknowledgedCommand, uint32_t serverTick, bool discontinuity);
 bool netPredictActive();
 NetPredictionStats netPredictGetStats();
+// The time used by the last rendered remote world, retained across subsequent
+// snapshot installs until another frame is drawn.
+NetLagCompensationTime netPredictViewTime();
 
 // Rendering only: never leave interpolated geometry in authoritative arrays.
 int netPredictLocalFraction();

@@ -94,6 +94,7 @@ PKT_STARTGAME gPacketStartGame;
 #include "netdemo.h"
 #include "netevents.h"
 #include "netlag.h"
+#include "netlagcomp.h"
 #include "netmap.h"
 #include "netpassword.h"
 #include "netpredict.h"
@@ -180,6 +181,9 @@ struct ClientSlot
     netwire::CommandQueue commands;
     GINPUT                lastInput     = {};
     uint32_t              lastInputTime = 0;
+    NetLagCompensationTime lastViewTime;
+    uint32_t              lastViewServerTick = 0;
+    bool                  lastViewValid = false;
     uint64_t              joinOrder = 0;
     uint64_t              joinedAtMillis = 0;
     uint16_t              country = 0;
@@ -903,7 +907,7 @@ void updateServerCinematic()
             serverCinematic.participants = serverCinematic.done = 0;
             nextTickTime = timerGetTicks();
             lastSnapshotTick = 0;
-            for (auto& c : slots) { c.commands = {}; c.lastInput = {}; c.lastInputTime = 0; }
+            for (auto& c : slots) { c.commands = {}; c.lastInput = {}; c.lastInputTime = 0; c.lastViewValid = false; }
         }
         changed = true;
     }
@@ -1505,6 +1509,7 @@ void removePlayer(int p)
 {
     if (p < 0 || p >= 8)
         return;
+    netLagCompensationInvalidatePlayer(p);
     rememberCoopLives(p);
     if (slots[p].active && gGameStarted && gPlayer[p].pSprite)
     {
@@ -2611,6 +2616,11 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
             return;
         }
         for (unsigned i = 0; i < count; i++)
+        {
+            auto const viewTime = netcommandtime::validate({commands[i].viewTick, commands[i].viewFraction}, serverTick,
+                                                           peer->roundTripTime, unsigned(ClipRange(gNetSnapshotRate, 1, 30)));
+            commands[i].viewTick = viewTime.tick;
+            commands[i].viewFraction = viewTime.fraction;
             if (!c.commands.push(commands[i]))
             {
                 if (netwire::newer(commands[i].sequence, c.commands.acknowledged) && commands[i].sequence - c.commands.acknowledged > 255
@@ -2622,6 +2632,7 @@ void serverReceive(ENetPeer *peer, const uint8_t *data, size_t size)
                 else
                     duplicateMessages++;
             }
+        }
     }
     else if (h.type == netwire::VoteRequest)
     {
@@ -2697,6 +2708,16 @@ bool netIsLive()
 { return gNetMode != NETWORK_NONE || demoPlayback; }
 uint32_t netAppliedCommandSequence(int player)
 { return netIsServer() && player >= 0 && player < 8 ? slots[player].commands.acknowledged : 0; }
+bool netGetLagCompensationTime(int player, NetLagCompensationTime &time)
+{
+    if (!netIsServer() || !serverInTick || player < 0 || player >= 8 || player == myconnectindex)
+        return false;
+    auto const &client = slots[player];
+    if (!client.active || !client.ready || !client.lastViewValid) return false;
+    // Reusing held movement/fire must not keep shooting an old frozen world.
+    time = netcommandtime::advance(client.lastViewTime, serverTick - client.lastViewServerTick);
+    return true;
+}
 bool netInServerTick()
 { return serverInTick; }
 bool netIsServer()
@@ -2863,6 +2884,7 @@ int netCoopGiveUpProgress(int p)
 }
 void netOnPlayerDowned(int p)
 {
+    netLagCompensationInvalidatePlayer(p);
     if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active
         || slots[p].coopLives.exhausted()) return;
     slots[p].coopDowned = true;
@@ -2891,6 +2913,7 @@ bool netProcessCoopDownedInput(int p, bool useHeld)
 }
 void netOnPlayerRevived(int p, int rescuer)
 {
+    netLagCompensationInvalidatePlayer(p);
     if (!netIsServer() || !netCoopPlayerIsDowned(p)) return;
     slots[p].coopDowned = false;
     slots[p].coopGiveUpTicks = 0;
@@ -2901,6 +2924,7 @@ void netOnPlayerRevived(int p, int rescuer)
 }
 void netOnPlayerDeath(int p)
 {
+    netLagCompensationInvalidatePlayer(p);
     if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active
         || !slots[p].coopLives.die()) return;
     slots[p].coopDowned = false;
@@ -2913,6 +2937,7 @@ void netOnPlayerDeath(int p)
 }
 void netOnPlayerSpawned(int p)
 {
+    netLagCompensationInvalidatePlayer(p);
     if (!netIsServer() || !netCoopLifeLimit() || p < 0 || p >= kMaxPlayers || !slots[p].active) return;
     bool const wasDowned = slots[p].coopDowned;
     slots[p].coopDowned = false;
@@ -2997,6 +3022,7 @@ void netInitialize(bool bConsole)
     }
     netResetState();
     netLagReset();
+    netLagCompensationReset();
     std::fill(std::begin(slots), std::end(slots), ClientSlot());
     snapshotCache.clear();
     commandHistory.clear();
@@ -3086,6 +3112,7 @@ void netInitialize(bool bConsole)
 }
 void netDeinitialize(void)
 {
+    netLagCompensationReset();
     netServerCancelIntermission();
     stopLocalCinematic();
     serverCinematic = clientCinematic = {};
@@ -3490,6 +3517,7 @@ void netDrawCinematic()
 }
 void netOnLevelChanging()
 {
+    netLagCompensationReset();
     clientVersionError.clear();
     clientPasswordError.clear();
     if (!netIsServer()) return;
@@ -3516,6 +3544,7 @@ void netOnLevelChanging()
 }
 void netOnPlayerStarting(int p)
 {
+    netLagCompensationInvalidatePlayer(p);
     if (!netIsServer() || p < 0 || p >= 8 || !slots[p].active) return;
     if (gGameOptions.nGameType != kGameTypeTeams)
     {
@@ -3573,6 +3602,7 @@ void netOnLevelStarted()
     if (!netIsLive())
         return;
     netPredictReset();
+    netLagCompensationReset();
     netEventsReset();
     if (netIsServer())
     {
@@ -3608,6 +3638,7 @@ void netOnLevelStarted()
             slots[p].snapshotAck      = 0;
             slots[p].fullSnapshotTime = 0;
             slots[p].lastInput        = {};
+            slots[p].lastViewValid    = false;
             slots[p].ready            = slots[p].active && p == myconnectindex;
 #ifndef NETCODE_DISABLE
             if (slots[p].peer && slots[p].admitted)
@@ -3678,6 +3709,7 @@ bool netServerBeginTick()
             c.ready         = true;
             c.lastInput     = {};
             c.lastInputTime = now;
+            c.lastViewValid = false;
             scoreboardDirty = true;
             LOG_F(INFO, "NET joined slot=%d generation=%u players=%d tick=%u", p, c.generation, numplayers, serverTick);
             sendVoteOptions(p);
@@ -3691,6 +3723,7 @@ bool netServerBeginTick()
         {
             c.commands = {};
             c.lastInput = {};
+            c.lastViewValid = false;
             gFifoInput[gNetFifoTail & 255][p] = {};
             gNetFifoHead[p] = gNetFifoTail + 1;
             continue;
@@ -3702,6 +3735,9 @@ bool netServerBeginTick()
             input           = toInput(command);
             c.lastInput     = input;
             c.lastInputTime = now;
+            c.lastViewTime = {command.viewTick, command.viewFraction};
+            c.lastViewServerTick = serverTick;
+            c.lastViewValid = true;
         }
         else if (c.ready && now - c.lastInputTime < 250)
         {
@@ -3713,7 +3749,8 @@ bool netServerBeginTick()
             input.q16turn       = 0;
             input.q16mlook      = 0;
         }
-        if (netCoopPlayerIsSpectator(p)) input = {};
+        else c.lastViewValid = false;
+        if (netCoopPlayerIsSpectator(p)) { input = {}; c.lastViewValid = false; }
         gFifoInput[gNetFifoTail & 255][p] = input;
         gNetFifoHead[p]                   = gNetFifoTail + 1;
     }
@@ -3721,6 +3758,7 @@ bool netServerBeginTick()
     // An empty dedicated server can keep ticking, but its first admitted
     // player still receives the queued intro before gameplay begins.
     if (serverCinematic.active && serverCinematic.participants) return false;
+    netLagCompensationCapture(serverTick);
     serverInTick = true;
     if (!netIntermissionActive()) balanceTeams();
     return true;
@@ -3731,6 +3769,7 @@ void netServerEndTick()
     if (!netIsServer())
         return;
     serverTick++;
+    netLagCompensationCapture(serverTick);
     if (netCoopLifeLimit() && !netIntermissionActive() && !gStartNewGame && !(gGameOptions.uGameFlags & kGameFlagContinuing))
     {
         bool anyActive = false, exhausted = true;
@@ -3818,6 +3857,9 @@ void netGetInput(void)
         if (!id)
             id = ++commandSequence;
         netwire::Command command = fromInput(gNetInput, id);
+        auto const viewTime = netPredictViewTime();
+        command.viewTick = viewTime.tick;
+        command.viewFraction = viewTime.fraction;
         commandHistory.push_back(command);
         while (commandHistory.size() > 128) commandHistory.pop_front();
         GINPUT input = toInput(command);

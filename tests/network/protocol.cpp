@@ -1,5 +1,6 @@
 // Exercise the production wire and snapshot codecs without engine globals.
 #include "netprotocol.h"
+#include "netcommandtime.h"
 #include "netsnapshot.h"
 
 #include <algorithm>
@@ -42,7 +43,7 @@ void framing()
     const std::vector<uint8_t> payload = {0xa1, 0x00, 0xff};
     const auto encoded = netwire::encode(header, payload);
     const std::vector<uint8_t> golden = {
-        'N','B','N','1', 8,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
+        'N','B','N','1', 9,0,0,0, 4,0,0,0, 0x12,0x34,0x56,0x78,
         5,6,7,8, 0xfb,0xfc,0xfd,0xfe, 3,0,0,0, 0xa1,0,0xff};
     CHECK(encoded == golden);
     netwire::Header decoded;
@@ -59,7 +60,7 @@ void framing()
         bad = encoded; field(bad, offset, 0xffffffffu); CHECK(!decode(bad));
     }
     bad = encoded; field(bad, 8, 0); CHECK(!decode(bad));
-    bad = encoded; field(bad, 4, 7); CHECK(!decode(bad)); // Previous peers cannot negotiate required addons.
+    bad = encoded; field(bad, 4, 8); CHECK(!decode(bad)); // Previous peers do not carry shot view timestamps.
     header.type = 0; CHECK(netwire::encode(header, payload).empty());
     static_assert(netwire::Event == 11 && netwire::RequestMap == 12 && netwire::MapData == 13,
                   "Existing packet and demo message IDs must not change");
@@ -311,13 +312,14 @@ void commands()
     for (unsigned i = 1; i != 4096; ++i) {
         netwire::Command source;
         source.sequence = i; source.forward = int(randomValue()%4097)-2048;
+        source.viewTick = randomValue(); source.viewFraction = uint16_t(randomValue());
         source.strafe = int(randomValue()%4097)-2048; source.turn = int32_t(randomValue());
         source.mlook = (int(randomValue()%255)-127) * (1<<14);
         source.sync = randomValue() & 63; source.buttons = randomValue() & 63;
         source.use = randomValue() & 15; source.keys = randomValue() & 0x8fff;
         source.weapon = randomValue()%netwire::WeaponCount;
         netwire::Writer writer; netwire::writeCommand(writer, source);
-        CHECK(writer.data.size() == 22);
+        CHECK(writer.data.size() == 28);
         netwire::Reader reader(writer.data.data(), writer.data.size());
         netwire::Command decoded;
         CHECK(netwire::readCommand(reader, decoded) && reader.end());
@@ -368,7 +370,35 @@ void commands()
     CHECK(!queue.resync(source));
     source.sequence = 1025; CHECK(queue.push(source));
     CHECK(queue.pop(source) && source.sequence == 1025);
+    source.sequence = 1026; source.viewTick = 100; source.viewFraction = 1234;
+    CHECK(queue.push(source));
+    source.viewTick = 200; source.viewFraction = 5678;
+    CHECK(!queue.push(source));
+    CHECK(queue.pop(source) && source.viewTick == 100 && source.viewFraction == 1234);
     std::puts("PASS: command validation, triplicate suppression, gaps, reorder, wrap and bounded lead");
+}
+void commandTimes()
+{
+    auto equal = [](NetLagCompensationTime a, NetLagCompensationTime b) { return a.tick == b.tick && a.fraction == b.fraction; };
+    using namespace netcommandtime;
+    CHECK(equal(interpolate(10, 12, 32768), {11, 0}));
+    CHECK(equal(interpolate(10, 11, 32768), {10, 32768}));
+    CHECK(equal(interpolate(10, 12, 0), {10, 0}));
+    CHECK(equal(interpolate(10, 12, 65536), {12, 0}));
+    CHECK(equal(interpolate(0xffffffffu, 1, 32768), {0, 0}));
+    CHECK(equal(interpolate(10, 50, 32768), {50, 0}));
+    CHECK(equal(validate({97, 32768}, 100, 100, 20), {97, 32768}));
+    CHECK(equal(validate({101, 0}, 100, 100, 20), {96, 0}));
+    CHECK(equal(validate({50, 0}, 100, 100, 20), {96, 0}));
+    CHECK(equal(validate({70, 0}, 100, 1000, 20), {70, 0}));
+    CHECK(equal(validate({69, 65535}, 100, 1000, 20), {70, 0}));
+    CHECK(equal(validate({0x80000064u, 0}, 100, UINT32_MAX, 20), {70, 0}));
+    CHECK(equal(validate({101, 0}, 100, 0, 30), {99, 32768}));
+    CHECK(equal(validate({70, 0}, 100, 0, 0), {70, 0}));
+    CHECK(equal(validate({0xfffffffeu, 32768}, 1, 100, 20), {0xfffffffeu, 32768}));
+    CHECK(equal(advance({97, 1234}, 3), {100, 1234}));
+    CHECK(equal(advance({0xffffffffu, 1234}, 2), {1, 1234}));
+    std::puts("PASS: rendered command time, RTT validation, one-second bound, future/stale fallback, held-input advance and tick wrap");
 }
 void mapTransfer()
 {
@@ -566,6 +596,6 @@ void malformedCorpus()
 }
 int main()
 {
-    framing(); serverRules(); mapVotes(); commands(); mapTransfer(); snapshots(); malformedCorpus();
+    framing(); serverRules(); mapVotes(); commands(); commandTimes(); mapTransfer(); snapshots(); malformedCorpus();
     std::printf("PASS: network codecs (%u assertions)\n", checks);
 }

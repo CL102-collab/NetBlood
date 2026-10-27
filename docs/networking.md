@@ -11,6 +11,29 @@ All participants need this protocol and matching game content. Missing or
 different maps are downloaded automatically. Older lockstep multiplayer clients
 cannot connect. Legacy demo playback remains available.
 
+## Hitscan lag compensation
+
+Dedicated and listen servers keep one second of player collision history: 31
+samples at the 30 Hz simulation rate, independently of the snapshot send rate
+(20 snapshots per second by default). Each input command includes the server
+time represented by the client's interpolated view. The server bounds that
+time using the connection's measured latency and its snapshot interval, then
+keeps the validated time with the queued command.
+
+For a player's hitscan shot, the server temporarily moves the other players to
+their historical collision poses, interpolating positions between samples.
+Hitscan autoaim uses the same history. The shooter stays at the authoritative
+firing position. The server restores all poses and sector lists before applying
+damage, triggers, or effects, so the normal authoritative snapshots and events
+announce the result. Projectile simulation continues to use the current world.
+
+History is cleared across map changes, respawns, disconnections and teleports;
+shots cannot reach back into another life. Rewind never exceeds one second.
+The history follows simulation samples; client interpolation between less
+frequent snapshots can differ slightly during abrupt direction changes.
+Walls, doors, monsters and other map objects use their current collision state.
+This means a player can receive a valid delayed hit after moving behind cover.
+
 ## Hosting and joining
 
 The same executable supports a graphical listen server and a dedicated server.
@@ -206,7 +229,7 @@ reachability through restrictive NAT/CGNAT.
 
 On connection, the server advertises its required network protocol version and
 build label before admitting a player or transferring game content. The current
-required protocol is **8**. Build labels identify the executable for diagnostics;
+required protocol is **9**. Build labels identify the executable for diagnostics;
 compatibility is determined by the network protocol, not by Git revision age.
 
 An older client receives an error showing its version and the server requirement,

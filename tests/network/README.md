@@ -12,6 +12,8 @@ tests/network/protocol-test.sh
 SANITIZE=1 tests/network/protocol-test.sh
 tests/network/prediction-test.sh
 SANITIZE=1 tests/network/prediction-test.sh
+tests/network/lagcomp-test.sh
+SANITIZE=1 tests/network/lagcomp-test.sh
 tests/network/events-test.sh
 SANITIZE=1 tests/network/events-test.sh
 SANITIZE=1 tests/network/snapshot-state-test.sh
@@ -63,6 +65,13 @@ The checks include:
   truncation and corruption, trailing data, and invalid metadata/packet limits.
 - Lagometer timing/RTT/loss history, interpolation/extrapolation signs, delayed
   snapshot flags, ring wrap, bounded hostile gaps, disconnect state, and reset.
+- Player hitscan history and restoration, fractional rewind, the one-second
+  limit, shooter exclusion, and history invalidation across lives and teleports.
+  The synthetic map runs production Build hitscan with both plain and tracked
+  sprite fields, including a full eight-player sector-list restoration. It
+  requires no licensed game data or display. The sanitizer build excludes
+  legacy negative fixed-point shifts in `engine.cpp` from shift-base checks;
+  the new rewind code receives full ASan/UBSan instrumentation.
 - Scoreboard row limits, unique ordered player slots, names and country codes,
   signed scores, latency bounds, truncated packets, atomic rejection and
   connection-minute boundaries using a clock independent of map resets.
@@ -301,7 +310,7 @@ maps or restart games directly, start games, host another server, or change serv
 autoaim through their console or menus. Disconnecting explicitly returns to
 local play.
 
-The mandatory rule metadata, map-vote, cinematic and scoreboard messages use wire protocol 8. Rebuild the server and all
+The mandatory rule metadata, map-vote, cinematic, scoreboard and command view-time messages use wire protocol 9. Rebuild the server and all
 connected clients together; older network builds are incompatible. Legacy DOS
 input-demo recording and playback retain their original formats.
 

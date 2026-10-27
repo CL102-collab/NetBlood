@@ -62,6 +62,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "levels.h"
 #include "loadsave.h"
 #include "network.h"
+#include "netlagcomp.h"
 #include "player.h"
 #include "seq.h"
 #include "sfx.h"
@@ -6427,15 +6428,18 @@ void actFireVector(spritetype *pShooter, int a2, int a3, int a4, int a5, int a6,
     int nRange = pVectorData->maxDist;
     vec3_t shooterPos;
     int hit;
-    if (!VanillaMode()) // use room over room vector scan check to allow shooting while floating above water
     {
-        hit = VectorScanROR(pShooter, a2, a3, a4, a5, a6, nRange, 1, &shooterPos);
-    }
-    else
-    {
-        hit = VectorScan(pShooter, a2, a3, a4, a5, a6, nRange, 1);
-        shooterPos = pShooter->xyz;
-    }
+        NetLagCompensationScope rewind(pShooter);
+        if (!VanillaMode()) // use room over room vector scan check to allow shooting while floating above water
+        {
+            hit = VectorScanROR(pShooter, a2, a3, a4, a5, a6, nRange, 1, &shooterPos);
+        }
+        else
+        {
+            hit = VectorScan(pShooter, a2, a3, a4, a5, a6, nRange, 1);
+            shooterPos = pShooter->xyz;
+        }
+    } // Restore present collision before damage, triggers, and effects.
     if (hit == 3)
     {
         int nSprite = gHitInfo.hitsprite;

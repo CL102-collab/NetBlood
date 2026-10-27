@@ -49,6 +49,9 @@ NetPredictionStats stats;
 bool initialized = false, beforeSnapshot = false, rendering = false, overflowed = false;
 uint32_t snapshotTick = 0, snapshotTime = 0, commandTime = 0, lastCommand = 0;
 uint32_t snapshotInterval = 34;
+uint32_t previousSnapshotTick = 0;
+NetLagCompensationTime renderedTime;
+bool haveRenderedTime = false;
 bool haveCommand = false;
 int remoteFraction = 65536;
 
@@ -117,10 +120,15 @@ void netPredictReset()
     initialized = beforeSnapshot = overflowed = haveCommand = false;
     lastCommand = snapshotTick = snapshotTime = commandTime = 0;
     snapshotInterval = 34;
+    previousSnapshotTick = 0;
+    renderedTime = {};
+    haveRenderedTime = false;
     WeaponPredictReset(nullptr);
 }
 
 NetPredictionStats netPredictGetStats() { return stats; }
+NetLagCompensationTime netPredictViewTime()
+{ return haveRenderedTime ? renderedTime : NetLagCompensationTime{snapshotTick, 0}; }
 
 void netPredictCommand(uint32_t sequence, GINPUT const &input)
 {
@@ -170,11 +178,16 @@ void netPredictSnapshot(uint32_t acknowledgedCommand, uint32_t serverTick, bool 
     const uint32_t tickDelta = serverTick - snapshotTick;
     if (!first && (tickDelta == 0 || tickDelta > 30)) discontinuity = true;
     snapshotInterval = (!first && tickDelta > 0 && tickDelta <= 30) ? (tickDelta * 1000 + 29) / 30 : 34;
+    previousSnapshotTick = first || discontinuity ? serverTick : snapshotTick;
     snapshotTick = serverTick;
     snapshotTime = timerGetTicks();
     initialized = true;
     if (first) commandTime = snapshotTime;
-    if (first || discontinuity) captureWorld();
+    if (first || discontinuity)
+    {
+        captureWorld();
+        haveRenderedTime = false;
+    }
     beforeSnapshot = false;
     while (!commands.empty() && !newer(commands.front().sequence, acknowledgedCommand)) commands.pop_front();
     if (overflowed && (commands.empty() || commands.front().sequence == acknowledgedCommand + 1)) overflowed = false;
@@ -247,6 +260,9 @@ void netPredictBeginRender()
     if (!netPredictActive() || rendering) return;
     const uint32_t elapsed = timerGetTicks() - snapshotTime;
     remoteFraction = int(std::min<uint64_t>(65536, uint64_t(elapsed) * 65536 / snapshotInterval));
+    renderedTime = gViewInterpolate ? netcommandtime::interpolate(previousSnapshotTick, snapshotTick, unsigned(remoteFraction))
+                                    : NetLagCompensationTime{snapshotTick, 0};
+    haveRenderedTime = true;
     netLagFrame(int(std::min<uint32_t>(elapsed, 10000)) - int(snapshotInterval));
     if (!gViewInterpolate || previousSectors.size() != size_t(numsectors) || previousWalls.size() != size_t(numwalls)) return;
     if (remoteFraction == 65536) return;

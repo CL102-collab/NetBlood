@@ -9,7 +9,7 @@
 namespace netwire
 {
 constexpr uint32_t Magic      = 0x314e424e;  // NBN1
-constexpr uint32_t Version    = 8;
+constexpr uint32_t Version    = 9;
 constexpr unsigned WeaponCount = 14; // Includes None; valid indices are 0..13.
 constexpr size_t   MaxPayload = 16u * 1024u * 1024u + 1024u;
 constexpr size_t   HeaderSize = 28;
@@ -390,6 +390,8 @@ inline bool readVoteOptions(Reader& r, VoteOptionsPayload& options)
 struct Command
 {
     uint32_t sequence = 0;
+    uint32_t viewTick = 0;
+    uint16_t viewFraction = 0;
     uint8_t  sync = 0, buttons = 0, use = 0, weapon = 0;
     uint16_t keys    = 0;
     int16_t  forward = 0, strafe = 0;
@@ -398,6 +400,8 @@ struct Command
 inline void writeCommand(Writer &w, const Command &c)
 {
     w.u32(c.sequence);
+    w.u32(c.viewTick);
+    w.u16(c.viewFraction);
     w.u8(c.sync);
     w.u16(uint16_t(c.forward));
     w.u32(uint32_t(c.turn));
@@ -411,6 +415,8 @@ inline void writeCommand(Writer &w, const Command &c)
 inline bool readCommand(Reader &r, Command &c)
 {
     c.sequence = r.u32();
+    c.viewTick = r.u32();
+    c.viewFraction = r.u16();
     c.sync     = r.u8();
     c.forward  = int16_t(r.u16());
     c.turn     = int32_t(r.u32());

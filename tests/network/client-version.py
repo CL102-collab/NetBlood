@@ -86,14 +86,14 @@ def main():
         games.append(server)
         server.wait(lambda text: "Dedicated server running:" in text and "NET server_tick=" in text,
                     "dedicated server", args.timeout)
-        for version in (7, 8, 9):
+        for version in (8, 9, 10):
             completed = subprocess.run([str(peer), "version-probe", str(server_port), str(version)],
                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
             (root / f"probe-{version}.log").write_text(completed.stdout)
             require(completed.returncode == 0, f"protocol {version} probe failed: {completed.stdout}")
-            require("advertisement=1" in completed.stdout and "required_protocol=8" in completed.stdout,
+            require("advertisement=1" in completed.stdout and "required_protocol=9" in completed.stdout,
                     f"protocol {version}: missing required-version advertisement")
-            if version != 8:
+            if version != 9:
                 require("rejected=1" in completed.stdout and "disconnected=1" in completed.stdout,
                         f"protocol {version}: mismatch not rejected/disconnected")
             result["phases"][f"server-client-protocol-{version}"] = completed.stdout.strip()
@@ -105,7 +105,7 @@ def main():
         games.append(compatible)
         compatible.wait(lambda text: "NET client map loaded " in text and "NET client slot=" in text,
                         "compatible client gameplay", args.timeout)
-        require("NET server version required=8 client=8 build=" in compatible.text(),
+        require("NET server version required=9 client=9 build=" in compatible.text(),
                 "compatible client did not receive the required-version/build advertisement")
         result["phases"]["compatible-client-joins"] = expect(
             compatible, lambda rows: len(rows) == 1 and rows[0]["name"] == "Compatible",
@@ -114,7 +114,7 @@ def main():
         server.stop()
         print("PASS: server advertises protocol/build, rejects older/newer peers, and admits a current client", flush=True)
 
-        for mode, required in (("advert-newer", 9), ("advert-older", 7), ("legacy-reject", 7)):
+        for mode, required in (("advert-newer", 10), ("advert-older", 8), ("legacy-reject", 8)):
             fake_port = free_port()
             fake_log = root / f"{mode}-peer.log"
             with fake_log.open("w") as output:
@@ -127,7 +127,7 @@ def main():
             games.append(client)
             # Game.wait deliberately treats any rejection as a failed join;
             # this test expects rejection and instead reads the real error log.
-            expected = f"NET version mismatch client=8 required={required} build="
+            expected = f"NET version mismatch client=9 required={required} build="
             diagnostic = wait_for(client.process, client.text,
                                   lambda text: expected in text,
                                   f"{mode} actionable version mismatch", args.timeout)
@@ -137,7 +137,7 @@ def main():
                     and "ready_sent=0" in peer_text and "commands_sent=0" in peer_text,
                     f"{mode}: incompatible connection reached admission/gameplay")
             if mode == "legacy-reject":
-                require("NET rejected by server version=7:" in diagnostic,
+                require("NET rejected by server version=8:" in diagnostic,
                         "old server rejection was not recognized before strict gameplay decoding")
             if not args.skip_screenshots:
                 result["screenshots"][mode] = capture_window(client, root / f"{mode}.png")

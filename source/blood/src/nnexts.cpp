@@ -39,6 +39,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "triggers.h"
 #include "sectorfx.h"
 #include "globals.h"
+#include "netlagcomp.h"
 #include "endgame.h"
 #include "weapon.h"
 #include "mmulti.h"
@@ -2985,6 +2986,8 @@ void useTeleportTarget(XSPRITE* pXSource, spritetype* pSprite) {
     spritetype* pSource = &sprite[pXSource->reference]; PLAYER* pPlayer = getPlayerById(pSprite->type);
     XSECTOR* pXSector = (sector[pSource->sectnum].extra >= 0) ? &xsector[sector[pSource->sectnum].extra] : NULL;
     bool isDude = (!pPlayer && IsDudeSprite(pSprite));
+
+    if (pPlayer) netLagCompensationInvalidatePlayer(pPlayer->nPlayer);
 
     if (pSprite->sectnum != pSource->sectnum)
         ChangeSpriteSect(pSprite->index, pSource->sectnum);

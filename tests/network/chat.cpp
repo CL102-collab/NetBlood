@@ -95,7 +95,7 @@ void roundtrip(const std::string& text)
 
 void validMessages()
 {
-    static_assert(netwire::Version == 8 && netwire::Chat == 7 && netwire::Intermission == 23 &&
+    static_assert(netwire::Version == 9 && netwire::Chat == 7 && netwire::Intermission == 23 &&
                   netwire::TeamChat == 24, "Public and recorded chat retain their protocol identifiers");
     netchat::Request request;
     request.text = "hello";

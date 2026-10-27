@@ -234,10 +234,45 @@ static void checkPredictedCosmetics()
           "live prediction and replay leave every legacy RNG state untouched");
 }
 
+static void checkRenderedCommandTime()
+{
+    reset();
+    auto sameTime = [](uint32_t tick, uint16_t fraction) {
+        auto const time = netPredictViewTime();
+        return time.tick == tick && time.fraction == fraction;
+    };
+    check(sameTime(1, 0), "first snapshot provides a command time before the first render");
+    netPredictBeforeSnapshot();
+    clockMs = 34; netPredictSnapshot(0, 2, false);
+    clockMs += 17;
+    netPredictBeginRender(); netPredictEndRender();
+    check(sameTime(1, 32768), "command time matches the remote sprite's half-tick rendered position");
+    clockMs += 1000;
+    check(sameTime(1, 32768), "input retains the last displayed time when no newer frame has rendered");
+    netPredictBeforeSnapshot(); netPredictSnapshot(0, 3, false);
+    check(sameTime(1, 32768), "snapshot reception alone does not change the frame the shooter saw");
+    netPredictBeginRender(); netPredictEndRender();
+    check(sameTime(2, 0), "the next frame starts interpolation from the preceding snapshot tick");
+    gViewInterpolate = 0;
+    netPredictBeginRender(); netPredictEndRender();
+    check(sameTime(3, 0), "disabling interpolation reports the displayed newest snapshot");
+    gViewInterpolate = 1;
+    netPredictBeforeSnapshot(); netPredictSnapshot(0, 6, false);
+    clockMs += 50;
+    netPredictBeginRender(); netPredictEndRender();
+    check(sameTime(4, 32768), "missed snapshots interpolate the whole three-tick span");
+    clockMs += 1000;
+    netPredictBeginRender(); netPredictEndRender();
+    check(sameTime(6, 0), "remote display time stops at the newest snapshot instead of extrapolating");
+    netPredictReset();
+    check(sameTime(0, 0), "session reset discards the previous rendered command time");
+}
+
 int main()
 {
     checkCosmeticRandom();
     checkPredictedCosmetics();
+    checkRenderedCommandTime();
     picanm[100].num = 3; picanm[104].num = 2;
     check(viewAnimatedTile(100, 2) == 107, "ordinary chained sprite animation preserves artwork");
     check(viewAnimatedTile(kMaxTiles-1, 0) == kMaxTiles-1 && viewAnimatedTile(kMaxTiles-1, 1) == -1,

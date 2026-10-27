@@ -837,6 +837,7 @@ blood_game_objs := \
 	netdemo.cpp \
 	netevents.cpp \
 	netlag.cpp \
+	netlagcomp.cpp \
 	netmap.cpp \
 	netpredict.cpp \
 	netserver.cpp \

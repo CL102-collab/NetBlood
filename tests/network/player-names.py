@@ -67,7 +67,7 @@ def main():
         relays.append(relay)
         # Drop ContentReady, including reliable retransmissions, while allowing
         # Hello, the manifest and transport acknowledgements through unchanged.
-        relay.block_client_payload = struct.pack("<III", 0x314e424e, 8, 15)
+        relay.block_client_payload = struct.pack("<III", 0x314e424e, 9, 15)
         game = client(name, relay.port, "", wait=False)
         game.wait(lambda text: "NET content verified" in text
                   and relay.counters["client_to_server_filtered"] > 0,
