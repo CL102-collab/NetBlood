@@ -61,6 +61,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "netaddon_engine.h"
 #include "netaddon_restart.h"
 #include "netserver.h"
+#ifndef NETCODE_DISABLE
+#include "zerotier.h"
+#endif
 #include "neturi.h"
 #include "neturireg.h"
 #include "osdcmds.h"
@@ -207,10 +210,18 @@ void ShutDown(void)
 {
     discordPresenceShutdown();
     if (!in3dmode() && !gDedicated)
+    {
+#ifndef NETCODE_DISABLE
+        zerotier::stop();
+#endif
         return;
+    }
     if (!gDedicated)
         CONFIG_WriteSetup(0);
     netDeinitialize();
+#ifndef NETCODE_DISABLE
+    zerotier::stop();
+#endif
     sndTerm();
     sfxTerm();
     scrUnInit();
@@ -1372,6 +1383,7 @@ SWITCH switches[] = {
     { "password", 63, 1 },
     { "itemsstay", 64, 1 },
     { "monsters", 65, 1 },
+    { "zerotier", 66, 1 },
     { NULL, 0, 0 }
 };
 
@@ -1410,7 +1422,8 @@ void PrintHelp(void)
         "-dedicated\tRun a server without a window or audio device\n"
         "-gametype [type]\tServer mode: coop (default), bloodbath, or teams\n"
         "-port [port]\tUDP listen/connect port; Range:1..65535; Default:23513\n"
-        "-password [text]\tDedicated server password or client join password; default empty, max 128 bytes\n"
+        "-password [text]\tServer password or client join password; default empty, max 128 bytes\n"
+        "-zerotier [network ID]\tUse embedded ZeroTier on the configured 16-digit network ID\n"
         "Dedicated server rules:\n"
         "-maxplayers [n]\tPlayer limit; Range:1..8; Default:8\n"
         "-timelimit [min]\tMinutes per map; 0 means unlimited (default)\n"
@@ -1793,6 +1806,9 @@ void ParseOptions(void)
             netServerParseOption(name, OptArgv[0]);
             break;
         }
+        case 66:
+            netParseZeroTierOption(OptArgc ? OptArgv[0] : nullptr);
+            break;
         }
     }
     netServerValidateOptions(gRequestedGameType, bAddUserMap);
@@ -1942,6 +1958,7 @@ static int RunDedicatedServer()
     gChoke.Init(518, playerHandChoke);
     OSD_Exec("autoexec.cfg");
     netApplyPasswordOption();
+    netApplyZeroTierOption();
     SoundToggle = MusicToggle = 0;
     StartLevel(&gGameOptions);
     LOG_F(INFO, "Dedicated server running: port=%d players=%d (stdin accepts console commands)", gNetPort, numplayers);
@@ -2059,6 +2076,7 @@ static int HandleUriCommandLine(int& argc, char const * const * argv)
         return UriCommandError(error);
     Bstrncpyz(gNetAddress, endpoint.host.c_str(), sizeof(gNetAddress));
     gNetPort = endpoint.port;
+    gNetZeroTier = false;
     gNetMode = NETWORK_CLIENT;
     bQuickStart = bNoDemo = true;
     gNoSetup = true;
@@ -2340,6 +2358,7 @@ int app_main(int argc, char const * const * argv)
     }
     netServerInitializeSettings();
     netApplyPasswordOption();
+    netApplyZeroTierOption();
     if (gDedicated)
         SoundToggle = MusicToggle = 0;
     LOG_F(INFO, "Initializing network users");
@@ -2371,6 +2390,7 @@ int app_main(int argc, char const * const * argv)
     // Explicit startup credentials take precedence over saved/autoexec values.
     // Do not reapply them on later joins: the menu/console may correct a password.
     netApplyPasswordOption();
+    netApplyZeroTierOption();
 
     CONFIG_SetScoreboardDefaultKey();
     discordPresenceInitialize();
@@ -2430,6 +2450,7 @@ RESTART:
             gQuitGame = true;
             break;
         }
+        netUpdate();
         discordPresencePump();
         discordPresenceApplyPendingJoin();
         if (netIsLive())
@@ -2655,6 +2676,7 @@ RESTART:
         levelSetupOptions(0,0);
         while (gGameMenuMgr.m_bActive)
         {
+            netUpdate();
             discordPresencePump();
             if (discordPresenceHasPendingJoin())
             {

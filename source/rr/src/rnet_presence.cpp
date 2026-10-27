@@ -247,7 +247,7 @@ std::string stunStatus()
 std::string stunError() { return setupError.empty() ? stun.error() : setupError; }
 void startDiscovery()
 {
-    if (!attached || !rnet::server() || equal(stunServer, "off")) return;
+    if (!attached || !rnet::server() || rnet::zeroTier() || equal(stunServer, "off")) return;
     lookupNames.clear();
     if (equal(stunServer, "auto"))
         for (const char* name : { "stun.l.google.com", "stun1.l.google.com", "stun2.l.google.com" })
@@ -522,6 +522,11 @@ bool earlyArguments(int& argc, const char* const* argv, int& exitCode)
             ++i;
             continue;
         }
+        if (plainSwitch(argv[i], "zerotier"))
+        {
+            if (i + 1 < argc && argv[i + 1][0] != '-') ++i;
+            continue;
+        }
         registration |= isSwitch(argv[i], "register-uri");
         connection |= isSwitch(argv[i], "connect-uri") || !Bstrncasecmp(argv[i], "rednukem:", 9);
         discordLaunch |= isSwitch(argv[i], "discord-launch");
@@ -665,7 +670,7 @@ void pump()
             session = newSession();
         startDiscovery();
     }
-    if (attached && rnet::server()) updateDiscovery();
+    if (attached && rnet::server() && !rnet::zeroTier()) updateDiscovery();
     publish();
     updateDiscord();
 }
@@ -715,7 +720,7 @@ bool handle(int player, uint8_t type, const uint8_t* data, size_t size)
 }
 std::string joinUri()
 {
-    if (!rnet::active() || rnet::playback()) return {};
+    if (!rnet::active() || rnet::playback() || rnet::zeroTier()) return {};
     if (rnet::server())
     {
         if (*discordAddress)

@@ -719,6 +719,26 @@ extern "C" {
     /** Callback for intercepting received raw UDP packets. Should return 1 to intercept, 0 to ignore, or -1 to propagate an error. */
     typedef int (ENET_CALLBACK * ENetInterceptCallback)(struct _ENetHost *host, void *event);
 
+    /** A bound, nonblocking datagram transport owned by one ENet host.
+     *
+     * send and receive use the same scatter/gather buffers and return conventions
+     * as enet_socket_send and enet_socket_receive. In particular, receive returns
+     * zero when no packet is available and -2 for a discarded, truncated packet.
+     * wait uses ENET_SOCKET_WAIT_* flags and a timeout in milliseconds. All three
+     * callbacks are required; context and destroy may be NULL. Callback storage is
+     * copied by enet_host_create_with_transport, so the supplied table need not
+     * outlive that call. Ownership of context transfers only on successful host
+     * creation; destroy is then called once by enet_host_destroy, if supplied.
+     * Native sockets and custom transport handles must never be interchanged.
+     */
+    typedef struct _ENetTransport {
+        void *context;
+        int (ENET_CALLBACK *send)(void *, ENetAddress *, ENetBuffer *, size_t);
+        int (ENET_CALLBACK *receive)(void *, ENetAddress *, ENetBuffer *, size_t);
+        int (ENET_CALLBACK *wait)(void *, enet_uint32 *, enet_uint64);
+        void (ENET_CALLBACK *destroy)(void *);
+    } ENetTransport;
+
     /** An ENet host for communicating with peers.
      *
      * No fields should be modified unless otherwise stated.
@@ -736,6 +756,7 @@ extern "C" {
      */
     typedef struct _ENetHost {
         ENetSocket            socket;
+        ENetTransport         transport;         /**< custom datagram backend; read-only, zeroed for native hosts */
         ENetAddress           address;           /**< Internet address of the host */
         enet_uint32           incomingBandwidth; /**< downstream bandwidth of the host */
         enet_uint32           outgoingBandwidth; /**< upstream bandwidth of the host */
@@ -945,6 +966,12 @@ extern "C" {
     ENET_API enet_uint32  enet_crc32(const ENetBuffer *, size_t);
 
     ENET_API ENetHost * enet_host_create(ENetAddress *, size_t, size_t, enet_uint32, enet_uint32);
+    /** Creates a host using an already-bound transport. address describes that
+     * transport's local endpoint and is copied without native socket operations.
+     * Passing NULL transport preserves enet_host_create's native behavior.
+     * On failure, the caller retains ownership of the transport context.
+     */
+    ENET_API ENetHost * enet_host_create_with_transport(ENetAddress *, size_t, size_t, enet_uint32, enet_uint32, const ENetTransport *);
     ENET_API void       enet_host_destroy(ENetHost *);
     ENET_API ENetPeer * enet_host_connect(ENetHost *, ENetAddress *, size_t, enet_uint32);
     ENET_API int        enet_host_check_events(ENetHost *, ENetEvent *);
@@ -1210,6 +1237,24 @@ extern "C" {
 // =======================================================================//
 
     static ENetCallbacks callbacks = { malloc, free, abort };
+
+    static int enet_host_socket_send(ENetHost *host, ENetAddress *address, ENetBuffer *buffers, size_t bufferCount) {
+        if (host->transport.send != NULL)
+            return host->transport.send(host->transport.context, address, buffers, bufferCount);
+        return enet_socket_send(host->socket, address, buffers, bufferCount);
+    }
+
+    static int enet_host_socket_receive(ENetHost *host, ENetAddress *address, ENetBuffer *buffers, size_t bufferCount) {
+        if (host->transport.receive != NULL)
+            return host->transport.receive(host->transport.context, address, buffers, bufferCount);
+        return enet_socket_receive(host->socket, address, buffers, bufferCount);
+    }
+
+    static int enet_host_socket_wait(ENetHost *host, enet_uint32 *condition, enet_uint64 timeout) {
+        if (host->transport.wait != NULL)
+            return host->transport.wait(host->transport.context, condition, timeout);
+        return enet_socket_wait(host->socket, condition, timeout);
+    }
 
     int enet_initialize_with_callbacks(ENetVersion version, const ENetCallbacks *inits) {
         if (version < ENET_VERSION_CREATE(1, 3, 0)) {
@@ -2650,7 +2695,7 @@ extern "C" {
             // buffer.dataLength = sizeof (host->packetData[0]);
             buffer.dataLength = host->mtu;
 
-            receivedLength    = enet_socket_receive(host->socket, &host->receivedAddress, &buffer, 1);
+            receivedLength    = enet_host_socket_receive(host, &host->receivedAddress, &buffer, 1);
 
             if (receivedLength == -2)
                 continue;
@@ -3138,7 +3183,7 @@ extern "C" {
                 }
 
                 currentPeer->lastSendTime = host->serviceTime;
-                sentLength = enet_socket_send(host->socket, &currentPeer->address, host->buffers, host->bufferCount);
+                sentLength = enet_host_socket_send(host, &currentPeer->address, host->buffers, host->bufferCount);
                 if (sentLength < 0) {
                     enet_protocol_remove_sent_unreliable_commands(currentPeer);
                     return -1;
@@ -3156,7 +3201,7 @@ extern "C" {
                     enet_uint32 copy;
                     enet_uint32 copies = host->packetCopies > 8 ? 8 : host->packetCopies;
                     for (copy = 1; copy < copies; ++copy) {
-                        int duplicateLength = enet_socket_send(host->socket, &currentPeer->address,
+                        int duplicateLength = enet_host_socket_send(host, &currentPeer->address,
                                                               host->buffers, host->bufferCount);
                         /* A redundant copy is best effort if the socket is full;
                          * the first copy has already been accepted for delivery. */
@@ -3322,7 +3367,7 @@ extern "C" {
                 }
 
                 waitCondition = ENET_SOCKET_WAIT_RECEIVE | ENET_SOCKET_WAIT_INTERRUPT;
-                if (enet_socket_wait(host->socket, &waitCondition, ENET_TIME_DIFFERENCE(timeout, host->serviceTime)) != 0) {
+                if (enet_host_socket_wait(host, &waitCondition, ENET_TIME_DIFFERENCE(timeout, host->serviceTime)) != 0) {
                     return -1;
                 }
             } while (waitCondition & ENET_SOCKET_WAIT_INTERRUPT);
@@ -4381,10 +4426,15 @@ extern "C" {
      *  at any given time.
      */
     ENetHost * enet_host_create(ENetAddress *address, size_t peerCount, size_t channelLimit, enet_uint32 incomingBandwidth, enet_uint32 outgoingBandwidth) {
+        return enet_host_create_with_transport(address, peerCount, channelLimit, incomingBandwidth, outgoingBandwidth, NULL);
+    }
+
+    ENetHost * enet_host_create_with_transport(ENetAddress *address, size_t peerCount, size_t channelLimit, enet_uint32 incomingBandwidth, enet_uint32 outgoingBandwidth, const ENetTransport *transport) {
         ENetHost *host;
         ENetPeer *currentPeer;
 
-        if (peerCount > ENET_PROTOCOL_MAXIMUM_PEER_ID) {
+        if (peerCount > ENET_PROTOCOL_MAXIMUM_PEER_ID ||
+            (transport != NULL && (transport->send == NULL || transport->receive == NULL || transport->wait == NULL))) {
             return NULL;
         }
 
@@ -4400,30 +4450,37 @@ extern "C" {
 
         memset(host->peers, 0, peerCount * sizeof(ENetPeer));
 
-        host->socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
-        if (host->socket != ENET_SOCKET_NULL) {
-            enet_socket_set_option (host->socket, ENET_SOCKOPT_IPV6_V6ONLY, 0);
-        }
-
-        if (host->socket == ENET_SOCKET_NULL || (address != NULL && enet_socket_bind(host->socket, address) < 0)) {
+        host->socket = ENET_SOCKET_NULL;
+        if (transport != NULL) {
+            host->transport = *transport;
+            if (address != NULL)
+                host->address = *address;
+        } else {
+            host->socket = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
             if (host->socket != ENET_SOCKET_NULL) {
-                enet_socket_destroy(host->socket);
+                enet_socket_set_option (host->socket, ENET_SOCKOPT_IPV6_V6ONLY, 0);
             }
 
-            enet_free(host->peers);
-            enet_free(host);
+            if (host->socket == ENET_SOCKET_NULL || (address != NULL && enet_socket_bind(host->socket, address) < 0)) {
+                if (host->socket != ENET_SOCKET_NULL) {
+                    enet_socket_destroy(host->socket);
+                }
 
-            return NULL;
-        }
+                enet_free(host->peers);
+                enet_free(host);
 
-        enet_socket_set_option(host->socket, ENET_SOCKOPT_NONBLOCK, 1);
-        enet_socket_set_option(host->socket, ENET_SOCKOPT_BROADCAST, 1);
-        enet_socket_set_option(host->socket, ENET_SOCKOPT_RCVBUF, ENET_HOST_RECEIVE_BUFFER_SIZE);
-        enet_socket_set_option(host->socket, ENET_SOCKOPT_SNDBUF, ENET_HOST_SEND_BUFFER_SIZE);
-        enet_socket_set_option(host->socket, ENET_SOCKOPT_IPV6_V6ONLY, 0);
+                return NULL;
+            }
 
-        if (address != NULL && enet_socket_get_address(host->socket, &host->address) < 0) {
-            host->address = *address;
+            enet_socket_set_option(host->socket, ENET_SOCKOPT_NONBLOCK, 1);
+            enet_socket_set_option(host->socket, ENET_SOCKOPT_BROADCAST, 1);
+            enet_socket_set_option(host->socket, ENET_SOCKOPT_RCVBUF, ENET_HOST_RECEIVE_BUFFER_SIZE);
+            enet_socket_set_option(host->socket, ENET_SOCKOPT_SNDBUF, ENET_HOST_SEND_BUFFER_SIZE);
+            enet_socket_set_option(host->socket, ENET_SOCKOPT_IPV6_V6ONLY, 0);
+
+            if (address != NULL && enet_socket_get_address(host->socket, &host->address) < 0) {
+                host->address = *address;
+            }
         }
 
         if (!channelLimit || channelLimit > ENET_PROTOCOL_MAXIMUM_CHANNEL_COUNT) {
@@ -4484,7 +4541,7 @@ extern "C" {
         }
 
         return host;
-    } /* enet_host_create */
+    } /* enet_host_create_with_transport */
 
     /** Destroys the host and all resources associated with it.
      *  @param host pointer to the host to destroy
@@ -4496,7 +4553,12 @@ extern "C" {
             return;
         }
 
-        enet_socket_destroy(host->socket);
+        if (host->transport.send != NULL) {
+            if (host->transport.destroy != NULL)
+                host->transport.destroy(host->transport.context);
+        } else {
+            enet_socket_destroy(host->socket);
+        }
 
         for (currentPeer = host->peers; currentPeer < &host->peers[host->peerCount]; ++currentPeer) {
             enet_peer_reset(currentPeer);
@@ -4630,7 +4692,7 @@ extern "C" {
         ENetBuffer buffer;
         buffer.data = data;
         buffer.dataLength = dataLength;
-        return enet_socket_send(host->socket, address, &buffer, 1);
+        return enet_host_socket_send(host, address, &buffer, 1);
     }
 
     /** Sends raw data to specified address with extended arguments. Allows to send only part of data, handy for other programming languages.
@@ -4648,7 +4710,7 @@ extern "C" {
         ENetBuffer buffer;
         buffer.data = data + skipBytes;
         buffer.dataLength = bytesToSend;
-        return enet_socket_send(host->socket, address, &buffer, 1);
+        return enet_host_socket_send(host, address, &buffer, 1);
     }
 
     /** Sets intercept callback for the host.

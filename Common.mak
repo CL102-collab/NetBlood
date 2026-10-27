@@ -858,6 +858,11 @@ COMPILERFLAGS += -DRENDERTYPE$(RENDERTYPE)=1
 ifeq (0,$(NETCODE))
     COMPILERFLAGS += -DNETCODE_DISABLE
 endif
+# A distribution can provision one managed network without embedding any
+# controller credentials. Empty leaves it configurable through the game cvar.
+ifneq (,$(strip $(ZEROTIER_NETWORK_ID)))
+    COMPILERFLAGS += "-DZEROTIER_NETWORK_ID=\"$(ZEROTIER_NETWORK_ID)\""
+endif
 ifneq (0,$(STARTUP_WINDOW))
     COMPILERFLAGS += -DSTARTUP_WINDOW
 endif

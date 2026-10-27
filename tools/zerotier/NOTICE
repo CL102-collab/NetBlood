@@ -1,0 +1,25 @@
+The netblood-zerotier executable is an independent generic UDP socket companion.
+Its original sources and generic local IPC header are under the MIT License.
+It contains ZeroTier Sockets (libzt), ZeroTierOne, lwIP, and their dependencies.
+No GPL game source, ENet source, or game protocol is linked into this executable.
+The games communicate with it using authenticated local UDP datagram IPC.
+
+Pinned libzt revision a6f6886a8c8c07249f9e5d0cae431848727fe845 (tag 1.8.10):
+Copyright (c) 2013-2021 ZeroTier, Inc.
+Its included Business Source License specifies Change Date 2026-01-01 and
+Change License Apache License 2.0. The change date has passed as of this build's
+introduction (2026-10-27). The original license text is preserved separately.
+
+Pinned ZeroTierOne revision a47c3cb16f1c16bc9be555fd7f6bcd34e843f001:
+Copyright (c) 2019 ZeroTier, Inc.
+Its included Business Source License specifies Change Date 2025-01-01 and
+Change License Apache License 2.0. The original text is preserved separately.
+
+The full Apache License 2.0, original ZeroTier licenses, libzt third-party
+notices, ZeroTierOne authors, and lwIP license accompany the built companion.
+The source manifest records all archive URLs, revisions and SHA256 hashes.
+This distribution modifies the SDK CMake configuration for portable builds,
+its API header for static Windows linkage, and its bundled miniupnpc for
+correct Windows socket timeouts. Modified files carry prominent notices.
+ZeroTier is a trademark of ZeroTier, Inc.; this project is not affiliated
+with or endorsed by ZeroTier, Inc.

@@ -10,6 +10,10 @@ name: Build
 permissions:
   contents: read
 
+env:
+  # Public network identifier only; controller credentials never enter a build.
+  ZEROTIER_NETWORK_ID: ${{ vars.ZEROTIER_NETWORK_ID }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -212,6 +216,7 @@ jobs:
             --build-arg "PACKAGE_KIND=$PACKAGE_KIND" --build-arg "CPU_BASELINE=$CPU_BASELINE" \
             --build-arg "NETBLOOD_REVISION=$(git rev-parse HEAD)" \
             --build-arg "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" \
+            --build-arg "ZEROTIER_NETWORK_ID=$ZEROTIER_NETWORK_ID" \
             --build-arg BUILD_JOBS=2 --target artifact --output type=local,dest=dist .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

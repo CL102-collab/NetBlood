@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -300,6 +301,67 @@ else:
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
                     )
                     self.assertEqual(result.returncode, expected, result.stdout)
+
+
+class PackageResourcesTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("ci_package", ROOT / "platform/ci/package.py")
+        self.package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.package)
+
+    def companion(self, directory, windows=False):
+        # These files exercise staging and dependency-notice requirements only;
+        # architecture/runtime validation uses the actual built executables.
+        directory.mkdir()
+        (directory / ("netblood-zerotier.exe" if windows else "netblood-zerotier")).write_bytes(b"staging-test")
+        notices = directory / "zerotier-licenses"
+        notices.mkdir()
+        for name in self.package.ZEROTIER_NOTICES:
+            (notices / name).write_text("test notice\n")
+        (directory / "zerotier-build-info.json").write_text('{"recipe":"test","sources":{}}\n')
+        return directory
+
+    def test_companion_stays_beside_executable_with_licenses_in_resources(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, ZEROTIER_NETWORK_ID="0123456789abcdef"):
+            base = Path(temporary)
+            built = self.companion(base / "companion")
+            resources, binaries = base / "share", base / "bin"
+            self.package.stage(resources, built, binaries)
+            self.assertEqual((binaries / "netblood-zerotier").read_bytes(), b"staging-test")
+            self.assertTrue(os.access(binaries / "netblood-zerotier", os.X_OK))
+            self.assertFalse((resources / "netblood-zerotier").exists())
+            self.assertEqual(set(path.name for path in (resources / "licenses/zerotier").iterdir()),
+                             set(self.package.ZEROTIER_NOTICES))
+            self.assertTrue((resources / "docs/zerotier.md").is_file())
+            self.assertTrue((resources / "zerotier-build-info.json").is_file())
+            self.assertEqual(json.loads((resources / "build-info.json").read_text())["zerotier"],
+                             {"bundled": True, "shared_network_configured": True})
+
+    def test_windows_companion_is_staged_with_correct_name(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, ZEROTIER_NETWORK_ID=""):
+            base = Path(temporary)
+            self.package.stage(base / "stage", self.companion(base / "companion", windows=True))
+            self.assertTrue((base / "stage/netblood-zerotier.exe").is_file())
+            self.assertIn("No shared ZeroTier network", (base / "stage/ZEROTIER-NOTICE.txt").read_text())
+
+    def test_incomplete_dependency_notices_reject_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            built = self.companion(base / "companion")
+            (built / "zerotier-licenses/Apache-2.0.txt").unlink()
+            with self.assertRaisesRegex(ValueError, "missing its licenses"):
+                self.package.stage(base / "stage", built)
+
+    def test_legacy_package_explicitly_reports_internet_only(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, ZEROTIER_NETWORK_ID=""):
+            destination = Path(temporary) / "stage"
+            reason = "Legacy CPU package: Internet multiplayer only; ZeroTier SDK baseline is unvalidated."
+            self.package.stage(destination, zerotier_unavailable=reason)
+            metadata = json.loads((destination / "build-info.json").read_text())["zerotier"]
+            self.assertFalse(metadata["bundled"])
+            self.assertEqual(metadata["reason"], reason)
+            self.assertIn(reason, (destination / "ZEROTIER-NOTICE.txt").read_text())
+            self.assertFalse((destination / "netblood-zerotier").exists())
 
 
 if __name__ == "__main__":

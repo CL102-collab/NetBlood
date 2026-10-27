@@ -463,7 +463,7 @@ void netAddonRestartRememberStartup(int argc, char const* const* argv)
 bool netAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const& host, uint16_t port, std::string const& password,
     std::string const& profileId, netaddon::Profile const& profile,
-    std::string const& directory, std::string& error)
+    std::string const& directory, std::string& error, std::string const& zeroTierNetwork)
 {
     if (!pendingFile.empty()) return fail(error, "An addon activation restart is already pending.");
     if (!profileIdentity(profileId)) return fail(error, "The addon profile identifier is invalid.");
@@ -479,6 +479,10 @@ bool netAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const authority = host.find(':') == std::string::npos ? host : "[" + host + "]";
     if (!port || !neturi::parse("netblood://" + authority + ":" + std::to_string(port), endpoint, error)) return false;
     if (!cleanString(password, 128)) return fail(error, "The saved server password is invalid.");
+    if (!zeroTierNetwork.empty() && (zeroTierNetwork.size() != 16 ||
+        !std::all_of(zeroTierNetwork.begin(), zeroTierNetwork.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }))) return fail(error, "The saved ZeroTier network ID is invalid.");
     std::vector<std::string> arguments;
     std::string const previousAddon = comparablePath(netAddonActiveDirectory());
     // Carry local preferences and base-data search paths. Old addon, map, demo,
@@ -508,6 +512,7 @@ bool netAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     arguments.push_back("-client=" + endpoint.host);
     arguments.push_back("-port=" + std::to_string(endpoint.port));
     arguments.push_back("-password=" + password);
+    if (!zeroTierNetwork.empty()) arguments.push_back("-zerotier=" + zeroTierNetwork);
     if (arguments.size() > maxArguments) return fail(error, "Too many addon activation options.");
     for (auto const& argument : arguments)
         if (!cleanString(argument)) return fail(error, "An addon activation option exceeds the restart handoff limit.");

@@ -1,0 +1,6 @@
+{
+  "libzt": {"revision": "a6f6886a8c8c07249f9e5d0cae431848727fe845", "url": "https://codeload.github.com/zerotier/libzt/tar.gz/a6f6886a8c8c07249f9e5d0cae431848727fe845", "sha256": "74987551f83bf27e38b886b89249096583e2b8f0dafdafcacb2ce23b92ad603a", "destination": "."},
+  "ZeroTierOne": {"revision": "a47c3cb16f1c16bc9be555fd7f6bcd34e843f001", "url": "https://codeload.github.com/zerotier/ZeroTierOne/tar.gz/a47c3cb16f1c16bc9be555fd7f6bcd34e843f001", "sha256": "0b09074757f9f58ae740f930b9f2b4a196ca92b502de91f6e8fd7a5336f02d65", "destination": "ext/ZeroTierOne"},
+  "lwip": {"revision": "32708c0a8b140efb545cc35101ee5fdeca6d6489", "url": "https://codeload.github.com/joseph-henry/lwip/tar.gz/32708c0a8b140efb545cc35101ee5fdeca6d6489", "sha256": "49e5a5a1c5b4eedcc749abd60e839d4552618fbbe72a6920447e7dcacb3ea4bf", "destination": "ext/lwip"},
+  "lwip-contrib": {"revision": "4fd612c9c72dfcd1db6618bd59c1a17d9f5b55f8", "url": "https://codeload.github.com/joseph-henry/lwip-contrib/tar.gz/4fd612c9c72dfcd1db6618bd59c1a17d9f5b55f8", "sha256": "8d0f2c9c54dc2f51e213afc52ebc3be1615a2269d4aa0f93198de86ac67178f3", "destination": "ext/lwip-contrib"}
+}

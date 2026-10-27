@@ -247,7 +247,8 @@ bool scheduleActivation(const std::string& root,std::string& error)
     rnet::uri::Endpoint endpoint;
     if(!rnet::uri::parse("rednukem://"+rnet::endpoint(),endpoint,error)) return false;
     if(!rnetAddonRestartRequest(args,endpoint.host,endpoint.port,g_netPassword,
-        rnetaddon::identity(requiredProfile),requiredProfile,root,error)) return false;
+        rnetaddon::identity(requiredProfile),requiredProfile,root,error,
+        rnet::zeroTier() ? rnet::zeroTierNetworkId() : "")) return false;
     OSD_Printf("Server addon verified. Restarting Rednukem and reconnecting...\n");
     receiving=false; return true;
 }

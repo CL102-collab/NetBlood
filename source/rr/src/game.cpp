@@ -8934,9 +8934,9 @@ MAIN_LOOP_RESTART:
         q = 0;
 
     Menu_Change(MENU_MAIN);
-    // External Discord launches skip the attract/demo loop that normally
-    // initializes menu mode. Stay in the menu until its IPC invite is applied.
-    if (rnet::presence::externalLaunch() && !rnet::active())
+    // Deferred connections skip the attract/demo loop that normally initializes
+    // menu mode. Keep the main loop pumping while the overlay becomes ready.
+    if ((rnet::presence::externalLaunch() || rnet::waitingForZeroTier()) && !rnet::active())
     {
         g_player[myconnectindex].ps->gm = MODE_MENU;
         Menu_Open(myconnectindex);
@@ -8948,13 +8948,13 @@ MAIN_LOOP_RESTART:
         G_SetCrosshairColor(CrosshairColors.r, CrosshairColors.g, CrosshairColors.b);
     }
 
-    if (!rnet::active() && ud.warp_on == 1)
+    if (!rnet::active() && !rnet::waitingForZeroTier() && ud.warp_on == 1)
     {
         G_NewGame_EnterLevel();
         // may change ud.warp_on in an error condition
     }
 
-    if (!rnet::active() && !rnet::presence::externalLaunch() && ud.warp_on == 0)
+    if (!rnet::active() && !rnet::presence::externalLaunch() && !rnet::waitingForZeroTier() && ud.warp_on == 0)
     {
         if ((g_netServer || ud.multimode > 1) && boardfilename[0] != 0)
         {

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -66,6 +67,9 @@ def main():
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    overlay_network = os.environ.get("ZEROTIER_NETWORK_ID", "")
+    if overlay_network and not re.fullmatch(r"[0-9a-fA-F]{16}", overlay_network):
+        parser.error("ZEROTIER_NETWORK_ID must be a 16-digit hexadecimal network ID")
     work, output = args.work_dir.resolve(), args.output.resolve()
     xp = args.target == "windows-xp-i686-nosse2"
     arm = args.target == "windows-arm64"
@@ -182,6 +186,7 @@ def main():
                     "SDL_STATIC=0", "LTO=0", "NOASM=1", "HAVE_GTK2=0",
                     f"USE_VULKAN={0 if xp else 1}", f"USE_MIMALLOC={0 if xp else 1}",
                     f"CUSTOMOPT={cflags}", f"OPTOPT={baseline}",
+                    f"ZEROTIER_NETWORK_ID={overlay_network}",
                     f"WINDOWS_MAJOR={5 if xp else 10 if arm else 6}", f"WINDOWS_MINOR={1 if xp else 0 if arm else 1}"]
     if xp:
         # Retain symbols for the CPU audit, which identifies libstdc++'s
@@ -193,8 +198,28 @@ def main():
     stage = target_work / "stage"
     if stage.exists():
         shutil.rmtree(stage)
-    run([sys.executable, ROOT / "platform/ci/package.py", "stage", "--destination", stage], env=env)
+    stage_options = []
+    if xp:
+        # Do not turn the legacy package into an SSE2/modern-Windows package
+        # merely to include an SDK whose baseline has not been validated.
+        stage_options = ["--zerotier-unavailable",
+                         "This Windows XP/no-SSE2 package provides Internet multiplayer only. "
+                         "The ZeroTier SDK has no validated XP/no-SSE2 baseline."]
+    else:
+        companion = target_work / "zerotier-output"
+        run([sys.executable, ROOT / "tools/zerotier/build.py",
+             "--work-dir", target_work / "zerotier-build", "--output-dir", companion,
+             "--jobs", args.jobs, "--", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}"], env=env)
+        stage_options = ["--zerotier-build", companion]
+    run([sys.executable, ROOT / "platform/ci/package.py", "stage", "--destination", stage,
+         *stage_options], env=env)
     shutil.copy2(executable, stage / "nblood.exe")
+    (stage / "INSTALL.txt").write_text(
+        "Extract this directory together with its licenses.\n"
+        "Supply your own Blood 1.21 game files using the startup window.\n"
+        + ("This legacy Windows XP/no-SSE2 package supports Internet multiplayer only.\n" if xp else
+           "The bundled ZeroTier companion needs no separate installation or administrator access.\n")
+        + "See docs/zerotier.md and ZEROTIER-NOTICE.txt for platform and network setup.\n")
     licenses = stage / "licenses" / "windows-dependencies"
     licenses.mkdir(parents=True)
     for name, src in source_dirs.items():
@@ -234,6 +259,8 @@ def main():
         "compiler_flags": cflags, "make_options": make_options,
         "vulkan": not xp, "vulkan_runtime": "external GPU-driver runtime, loaded on demand" if not xp else "unsupported on XP",
         "network": "IPv4" if xp else "IPv4 and IPv6",
+        "zerotier_companion": not xp,
+        "zerotier_shared_network_configured": bool(overlay_network),
     }, indent=2) + "\n")
     run([sys.executable, Path(__file__).with_name("windows-verify.py"), "--directory", stage,
          "--target", args.target, "--objdump", triple + "-objdump"], env=env)

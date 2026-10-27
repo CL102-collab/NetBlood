@@ -41,6 +41,11 @@ This means a player can receive a valid delayed hit after moving behind cover.
 
 ## Hosting and joining
 
+The Multiplayer menu offers **Internet** for ordinary hosting/joining and
+**ZeroTier** for a shared-network game browser and password-protected graphical
+hosting. See the [ZeroTier guide](zerotier.md) for deployment and connection
+details. Both transports use the same content downloads and hot-join protocol.
+
 The same executable supports a graphical listen server and a dedicated server.
 Use the Multiplayer menu to host or join, or launch from a terminal:
 

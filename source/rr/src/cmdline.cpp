@@ -72,6 +72,7 @@ void G_ShowParameterHelp(void)
         "-r\t\tRecord demo\n"
         "-s#\t\tStart game on skill level #\n"
         "-server [1-16]\tStart a server with optional player capacity\n"
+        "-zerotier [network]\tUse bundled ZeroTier (optional shared network ID)\n"
 #ifdef STARTUP_SETUP_WINDOW
         "-setup/nosetup\tEnable or disable startup window\n"
 #endif

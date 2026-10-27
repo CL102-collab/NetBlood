@@ -9,6 +9,9 @@ jobs=${4:-2}
 repository=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$repository"
 architecture=$(dpkg --print-architecture)
+[[ -z ${ZEROTIER_NETWORK_ID:-} || ${ZEROTIER_NETWORK_ID} =~ ^[0-9a-fA-F]{16}$ ]] || {
+    echo 'ZEROTIER_NETWORK_ID must be a 16-digit hexadecimal network ID.' >&2; exit 2;
+}
 
 case "$kind" in deb|appimage) ;; *) echo "Unknown package kind: $kind" >&2; exit 2 ;; esac
 case "$baseline" in standard|nosse2) ;; *) echo "Unknown CPU baseline: $baseline" >&2; exit 2 ;; esac
@@ -53,7 +56,8 @@ lto_workers=$jobs
 make -j"$jobs" blood PLATFORM=LINUX ARCH="$build_arch" NOASM=1 \
     USE_SSE2="$([[ "$baseline" == nosse2 ]] && echo 0 || echo 1)" \
     OPTOPT="$cpu_flags" USE_VULKAN="$vulkan" USE_MIMALLOC="$allocator" \
-    HAVE_GTK2=1 LTO="$lto_workers" VC_REV=ci VC_HASH="${NETBLOOD_REVISION:0:9}"
+    HAVE_GTK2=1 LTO="$lto_workers" VC_REV=ci VC_HASH="${NETBLOOD_REVISION:0:9}" \
+    "ZEROTIER_NETWORK_ID=${ZEROTIER_NETWORK_ID:-}"
 file nblood
 readelf -h nblood
 # Help runs before assets are needed, and catches missing runtime libraries.
@@ -85,14 +89,35 @@ PY
     fi
 fi
 
+companion_output="$work/zerotier-output"
+overlay_summary='ZeroTier companion bundled; see docs/zerotier.md for network setup.'
+stage_overlay=(--zerotier-build "$companion_output")
+if [[ "$baseline" == nosse2 ]]; then
+    overlay_summary='Internet multiplayer only: ZeroTier SDK no-SSE2 baseline is unvalidated.'
+    stage_overlay=(--zerotier-unavailable "$overlay_summary")
+else
+    # Keep SDK compiler output at the package's advertised architecture floor.
+    python3 tools/zerotier/build.py --work-dir "$work/zerotier-build" \
+        --output-dir "$companion_output" --jobs "$jobs" -- \
+        "-DCMAKE_C_FLAGS=$cpu_flags" "-DCMAKE_CXX_FLAGS=$cpu_flags"
+    file "$companion_output/netblood-zerotier"
+    readelf -h "$companion_output/netblood-zerotier"
+    timeout 90 "$companion_output/netblood-zerotier" --help > "$work/zerotier-help.txt"
+    grep -q 'IPC version' "$work/zerotier-help.txt"
+fi
+
 if [[ "$kind" == appimage ]]; then
-    platform/ci/appimage-build.sh "$repository/nblood" "$output"
+    platform/ci/appimage-build.sh "$repository/nblood" "$output" "$companion_output"
     exit
 fi
 
 package_root="$work/package"
 install -Dm755 nblood "$package_root/usr/games/nblood"
-python3 platform/ci/package.py stage --destination "$package_root/usr/share/games/nblood"
+if [[ "$baseline" != nosse2 ]]; then
+    stage_overlay+=(--executable-directory "$package_root/usr/games")
+fi
+python3 platform/ci/package.py stage --destination "$package_root/usr/share/games/nblood" \
+    "${stage_overlay[@]}"
 install -Dm644 package/common/gpl-2.0.txt "$package_root/usr/share/doc/netblood/copyright"
 install -Dm644 platform/ci/linux.desktop "$package_root/usr/share/applications/netblood.desktop"
 python3 platform/ci/linux-icon.py "$package_root/usr/share/icons/hicolor/48x48/apps/netblood.png"
@@ -110,7 +135,11 @@ Package: netblood
 Architecture: any
 Description: NetBlood source port of Blood
 EOF
-dependencies=$(cd "$work" && dpkg-shlibdeps -O -e"$package_root/usr/games/nblood")
+shlib_executables=(-e"$package_root/usr/games/nblood")
+if [[ "$baseline" != nosse2 ]]; then
+    shlib_executables+=(-e"$package_root/usr/games/netblood-zerotier")
+fi
+dependencies=$(cd "$work" && dpkg-shlibdeps -O "${shlib_executables[@]}")
 [[ "$dependencies" == shlibs:Depends=* ]] || { echo 'Cannot determine runtime dependencies.' >&2; exit 1; }
 dependencies=${dependencies#shlibs:Depends=}
 if [[ "$vulkan" == 1 && "$dependencies" != *libvulkan1* ]]; then
@@ -134,6 +163,7 @@ Description: NetBlood source port of Blood
  Includes the engine, multiplayer support and redistributable engine assets.
  Original Blood game data must be supplied separately.
  CPU baseline: $baseline. Vulkan support: $vulkan.
+ $overlay_summary
 EOF
 artifact="$output/netblood-debian12-${architecture}${suffix}.deb"
 dpkg-deb --root-owner-group --build "$package_root" "$artifact"

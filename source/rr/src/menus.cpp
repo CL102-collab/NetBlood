@@ -33,6 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "../../blood/src/netlag.h"
 #include "rnet.h"
 #include "rnet_uri.h"
+#include "zerotier.h"
 
 #include "in_android.h"
 #ifndef __ANDROID__
@@ -449,7 +450,7 @@ static char const s_Credits[] = "Credits";
 
 MAKE_MENU_TOP_ENTRYLINK( s_NewGame, MEF_MainMenu, MAIN_NEWGAME, MENU_EPISODE );
 #ifndef NETCODE_DISABLE
-MAKE_MENU_TOP_ENTRYLINK( "Join Game", MEF_MainMenu, MAIN_JOINGAME, MENU_NETJOIN );
+MAKE_MENU_TOP_ENTRYLINK( "Multiplayer", MEF_MainMenu, MAIN_JOINGAME, MENU_NETWORK );
 #endif
 //#ifdef EDUKE32_SIMPLE_MENU
 MAKE_MENU_TOP_ENTRYLINK( "Resume Game", MEF_MainMenu, MAIN_RESUMEGAME, MENU_CLOSE );
@@ -1518,11 +1519,24 @@ static MenuEntry_t *MEL_SAVESETUP[] = {
 MAKE_MENU_TOP_ENTRYLINK( "Player Setup", MEF_CenterMenu, NETWORK_PLAYERSETUP, MENU_PLAYER );
 MAKE_MENU_TOP_ENTRYLINK( "Join Game", MEF_CenterMenu, NETWORK_JOINGAME, MENU_NETJOIN );
 MAKE_MENU_TOP_ENTRYLINK( "Host Game", MEF_CenterMenu, NETWORK_HOSTGAME, MENU_NETHOST );
+MAKE_MENU_TOP_ENTRYLINK( "Internet", MEF_CenterMenu, NETWORK_INTERNET, MENU_INTERNET );
+MAKE_MENU_TOP_ENTRYLINK( "ZeroTier", MEF_CenterMenu, NETWORK_ZEROTIER, MENU_ZEROTIER );
+MAKE_MENU_TOP_ENTRYLINK( "Browse Games", MEF_CenterMenu, ZEROTIER_BROWSE, MENU_ZEROTIERBROWSE );
+MAKE_MENU_TOP_ENTRYLINK( "Host Game", MEF_CenterMenu, ZEROTIER_HOST, MENU_ZEROTIERHOST );
 
 static MenuEntry_t *MEL_NETWORK[] = {
+    &ME_NETWORK_INTERNET,
+    &ME_NETWORK_ZEROTIER,
     &ME_NETWORK_PLAYERSETUP,
+};
+static MenuEntry_t *MEL_INTERNET[] = {
     &ME_NETWORK_JOINGAME,
     &ME_NETWORK_HOSTGAME,
+    &ME_NETWORK_PLAYERSETUP,
+};
+static MenuEntry_t *MEL_ZEROTIER[] = {
+    &ME_ZEROTIER_BROWSE,
+    &ME_ZEROTIER_HOST,
 };
 
 static MenuString_t MEO_PLAYER_NAME = MAKE_MENUSTRING( szPlayerName, &MF_Bluefont, MAXPLAYERNAME, 0 );
@@ -1601,7 +1615,8 @@ static MenuOption_t MEO_NETOPTIONS_MAPEXITS = MAKE_MENUOPTION( &MF_Bluefont, &ME
 static MenuEntry_t ME_NETOPTIONS_MAPEXITS = MAKE_MENUENTRY( "Map Exits", &MF_Redfont, &MEF_NetSetup, &MEO_NETOPTIONS_MAPEXITS, Option );
 static MenuOption_t MEO_NETOPTIONS_FRFIRE = MAKE_MENUOPTION( &MF_Bluefont, &MEOS_OffOn, &ud.m_ffire );
 static MenuEntry_t ME_NETOPTIONS_FRFIRE = MAKE_MENUENTRY( "Fr. Fire", &MF_Redfont, &MEF_NetSetup, &MEO_NETOPTIONS_FRFIRE, Option );
-static MenuEntry_t ME_NETOPTIONS_ACCEPT = MAKE_MENUENTRY( "Accept", &MF_Redfont, &MEF_NetSetup_Confirm, &MEO_NETWORK_HOSTGAME, Link );
+static MenuLink_t MEO_NETOPTIONS_RETURN = { MENU_NETHOST, MA_Return };
+static MenuEntry_t ME_NETOPTIONS_ACCEPT = MAKE_MENUENTRY( "Accept", &MF_Redfont, &MEF_NetSetup_Confirm, &MEO_NETOPTIONS_RETURN, Link );
 
 static MenuEntry_t *MEL_NETOPTIONS[] = {
     &ME_NETOPTIONS_GAMETYPE,
@@ -1630,6 +1645,29 @@ static MenuEntry_t *MEL_NETJOIN[] = {
     &ME_NETJOIN_PASSWORD,
     &ME_NETJOIN_CONNECT,
 };
+
+static int32_t zeroTierPlayers = 8;
+static char zeroTierHostPassword[129];
+static MenuRangeInt32_t MEO_ZTHOST_PLAYERS = MAKE_MENURANGE( &zeroTierPlayers, &MF_Bluefont, 1, MAXPLAYERS, 0, MAXPLAYERS, 1 );
+static MenuEntry_t ME_ZTHOST_PLAYERS = MAKE_MENUENTRY( "Max players", &MF_Redfont, &MEF_VideoSetup, &MEO_ZTHOST_PLAYERS, RangeInt32 );
+static MenuLink_t MEO_ZTHOST_PASSWORD = { MENU_ZEROTIERPASSWORD, MA_None };
+static MenuEntry_t ME_ZTHOST_PASSWORD = MAKE_MENUENTRY( "Password (optional)", &MF_Redfont, &MEF_VideoSetup, &MEO_ZTHOST_PASSWORD, Link );
+static MenuEntry_t ME_ZTHOST_OPTIONS = MAKE_MENUENTRY( "Game Options", &MF_Redfont, &MEF_VideoSetup, &MEO_NETHOST_OPTIONS, Link );
+static MenuEntry_t ME_ZTHOST_START = MAKE_MENUENTRY( "Host Game", &MF_Redfont, &MEF_VideoSetup, &MEO_NULL, Link );
+static MenuEntry_t *MEL_ZTHOST[] = {
+    &ME_ZTHOST_PLAYERS, &ME_ZTHOST_PASSWORD, &ME_ZTHOST_OPTIONS, &ME_ZTHOST_START,
+};
+static MenuTextForm_t M_ZTHOSTPASSWORD = { NULL, "Game password (empty clears):", 129, MTF_Password };
+static MenuMenuFormat_t MMF_ZTBROWSE = { { 24<<16, 54<<16 }, 150<<16 };
+static MenuEntryFormat_t MEF_ZTBROWSE = { 5<<16, 0, -(272<<16) };
+static MenuEntry_t ME_ZTBROWSE_REFRESH = MAKE_MENUENTRY( "Refresh", &MF_Minifont, &MEF_ZTBROWSE, &MEO_NULL, Link );
+static MenuEntry_t ME_ZTBROWSE_EMPTY = MAKE_MENUENTRY( "No games found", &MF_Minifont, &MEF_ZTBROWSE, &MEO_NULL, Dummy );
+static MenuEntry_t ME_ZTBROWSE_ROWS[64];
+static MenuEntry_t *MEL_ZTBROWSE[65] = { &ME_ZTBROWSE_REFRESH };
+static char zeroTierGameRows[64][96];
+static std::vector<zerotier::Server> zeroTierGameList;
+static std::string zeroTierBrowserMessage;
+static bool zeroTierOptions = false;
 
 static MenuLink_t MEO_DHHUNTING = { MENU_DHWEAPON, MA_Advance, };
 static MenuEntry_t ME_DHHUNTING_L1 = MAKE_MENUENTRY( "LAKE SWAMPY", &MF_Redfont, &MEF_CenterMenu, &MEO_DHHUNTING, Link );
@@ -1712,7 +1750,11 @@ static MenuMenu_t M_SOUND = MAKE_MENUMENU( "Sound Setup", &MMF_BigOptions, MEL_S
 static MenuMenu_t M_SOUND_DEVSETUP = MAKE_MENUMENU( "Device Configuration", &MMF_BigOptions, MEL_SOUND_DEVSETUP);
 static MenuMenu_t M_CDPLAYER = MAKE_MENUMENU( "8 Track Player", &MMF_BigOptions, MEL_CDPLAYER );
 static MenuMenu_t M_SAVESETUP = MAKE_MENUMENU( "Save Setup", &MMF_BigOptions, MEL_SAVESETUP );
-static MenuMenu_t M_NETWORK = MAKE_MENUMENU( "Network Game", &MMF_Top_Joystick_Network, MEL_NETWORK );
+static MenuMenu_t M_NETWORK = MAKE_MENUMENU( "Multiplayer", &MMF_Top_Joystick_Network, MEL_NETWORK );
+static MenuMenu_t M_INTERNET = MAKE_MENUMENU( "Internet", &MMF_Top_Joystick_Network, MEL_INTERNET );
+static MenuMenu_t M_ZEROTIER = MAKE_MENUMENU( "ZeroTier", &MMF_Top_Joystick_Network, MEL_ZEROTIER );
+static MenuMenu_t M_ZTHOST = MAKE_MENUMENU( "Host ZeroTier Game", &MMF_SmallOptionsNarrow, MEL_ZTHOST );
+static MenuMenu_t M_ZTBROWSE = { "Browse Games", &MMF_ZTBROWSE, MEL_ZTBROWSE, 1, 0, 0, 0 };
 static MenuMenu_t M_PLAYER = MAKE_MENUMENU( "Player Setup", &MMF_SmallOptions, MEL_PLAYER );
 static MenuMenu_t M_MACROS = MAKE_MENUMENU( "Multiplayer Macros", &MMF_Macros, MEL_MACROS );
 static MenuMenu_t M_NETHOST = MAKE_MENUMENU( "Host Network Game", &MMF_SmallOptionsNarrow, MEL_NETHOST );
@@ -1906,10 +1948,15 @@ static Menu_t Menus[] = {
     { &M_NETWORK, MENU_NETWORK, MENU_MAIN, MA_Return, Menu },
     { &M_PLAYER, MENU_PLAYER, MENU_OPTIONS, MA_Return, Menu },
     { &M_MACROS, MENU_MACROS, MENU_PLAYER, MA_Return, Menu },
-    { &M_NETHOST, MENU_NETHOST, MENU_NETWORK, MA_Return, Menu },
-    { &M_NETOPTIONS, MENU_NETOPTIONS, MENU_NETWORK, MA_Return, Menu },
+    { &M_INTERNET, MENU_INTERNET, MENU_NETWORK, MA_Return, Menu },
+    { &M_ZEROTIER, MENU_ZEROTIER, MENU_NETWORK, MA_Return, Menu },
+    { &M_ZTBROWSE, MENU_ZEROTIERBROWSE, MENU_ZEROTIER, MA_Return, Menu },
+    { &M_ZTHOST, MENU_ZEROTIERHOST, MENU_ZEROTIER, MA_Return, Menu },
+    { &M_ZTHOSTPASSWORD, MENU_ZEROTIERPASSWORD, MENU_ZEROTIERHOST, MA_Return, TextForm },
+    { &M_NETHOST, MENU_NETHOST, MENU_INTERNET, MA_Return, Menu },
+    { &M_NETOPTIONS, MENU_NETOPTIONS, MENU_INTERNET, MA_Return, Menu },
     { &M_USERMAP, MENU_NETUSERMAP, MENU_NETOPTIONS, MA_Return, FileSelect },
-    { &M_NETJOIN, MENU_NETJOIN, MENU_MAIN, MA_Return, Menu },
+    { &M_NETJOIN, MENU_NETJOIN, MENU_INTERNET, MA_Return, Menu },
     { &M_NETPASSWORD, MENU_NETPASSWORD, MENU_NETJOIN, MA_Return, TextForm },
     { &M_DHHUNTING, MENU_DHHUNTING, MENU_MAIN, MA_Return, Menu },
     { &M_DHTARGET, MENU_DHTARGET, MENU_MAIN, MA_Return, Menu },
@@ -1952,6 +1999,41 @@ static void MenuEntry_HideOnCondition(MenuEntry_t * const entry, const int32_t c
         entry->flags |= MEF_Hidden;
     else
         entry->flags &= ~MEF_Hidden;
+}
+
+static void Menu_UpdateZeroTierBrowser()
+{
+    std::string selected;
+    if (M_ZTBROWSE.currentEntry >= 0 && size_t(M_ZTBROWSE.currentEntry) < zeroTierGameList.size())
+        selected = zeroTierGameList[M_ZTBROWSE.currentEntry].address;
+    zeroTierGameList = zerotier::servers();
+    if (zeroTierGameList.size() > ARRAY_SIZE(ME_ZTBROWSE_ROWS))
+        zeroTierGameList.resize(ARRAY_SIZE(ME_ZTBROWSE_ROWS));
+    static MenuEntry_t const row = MAKE_MENUENTRY( "", &MF_Minifont, &MEF_ZTBROWSE, &MEO_NULL, Link );
+    int count = 0;
+    for (auto const& game : zeroTierGameList)
+    {
+        char latency[16];
+        if (game.ping < 0) Bstrcpy(latency, "...");
+        else Bsnprintf(latency, sizeof(latency), "%dms", game.ping);
+        Bsnprintf(zeroTierGameRows[count], sizeof(zeroTierGameRows[count]), "%2d/%-2d %-16.16s %-9.9s %c %6s",
+            game.players, game.maxPlayers, game.map.c_str(), game.mode.c_str(), game.password ? 'P' : '-', latency);
+        ME_ZTBROWSE_ROWS[count] = row;
+        ME_ZTBROWSE_ROWS[count].name = zeroTierGameRows[count];
+        MEL_ZTBROWSE[count] = &ME_ZTBROWSE_ROWS[count];
+        if (!selected.empty() && selected == game.address) M_ZTBROWSE.currentEntry = count;
+        ++count;
+    }
+    if (!count)
+    {
+        ME_ZTBROWSE_EMPTY.name = rnet::zeroTierReady() ? "No games found" :
+            (zerotier::state() == zerotier::State::Error || zerotier::state() == zerotier::State::Denied)
+                ? "ZeroTier unavailable" : "Waiting for ZeroTier";
+        MEL_ZTBROWSE[count++] = &ME_ZTBROWSE_EMPTY;
+    }
+    MEL_ZTBROWSE[count++] = &ME_ZTBROWSE_REFRESH;
+    M_ZTBROWSE.numEntries = count;
+    M_ZTBROWSE.currentEntry = clamp(M_ZTBROWSE.currentEntry, 0, count - 1);
 }
 
 static int32_t M_RunMenu_Menu(Menu_t *cm, MenuMenu_t *menu, MenuEntry_t *currentry, int32_t state, vec2_t origin, bool actually_draw = true);
@@ -2441,6 +2523,13 @@ static void Menu_Pre(MenuID_t cm)
 
     switch (cm)
     {
+    case MENU_ZEROTIERHOST:
+        MenuEntry_DisableOnCondition(&ME_ZTHOST_START, !rnet::zeroTierReady() || rnet::active());
+        ME_ZTHOST_PASSWORD.name = zeroTierHostPassword[0] ? "Password: set" : "Password (optional)";
+        break;
+    case MENU_ZEROTIERBROWSE:
+        Menu_UpdateZeroTierBrowser();
+        break;
     case MENU_MAIN_INGAME:
         MenuEntry_DisableOnCondition(&ME_MAIN_LOADGAME, (RRRA && ud.player_skill == 4) || (RR && !RRRA && ud.player_skill == 5));
         MenuEntry_DisableOnCondition(&ME_MAIN_SAVEGAME, ud.recstat == 2 || (RRRA && ud.player_skill == 4) || (RR && !RRRA && ud.player_skill == 5));
@@ -2839,6 +2928,22 @@ static void Menu_PreDraw(MenuID_t cm, MenuEntry_t *entry, const vec2_t origin)
 
     switch (cm)
     {
+    case MENU_ZEROTIER:
+    case MENU_ZEROTIERHOST:
+    case MENU_ZEROTIERBROWSE:
+    {
+        std::string state = rnet::zeroTierStatus();
+        if (cm == MENU_ZEROTIERHOST && rnet::active()) state = "Disconnect before hosting another game.";
+        if (cm == MENU_ZEROTIERBROWSE && !zeroTierBrowserMessage.empty()) state = zeroTierBrowserMessage;
+        if (state.size() > 54) state = state.substr(0, 51) + "...";
+        mminitext(origin.x + (24<<16), origin.y + (165<<16), state.c_str(), MF_Minifont.pal_deselected);
+        if (cm == MENU_ZEROTIERBROWSE)
+        {
+            mminitext(origin.x + (24<<16), origin.y + (40<<16), "PLAYERS MAP              MODE      P   PING", MF_Minifont.pal_deselected);
+            mminitext(origin.x + (24<<16), origin.y + (177<<16), "P = PASSWORD PROTECTED", MF_Minifont.pal_deselected);
+        }
+        break;
+    }
     case MENU_MAIN_INGAME:
         if (DEER)
             break;
@@ -4507,6 +4612,40 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
         CONFIG_SetDefaultKeys(keydefaults);
     else if (entry == &ME_KEYBOARDSETUP_RESETCLASSIC)
         CONFIG_SetDefaultKeys(oldkeydefaults);
+    else if (entry == &ME_ZTBROWSE_REFRESH)
+    {
+        zeroTierBrowserMessage.clear();
+        zerotier::browse(true);
+    }
+    else if (entry == &ME_ZTHOST_START)
+    {
+        if (rnet::hostZeroTier(zeroTierPlayers, zeroTierHostPassword)) Menu_Close(myconnectindex);
+    }
+    else if (entry == &ME_ZTHOST_OPTIONS)
+    {
+        zeroTierOptions = true;
+        MEO_NETOPTIONS_RETURN.linkID = MENU_ZEROTIERHOST;
+    }
+    else if (entry == &ME_NETHOST_OPTIONS)
+    {
+        zeroTierOptions = false;
+        MEO_NETOPTIONS_RETURN.linkID = MENU_NETHOST;
+    }
+    else if (g_currentMenu == MENU_ZEROTIERBROWSE &&
+        M_ZTBROWSE.currentEntry >= 0 && size_t(M_ZTBROWSE.currentEntry) < zeroTierGameList.size())
+    {
+        zerotier::Server const game = zeroTierGameList[M_ZTBROWSE.currentEntry];
+        if (game.players >= game.maxPlayers)
+            zeroTierBrowserMessage = "Server full.";
+        else if (game.protocol != rnet::Protocol)
+            zeroTierBrowserMessage = "This server requires a different game version.";
+        else if (rnet::selectZeroTier(true))
+        {
+            rnet::connect(game.address + ":" + std::to_string(zerotier::GamePort), true);
+            Menu_Close(myconnectindex);
+        }
+        else zeroTierBrowserMessage = "Disconnect before joining another game.";
+    }
     else if (entry == &ME_NETJOIN_PASSWORD)
     {
         rnet::cancelPasswordPrompt();
@@ -4514,6 +4653,7 @@ static void Menu_EntryLinkActivate(MenuEntry_t *entry)
     }
     else if (entry == &ME_NETJOIN_CONNECT)
     {
+        if (!rnet::selectZeroTier(false)) return;
         rnet::uri::Endpoint endpoint;
         std::string error;
         char* end = nullptr;
@@ -5080,9 +5220,19 @@ static void Menu_TextFormSubmit(char *input)
             Bstrncpyz(g_netPassword, input, sizeof(g_netPassword));
         }
         Bmemset(input, 0, M_NETPASSWORD.bufsize);
-        Menu_Change(retry ? MENU_MAIN : MENU_NETJOIN);
+        Menu_Change(retry ? MENU_MAIN : (rnet::zeroTierSelected ? MENU_ZEROTIERBROWSE : MENU_NETJOIN));
         if (valid && retry) rnet::retryPassword();
         else if (!valid) { rnet::cancelPasswordPrompt(); OSD_Printf("Invalid server password.\n"); }
+        break;
+    }
+    case MENU_ZEROTIERPASSWORD:
+    {
+        bool valid = Bstrlen(input) < sizeof(zeroTierHostPassword);
+        for (const unsigned char* ch = (const unsigned char*)input; *ch; ++ch)
+            valid &= *ch >= 32 && *ch != 127;
+        if (valid) Bstrncpyz(zeroTierHostPassword, input, sizeof(zeroTierHostPassword));
+        Bmemset(input, 0, M_ZTHOSTPASSWORD.bufsize);
+        Menu_Change(MENU_ZEROTIERHOST);
         break;
     }
     case MENU_ADULTPASSWORD:
@@ -5478,6 +5628,16 @@ static void Menu_AboutToStartDisplaying(Menu_t * m)
 {
     switch (m->menuID)
     {
+    case MENU_ZEROTIER:
+    case MENU_ZEROTIERHOST:
+        rnet::startZeroTier();
+        break;
+    case MENU_ZEROTIERBROWSE:
+        zeroTierBrowserMessage.clear();
+        rnet::startZeroTier();
+        zerotier::browse(true);
+        Menu_UpdateZeroTierBrowser();
+        break;
     case MENU_MAIN:
         if (DEER)
             Menu_DHLeaonardHeadReset();
@@ -5657,6 +5817,13 @@ static void Menu_ChangingTo(Menu_t * m)
 int Menu_Change(MenuID_t cm)
 {
     Menu_t * beginMenu = m_currentMenu;
+    if (g_currentMenu == MENU_ZEROTIERBROWSE && cm != MENU_ZEROTIERBROWSE)
+        zerotier::browse(false);
+    if (cm == MENU_NETOPTIONS)
+    {
+        Menu_t* settings = Menu_FindFiltered(MENU_NETOPTIONS);
+        if (settings) settings->parentID = zeroTierOptions ? MENU_ZEROTIERHOST : MENU_NETHOST;
+    }
 
     if (cm == MENU_PREVIOUS)
     {
@@ -7048,6 +7215,7 @@ static void Menu_Recurse(MenuID_t cm, const vec2_t origin)
     case MENU_JOYDEFAULTVERIFY:
     case MENU_ADULTPASSWORD:
     case MENU_NETPASSWORD:
+    case MENU_ZEROTIERPASSWORD:
     case MENU_CHEATENTRY:
     case MENU_CHEAT_WARP:
     case MENU_CHEAT_SKILL:
@@ -7881,13 +8049,15 @@ static void Menu_RunInput(Menu_t *cm)
 
                 S_PlaySound(EXITMENUSOUND);
 
-                if (cm->menuID == MENU_NETPASSWORD)
+                if (cm->menuID == MENU_NETPASSWORD || cm->menuID == MENU_ZEROTIERPASSWORD)
                 {
+                    bool const hosting = cm->menuID == MENU_ZEROTIERPASSWORD;
                     bool const retry = rnet::passwordRetryPending();
                     rnet::cancelPasswordPrompt();
                     Bmemset(object->input, 0, object->bufsize);
                     object->input = NULL;
-                    Menu_Change(retry ? MENU_MAIN : MENU_NETJOIN);
+                    Menu_Change(hosting ? MENU_ZEROTIERHOST : retry ? MENU_MAIN :
+                        (rnet::zeroTierSelected ? MENU_ZEROTIERBROWSE : MENU_NETJOIN));
                     Menu_StopTextInput();
                     break;
                 }

@@ -16,7 +16,8 @@ void rnetAddonRestartRememberStartup(int argc, char const* const* argv);
 bool rnetAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const& host, uint16_t port, std::string const& password,
     std::string const& profileId, rnetaddon::Profile const& profile,
-    std::string const& directory, std::string& error);
+    std::string const& directory, std::string& error,
+    std::string const& zeroTierNetwork = std::string());
 bool rnetAddonRestartPending();
 bool rnetAddonRestartReady();
 // Resource archives activated by a server must never supply console scripts.

@@ -10,6 +10,9 @@ mkdir -p "$work/downloads" "$work/src" "$repo/dist"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 jobs=${BUILD_JOBS:-$(sysctl -n hw.ncpu)}
 makecmd=${MAKE:-gmake}
+[[ -z ${ZEROTIER_NETWORK_ID:-} || ${ZEROTIER_NETWORK_ID} =~ ^[0-9a-fA-F]{16}$ ]] || {
+    echo 'ZEROTIER_NETWORK_ID must be a 16-digit hexadecimal network ID.' >&2; exit 2;
+}
 
 fetch_source() {
     local url=$1 digest=$2 name=$3
@@ -64,7 +67,15 @@ for arch in x86_64 arm64; do
         "SDLCONFIG=$prefix/bin/sdl2-config" \
         "LIBDIRS=-L$prefix/lib" \
         "CUSTOMOPT=-I$prefix/include -mmacosx-version-min=11.0" \
-        LDFLAGS=-Wl,-headerpad_max_install_names
+        LDFLAGS=-Wl,-headerpad_max_install_names \
+        "ZEROTIER_NETWORK_ID=${ZEROTIER_NETWORK_ID:-}"
+    # The independent SDK companion needs both architectures too; a thin
+    # helper in a universal app would fail on the other machine type.
+    python3 tools/zerotier/build.py --work-dir "$work/$arch/zerotier-build" \
+        --output-dir "$work/$arch/zerotier-output" --jobs "$jobs" -- \
+        "-DCMAKE_OSX_ARCHITECTURES=$arch" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_EXE_LINKER_FLAGS=-Wl,-headerpad_max_install_names
 done
 
 # Compile the Metal shader and backend on a real Apple SDK. Hosted macOS VMs

@@ -1,5 +1,9 @@
 # Rednukem multiplayer
 
+The Multiplayer menu offers Internet and ZeroTier connections. The
+[ZeroTier guide](zerotier.md) covers the bundled connection, shared-network game
+browser, and password-protected graphical hosting without forwarded ports.
+
 Rednukem uses an authoritative UDP client/server protocol for Duke Nukem 3D,
 Redneck Rampage, and Redneck Rampage Rides Again.
 The server runs gameplay at 30 ticks per second. Clients send inputs, predict

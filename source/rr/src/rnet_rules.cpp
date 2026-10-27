@@ -313,6 +313,17 @@ void applySettings()
         if (validPlayer(i)) { g_player[i].ps->auto_aim=settings.autoAim; if (!canChase()) g_player[i].ps->over_shoulder_on=0; }
 }
 void startup() { applySettings(); }
+void useMenuSettings()
+{
+    int const flags = g_gametypeFlags[clamp(ud.m_coop, 0, MAXGAMETYPES - 1)];
+    settings.mode = flags & GAMETYPE_COOP ? 0 : flags & GAMETYPE_TDM ? 2 : 1;
+    settings.difficulty = clamp(ud.m_player_skill, 0, 4);
+    settings.friendlyFire = ud.m_ffire != 0;
+    settings.monsters = ud.m_monsters_off ? 0 : ud.m_respawn_monsters ? 2 : 1;
+    settings.weaponStay = flags & GAMETYPE_WEAPSTAY ? 1 : 0;
+    settings.items = ud.m_respawn_items ? 1 : 0;
+    settings.inventory = ud.m_respawn_inventory ? 1 : 0;
+}
 void mapChanging(bool restart)
 {
     for (int n=0;n<MAXPLAYERS;++n)

@@ -24,6 +24,7 @@ void check(bool result, char const* expression, int line)
 #define CHECK(x) check(bool(x), #x, __LINE__)
 std::string const host = "201:f044:ca34:9cc9:2946:ad06:6f2d:5c4e";
 std::string const password = "a space \" quote \\ $(touch password-executed)";
+std::string const zeroTierNetwork = "8056c2e21c000001";
 std::string activatedRoot;
 std::string previousAddonRoot;
 netaddon::Profile activated;
@@ -83,6 +84,15 @@ int main(int argc, char** raw)
         CHECK(contains(arguments, "-client=" + host));
         CHECK(contains(arguments, "-port=23514"));
         CHECK(contains(arguments, "-password=" + password));
+        char const* expectedNetwork = std::getenv("NETBLOOD_TEST_EXPECT_ZEROTIER");
+        unsigned overlayOptions = 0;
+        for (auto const& argument : arguments)
+            if (argument.compare(0, 10, "-zerotier=") == 0)
+            {
+                ++overlayOptions;
+                CHECK(expectedNetwork && argument == "-zerotier=" + std::string(expectedNetwork));
+            }
+        CHECK(overlayOptions == (expectedNetwork ? 1u : 0u));
         CHECK(contains(arguments, "-quick"));
         CHECK(contains(arguments, "-nodemo"));
         CHECK(contains(arguments, "-nosetup"));
@@ -116,7 +126,8 @@ int main(int argc, char** raw)
         "-j", "OLD-DIRECTORY", "-j", "./OLD-DIRECTORY/",
         "-game_dir", "OLD-DIRECTORY", "-g", "OLD.pk3", "OLD.zip", "-ini", "OLD.INI", "-h=OLD.def", "-mh", "OLD-extra.def",
         "-rff=OLD.RFF", "-snd=OLD-SOUNDS.RFF", "-art=OLD-TILES", "-client=OLD.invalid", "-port=1111", "-password=OLD-password",
-        "-dedicated", "-server", "8", "-episode", "2", "-playback", "OLD.DEM", "-stunserver", "off"};
+        "-dedicated", "-server", "8", "-episode", "2", "-playback", "OLD.DEM", "-stunserver", "off",
+        "-zerotier", "OLD-network", "-zerotier=OLD-network"};
     netAddonRestartRememberStartup(int(sizeof(local) / sizeof(local[0])), local);
     CHECK(!netAddonRestartActive());
     CHECK(!netAddonRestartPending());
@@ -129,6 +140,15 @@ int main(int argc, char** raw)
     CHECK(!netAddonRestartRequest({"-ini", "TEST.INI"}, host, 23514, password, std::string(32, '0'), addon, directory, error));
     CHECK(!netAddonRestartRequest({"-ini", "TEST\n.INI"}, host, 23514, password, identity, addon, directory, error));
     CHECK(!netAddonRestartRequest({}, host, 23514, password, identity, addon, directory, error));
+    for (std::string const& invalid : {std::string("short"), std::string(17, 'a'),
+        std::string("8056c2e21c00000g"), std::string("8056c2e21c00000\n"),
+        std::string("8056c2e2\0c000001", 16)})
+    {
+        CHECK(!netAddonRestartRequest({"-ini", "TEST.INI"}, host, 23514, password,
+            identity, addon, directory, error, invalid));
+        CHECK(error.find("ZeroTier network ID") != std::string::npos);
+        CHECK(!netAddonRestartPending());
+    }
     CHECK(!netAddonRestartPending());
 
     std::string const malformed = directory + "/malformed";
@@ -180,6 +200,24 @@ int main(int argc, char** raw)
     CHECK(waitpid(failedLaunch, &failureStatus, 0) == failedLaunch);
     CHECK(WIFEXITED(failureStatus) && WEXITSTATUS(failureStatus) == 0);
 #endif
+    // A downloaded addon must reconnect over the same virtual network, while
+    // a later ordinary Internet restart must discard stale startup overlay
+    // arguments. Exercise both through the production private handoff and exec.
+    pid_t const overlayChild = fork();
+    CHECK(overlayChild >= 0);
+    if (!overlayChild)
+    {
+        CHECK(setenv("NETBLOOD_TEST_EXPECT_ZEROTIER", zeroTierNetwork.c_str(), 1) == 0);
+        CHECK(netAddonRestartRequest(resources, host, 23514, password, identity,
+            addon, directory, error, zeroTierNetwork));
+        CHECK(netAddonRestartPending());
+        CHECK(chdir("/") == 0);
+        if (!netAddonRestartLaunch(error)) { std::fprintf(stderr, "%s\n", error.c_str()); return 1; }
+        return 1;
+    }
+    int overlayStatus;
+    CHECK(waitpid(overlayChild, &overlayStatus, 0) == overlayChild);
+    CHECK(WIFEXITED(overlayStatus) && WEXITSTATUS(overlayStatus) == 0);
     CHECK(netAddonRestartRequest(resources, host, 23514, password, identity, addon, directory, error));
     CHECK(netAddonRestartPending());
     CHECK(!netAddonRestartReady()); // The UI gets a real display interval.

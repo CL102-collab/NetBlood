@@ -75,6 +75,18 @@ extern char gNetAddress[254];
 extern int gNetPort;
 extern char gNetStunServer[300];
 extern char gNetPassword[129];
+// These settings select the next session. The running session captures its
+// transport so opening a browser cannot redirect existing gameplay packets.
+extern bool gNetZeroTier;
+extern char gNetZeroTierNetwork[17];
+void netParseZeroTierOption(const char* network);
+void netApplyZeroTierOption();
+bool netStartZeroTier();
+bool netZeroTierReady();
+bool netZeroTierActive();
+const char* netZeroTierStatus();
+bool netSetHostPassword(const char* value, std::string& error);
+const char* netGetHostPassword();
 bool netValidatePassword(const char* value, std::string& error);
 void netParsePasswordOption(const char* value);
 void netApplyPasswordOption();

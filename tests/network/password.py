@@ -317,7 +317,7 @@ def main():
         print("PASS: actual clients reject missing/wrong credentials and remember/clear correct credentials", flush=True)
 
         # No CLI credential or injected cvar: enter all fields through the
-        # normal title-screen Multiplayer > Join A Game menu.
+        # normal title-screen Multiplayer > Internet > Join A Game menu.
         menu = Game("menu-client", args, root, library, launch_arguments=[])
         games.append(menu)
         menu.wait(lambda text: "Waiting for network players!" in text, "title startup", args.timeout)
@@ -326,6 +326,7 @@ def main():
         # With -nodemo and no initial map, startup opens the main menu itself.
         tap(menu, 81)  # Multiplayer
         tap(menu, 40)
+        tap(menu, 40)  # Internet
         tap(menu, 81)  # Join A Game
         tap(menu, 40)
         replace_field(menu, "127.0.0.1", len("localhost"))

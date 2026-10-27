@@ -281,8 +281,9 @@ def main():
         result['phases']['cold-uri-protected-join'] = True
         uri_client.stop()
         cold.command_text('net_disconnect')
-        # Main Join Game -> optional masked password -> custom UDP port -> Connect.
-        for key in (81, 40, 81, 81, 40):
+        # Multiplayer -> Internet -> Join Game -> optional masked password ->
+        # custom UDP port -> Connect.
+        for key in (81, 40, 40, 40, 81, 81, 40):
             tap(cold, key)
         cold.enter_text(protected_password)
         tap(cold, 40)

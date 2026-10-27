@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Bundle the Debian 12 amd64 executable; graphics drivers stay on the host.
 set -euo pipefail
-binary=${1:?Usage: appimage-build.sh BINARY OUTPUT}
+binary=${1:?Usage: appimage-build.sh BINARY OUTPUT COMPANION_BUILD}
 output=${2:?Output directory required}
+companion=${3:?ZeroTier companion build directory required}
 repository=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -10,7 +11,8 @@ appdir="$work/NetBlood.AppDir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$output"
 output=$(cd "$output" && pwd)
 install -m755 "$binary" "$appdir/usr/bin/nblood"
-python3 "$repository/platform/ci/package.py" stage --destination "$appdir/usr/share/games/nblood"
+python3 "$repository/platform/ci/package.py" stage --destination "$appdir/usr/share/games/nblood" \
+    --zerotier-build "$companion" --executable-directory "$appdir/usr/bin"
 sed 's|Exec=/usr/games/nblood|Exec=nblood|' "$repository/platform/ci/linux.desktop" \
     > "$appdir/usr/share/applications/netblood.desktop"
 python3 "$repository/platform/ci/linux-icon.py" "$appdir/usr/share/icons/hicolor/48x48/apps/netblood.png"
@@ -42,7 +44,7 @@ chmod +x "$work/AppRun"
 gtk=$(ldconfig -p | awk '/libgtk-x11-2.0.so.0 .*x86-64/ && !found++ { print $NF }')
 [[ -n "$gtk" ]] || { echo 'GTK 2 runtime was not found.' >&2; exit 1; }
 "$work/linuxdeploy" --appimage-extract-and-run --appdir "$appdir" \
-    --executable "$appdir/usr/bin/nblood" --library "$gtk" \
+    --executable "$appdir/usr/bin/nblood" --executable "$appdir/usr/bin/netblood-zerotier" --library "$gtk" \
     --exclude-library 'libvulkan.so*' \
     --desktop-file "$appdir/usr/share/applications/netblood.desktop" \
     --icon-file "$appdir/usr/share/icons/hicolor/48x48/apps/netblood.png" \
@@ -51,6 +53,9 @@ if find "$appdir" -name 'libvulkan.so*' -print -quit | grep -q .; then
     echo 'The Vulkan loader must be supplied by the host, not bundled.' >&2
     exit 1
 fi
+LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$appdir/usr/bin/netblood-zerotier" --help > "$work/zerotier-help.txt"
+grep -q 'IPC version' "$work/zerotier-help.txt"
 
 # Keep the distribution's copyright notices alongside bundled dependencies.
 # Each library is still furnished under its original license, not the game's.

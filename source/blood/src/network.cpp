@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #ifndef NETCODE_DISABLE
 #include "enet.h"
 #include "netstun_client.h"
+#include "zerotier.h"
 #endif
 #include "compat.h"
 #include "config.h"
@@ -78,6 +79,11 @@ char        gNetAddress[254]; // Full DNS hostname (253 bytes) plus terminator.
 int gNetPort = kNetDefaultPort;
 char gNetStunServer[300] = "auto";
 char gNetPassword[129] = {};
+bool gNetZeroTier = false;
+#ifndef ZEROTIER_NETWORK_ID
+#define ZEROTIER_NETWORK_ID ""
+#endif
+char gNetZeroTierNetwork[17] = ZEROTIER_NETWORK_ID;
 
 
 PKT_STARTGAME gPacketStartGame;
@@ -108,11 +114,13 @@ PKT_STARTGAME gPacketStartGame;
 #include "timer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 #ifndef NETCODE_DISABLE
 #ifdef _WIN32
@@ -137,6 +145,10 @@ std::string stunOption, clientPublicEndpoint, connectionError;
 bool hasStunOption = false, clientTransportConnected = false;
 std::string passwordOption, serverPassword, clientPasswordError;
 bool hasPasswordOption = false;
+bool activeZeroTier = false;
+std::string activeZeroTierNetwork, startedZeroTierNetwork, zeroTierError;
+std::string zeroTierNetworkOption;
+bool hasZeroTierOption = false;
 uint32_t clientConnectStarted = 0;
 
 bool stunEndpoint(const char* value, neturi::Endpoint& endpoint, std::string& error)
@@ -421,7 +433,7 @@ std::string currentStunError() { return stunSetupError.empty() ? stun.error() : 
 
 void startStun()
 {
-    if (!netIsServer() || !*gNetStunServer || !Bstrcasecmp(gNetStunServer, "off")) return;
+    if (activeZeroTier || !netIsServer() || !*gNetStunServer || !Bstrcasecmp(gNetStunServer, "off")) return;
     std::vector<neturi::Endpoint> names;
     if (!Bstrcasecmp(gNetStunServer, "auto"))
     {
@@ -1755,7 +1767,8 @@ bool activateClientAddon(std::string const& directory)
     std::string error;
     if (!netAddonResourceArguments(clientAddonProfile, directory, arguments, error) ||
         !netAddonRestartRequest(arguments, gNetAddress, uint16_t(gNetPort), gNetPassword,
-                               clientAddonId, clientAddonProfile, directory, error))
+                               clientAddonId, clientAddonProfile, directory, error,
+                               activeZeroTier ? activeZeroTierNetwork : std::string()))
     {
         failAddonDownload(error);
         return false;
@@ -2724,6 +2737,77 @@ bool netIsServer()
 { return gNetMode == NETWORK_SERVER; }
 bool netIsClient()
 { return gNetMode == NETWORK_CLIENT || demoPlayback; }
+void netParseZeroTierOption(const char* network)
+{
+    gNetZeroTier = true;
+    hasZeroTierOption = true;
+    if (!network) return;
+    if (Bstrlen(network) != 16)
+        ThrowError("-zerotier requires a 16-digit hexadecimal network ID");
+    for (const char* c = network; *c; ++c)
+        if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') || (*c >= 'A' && *c <= 'F')))
+            ThrowError("-zerotier requires a 16-digit hexadecimal network ID");
+    Bstrncpyz(gNetZeroTierNetwork, network, sizeof(gNetZeroTierNetwork));
+    zeroTierNetworkOption = network;
+}
+void netApplyZeroTierOption()
+{
+    if (!hasZeroTierOption) return;
+    gNetZeroTier = true;
+    if (!zeroTierNetworkOption.empty())
+        Bstrncpyz(gNetZeroTierNetwork, zeroTierNetworkOption.c_str(), sizeof(gNetZeroTierNetwork));
+}
+bool netStartZeroTier()
+{
+#ifndef NETCODE_DISABLE
+    std::string const network = *gNetZeroTierNetwork ? gNetZeroTierNetwork : ZEROTIER_NETWORK_ID;
+    if (activeZeroTier && initialized && activeZeroTierNetwork != network)
+    {
+        zeroTierError = "Disconnect before changing the ZeroTier network.";
+        return false;
+    }
+    zerotier::Config config;
+    config.game = zerotier::Game::NBlood;
+    config.networkId = network;
+    if (!zerotier::start(config, zeroTierError)) return false;
+    zeroTierError.clear();
+    // Materialize a configured build default so retries and addon activation
+    // retain the actual network even if a saved setting had been cleared.
+    Bstrncpyz(gNetZeroTierNetwork, network.c_str(), sizeof(gNetZeroTierNetwork));
+    startedZeroTierNetwork = network;
+    return true;
+#else
+    zeroTierError = "Networking is disabled in this build.";
+    return false;
+#endif
+}
+bool netZeroTierReady()
+{
+#ifndef NETCODE_DISABLE
+    return zerotier::ready() && startedZeroTierNetwork == gNetZeroTierNetwork;
+#else
+    return false;
+#endif
+}
+bool netZeroTierActive()
+{ return activeZeroTier && netIsLive(); }
+const char* netZeroTierStatus()
+{
+    if (!zeroTierError.empty()) return zeroTierError.c_str();
+#ifndef NETCODE_DISABLE
+    return zerotier::status().c_str();
+#else
+    return "Networking is disabled in this build.";
+#endif
+}
+bool netSetHostPassword(const char* value, std::string& error)
+{
+    if (!netValidatePassword(value, error)) return false;
+    serverPassword = value;
+    return true;
+}
+const char* netGetHostPassword()
+{ return serverPassword.c_str(); }
 bool netValidatePassword(const char* value, std::string& error)
 {
     if (!value)
@@ -2742,10 +2826,10 @@ void netParsePasswordOption(const char* value)
 }
 void netApplyPasswordOption()
 {
-    // Dedicated hosting never inherits the remembered client credential.
+    // Hosting never inherits the remembered client credential.
     // Keep explicit empty arguments distinct from an absent option.
-    serverPassword = gDedicated && hasPasswordOption ? passwordOption : std::string();
-    if (!gDedicated && hasPasswordOption)
+    serverPassword = netIsServer() && hasPasswordOption ? passwordOption : std::string();
+    if (!netIsServer() && hasPasswordOption)
         Bstrncpyz(gNetPassword, passwordOption.c_str(), sizeof(gNetPassword));
 }
 bool netValidateStunSetting(const char* value, std::string& error)
@@ -2786,7 +2870,9 @@ bool netGetPresenceInfo(NetPresenceInfo& info)
 {
     info = {};
 #ifndef NETCODE_DISABLE
-    if (!initialized || !host || demoPlayback || !gGameStarted || !session)
+    // Ordinary IP invitations cannot describe the overlay membership needed to
+    // reach an embedded ZeroTier socket. Browser joins retain that membership.
+    if (activeZeroTier || !initialized || !host || demoPlayback || !gGameStarted || !session)
         return false;
     info.server = netIsServer();
     if (info.server)
@@ -2997,7 +3083,6 @@ void netResetToSinglePlayer(void)
 }
 void netInitialize(bool bConsole)
 {
-    UNREFERENCED_PARAMETER(bConsole);
     netApplyStunOption();
     NETWORKMODE mode = gNetMode;
     if (mode != NETWORK_NONE)
@@ -3039,9 +3124,52 @@ void netInitialize(bool bConsole)
         return;
     }
 #ifndef NETCODE_DISABLE
+    if (gNetZeroTier)
+    {
+        if (!netStartZeroTier())
+        {
+            LOG_F(ERROR, "NET ZeroTier: %s", netZeroTierStatus());
+            viewSetErrorMessage(netZeroTierStatus());
+            netResetToSinglePlayer();
+            return;
+        }
+        // CLI startup has no browser to await readiness. Keep this bounded;
+        // graphical menu actions only proceed once their service is ready.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        std::string lastStatus;
+        while (bConsole && !netZeroTierReady() && std::chrono::steady_clock::now() < deadline)
+        {
+            zerotier::pump();
+            if (lastStatus != zerotier::status())
+            {
+                lastStatus = zerotier::status();
+                LOG_F(INFO, "NET ZeroTier: %s", lastStatus.c_str());
+            }
+            if (zerotier::state() == zerotier::State::Denied || zerotier::state() == zerotier::State::Error)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!netZeroTierReady())
+        {
+            LOG_F(ERROR, "NET ZeroTier is not ready: %s", netZeroTierStatus());
+            viewSetErrorMessage(netZeroTierStatus());
+            netResetToSinglePlayer();
+            return;
+        }
+        activeZeroTier = true;
+        activeZeroTierNetwork = gNetZeroTierNetwork;
+        gNetPort = zerotier::GamePort;
+    }
     if (enet_initialize() != 0)
     {
         LOG_F(ERROR, "NET ENet initialization failed");
+        if (activeZeroTier)
+        {
+            zeroTierError = "Cannot initialize the ZeroTier game connection.";
+            viewSetErrorMessage(zeroTierError.c_str());
+            activeZeroTier = false;
+            activeZeroTierNetwork.clear();
+        }
         netResetToSinglePlayer();
         return;
     }
@@ -3051,7 +3179,8 @@ void netInitialize(bool bConsole)
     {
         address.host = ENET_HOST_ANY;
         address.port = gNetPort;
-        host         = enet_host_create(&address, 8, 3, 0, 0);
+        host = activeZeroTier ? zerotier::createHost(&address, 8, 3, 0, 0)
+                              : enet_host_create(&address, 8, 3, 0, 0);
         session      = timerGetTicks() ^ uint32_t(timerGetFractionalTicks() * 1000.0) ^ 0x4e424c44u;
         if (!session)
             session = 1;
@@ -3069,7 +3198,8 @@ void netInitialize(bool bConsole)
     }
     else
     {
-        host    = enet_host_create(nullptr, 1, 3, 0, 0);
+        host = activeZeroTier ? zerotier::createHost(nullptr, 1, 3, 0, 0)
+                              : enet_host_create(nullptr, 1, 3, 0, 0);
         session = 0;
         if (host && enet_address_set_host(&address, gNetAddress) == 0)
         {
@@ -3085,6 +3215,13 @@ void netInitialize(bool bConsole)
     if (!host || (mode == NETWORK_CLIENT && !serverPeer))
     {
         LOG_F(ERROR, "NET socket/resolve failed");
+        if (activeZeroTier)
+        {
+            zeroTierError = !host ? zerotier::status()
+                                 : "Cannot resolve the ZeroTier host address or create the connection.";
+            LOG_F(ERROR, "NET ZeroTier: %s", zeroTierError.c_str());
+            viewSetErrorMessage(zeroTierError.c_str());
+        }
         netDeinitialize();
         netResetToSinglePlayer();
 #ifdef ENET_IPV4_ONLY
@@ -3101,17 +3238,24 @@ void netInitialize(bool bConsole)
     host->maximumPacketSize  = netwire::MaxPayload + netwire::HeaderSize;
     host->maximumWaitingData = 32u * 1024u * 1024u;
     host->packetCopies       = ClipRange(gNetPacketCopies, 1, 8);
-    enet_socket_set_option(host->socket, ENET_SOCKOPT_RCVBUF, 4 * 1024 * 1024);
-    enet_socket_set_option(host->socket, ENET_SOCKOPT_SNDBUF, 4 * 1024 * 1024);
+    if (!activeZeroTier)
+    {
+        enet_socket_set_option(host->socket, ENET_SOCKOPT_RCVBUF, 4 * 1024 * 1024);
+        enet_socket_set_option(host->socket, ENET_SOCKOPT_SNDBUF, 4 * 1024 * 1024);
+    }
     clientConnectStarted = timerGetTicks();
     startStun();
 #else
+    UNREFERENCED_PARAMETER(bConsole);
     LOG_F(ERROR, "Networking is disabled in this build");
     netResetToSinglePlayer();
 #endif
 }
 void netDeinitialize(void)
 {
+#ifndef NETCODE_DISABLE
+    if (activeZeroTier) zerotier::advertise(nullptr);
+#endif
     netLagCompensationReset();
     netServerCancelIntermission();
     stopLocalCinematic();
@@ -3184,6 +3328,8 @@ void netDeinitialize(void)
         enet_deinitialize();
 #endif
     initialized  = false;
+    activeZeroTier = false;
+    activeZeroTierNetwork.clear();
     clientPublicEndpoint.clear();
     intermission = {};
     connectionError.clear();
@@ -3211,7 +3357,35 @@ void netDisconnect()
 void netUpdate(void)
 {
 #ifndef NETCODE_DISABLE
-    if (!host || servicing)
+    if (servicing) return;
+    // The overlay/browser exists independently from a gameplay ENet host.
+    zerotier::pump();
+    if (activeZeroTier && !zerotier::ready()
+        && (zerotier::state() == zerotier::State::Error || zerotier::state() == zerotier::State::Denied))
+    {
+        std::string const reason = zerotier::status();
+        netDisconnect();
+        zeroTierError = reason;
+        LOG_F(ERROR, "NET ZeroTier connection ended: %s", reason.c_str());
+        viewSetErrorMessage(reason.c_str());
+        if (gDedicated) gQuitGame = true;
+        else gGameMenuMgr.Push(&menuMain, -1);
+        return;
+    }
+    if (activeZeroTier && host && netIsServer() && !gDedicated && gGameStarted && mapGeneration && ready2send)
+    {
+        zerotier::Advertisement advertisement;
+        advertisement.map = gGameOptions.zLevelName;
+        advertisement.mode = gGameOptions.nGameType == kGameTypeCoop ? "Co-op"
+                           : gGameOptions.nGameType == kGameTypeTeams ? "Teams" : "Bloodbath";
+        advertisement.players = numplayers;
+        advertisement.maxPlayers = gInitialNetPlayers;
+        advertisement.password = !serverPassword.empty();
+        advertisement.protocol = netwire::Version;
+        zerotier::advertise(&advertisement);
+    }
+    else if (activeZeroTier) zerotier::advertise(nullptr);
+    if (!host)
         return;
     servicing          = true;
     host->packetCopies = ClipRange(gNetPacketCopies, 1, 8);
@@ -3220,7 +3394,9 @@ void netUpdate(void)
     {
         enet_peer_reset(serverPeer);
         serverPeer = nullptr;
-        connectionError = "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
+        connectionError = activeZeroTier
+            ? "No reply from the ZeroTier host. Check that both players joined the same network and the host is still running."
+            : "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
         LOG_F(ERROR, "NET connection failed: %s", connectionError.c_str());
     }
     ENetEvent event;
@@ -3315,7 +3491,9 @@ void netUpdate(void)
                 serverPeer          = nullptr;
                 if (!clientTransportConnected)
                 {
-                    connectionError = "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
+                    connectionError = activeZeroTier
+                        ? "No reply from the ZeroTier host. Check that both players joined the same network and the host is still running."
+                        : "No reply from the server. Check the address and UDP port. STUN cannot bypass restrictive NAT/CGNAT; use port forwarding or a publicly reachable dedicated server.";
                     LOG_F(ERROR, "NET connection failed: %s", connectionError.c_str());
                 }
                 clientTransportConnected = false;

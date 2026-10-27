@@ -18,3 +18,6 @@ TMPDIR="$build_dir/run"
 export TMPDIR
 unset APPIMAGE
 "$build_dir/addon-restart-test"
+mkdir "$build_dir/run-zerotier"
+cd "$build_dir/run-zerotier"
+TMPDIR="$build_dir/run-zerotier" TEST_ZEROTIER_NETWORK=abcdef1234567890 "$build_dir/addon-restart-test"

@@ -25,6 +25,18 @@ bool client();
 bool dedicated();
 bool playback();
 bool inGame();
+// Transport choice applies to the next connection. A live session keeps its
+// transport while the player visits the other multiplayer menus.
+extern bool zeroTierSelected;
+extern char zeroTierNetwork[17];
+bool zeroTier();
+bool waitingForZeroTier();
+std::string zeroTierNetworkId();
+bool startZeroTier();
+bool zeroTierReady();
+std::string zeroTierStatus();
+bool selectZeroTier(bool enabled);
+bool hostZeroTier(int players, const char* password);
 uint32_t tick();
 uint32_t mapSerial();
 int localPlayer();
@@ -42,7 +54,8 @@ void send(int player, uint8_t type, const std::vector<uint8_t>& data, bool relia
 void broadcast(uint8_t type, const std::vector<uint8_t>& data, bool reliable = true);
 void disconnect(const std::string& reason = std::string());
 void reject(int player, const std::string& reason);
-void connect(const std::string& address);
+void connect(const std::string& address, bool useZeroTier = false,
+    const std::string& network = std::string());
 bool passwordRetryPending();
 void retryPassword();
 void cancelPasswordPrompt();

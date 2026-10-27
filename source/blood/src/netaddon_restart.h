@@ -16,7 +16,8 @@ void netAddonRestartRememberStartup(int argc, char const* const* argv);
 bool netAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const& host, uint16_t port, std::string const& password,
     std::string const& profileId, netaddon::Profile const& profile,
-    std::string const& directory, std::string& error);
+    std::string const& directory, std::string& error,
+    std::string const& zeroTierNetwork = {});
 bool netAddonRestartPending();
 bool netAddonRestartReady();
 // Resource archives activated by a server must never supply console scripts.

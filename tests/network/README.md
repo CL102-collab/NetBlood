@@ -7,6 +7,46 @@ their packet demos cannot replace legacy input-demo determinism checks.
 
 ## Standalone codecs and real UDP
 
+ZeroTier transport and browser checks use the production code with independent
+local datagram companions; they do not require a managed network or game data:
+
+```sh
+tests/network/zerotier-enet-test.sh
+tests/network/zerotier-browser-test.sh
+tests/network/zerotier-service-test.sh
+SANITIZE=1 tests/network/zerotier-enet-test.sh
+SANITIZE=1 tests/network/zerotier-browser-test.sh
+SANITIZE=1 tests/network/zerotier-service-test.sh
+```
+
+These cover native/custom ENet separation, fragmented reliable delivery under
+loss and reordering, discovery message bounds and expiry, full-server listings,
+and process-boundary browser/game traffic. The addon-restart checks also cover
+preserving the overlay network through the private activation handoff.
+
+After building the companion, `tools/zerotier/test_companion.py --helper
+/path/to/netblood-zerotier` checks the real SDK process's local access control,
+identity locking, status reporting, and shutdown. The graphical menu harness is
+`tests/network/zerotier-menus.py --nblood-assets /path/to/Blood
+--rednukem-assets /path/to/Duke --output /tmp/zerotier-menu-evidence`; run it under
+X11/Xvfb with ImageMagick, Tesseract, and Pillow installed. It checks both menu
+paths and the unconfigured-network UI, and retains screenshots. These local
+checks do not establish live ZeroTier NAT traversal. See the
+[deployment guide](../../docs/zerotier.md) for the required two-machine checks.
+
+With the real games' assets and an X11 display, the overlay gameplay fixtures run
+graphical listen hosts, password rejection, late joining, missing user-map
+downloads, and downloaded-mod activation/reconnection through the production
+game code. Only the independent SDK companion is replaced with a lossy local
+datagram fixture:
+
+```sh
+python3 tests/network/zerotier-gameplay.py --assets /path/to/Blood \
+  --output /tmp/zerotier-nblood-gameplay
+python3 tests/rednukem-network/zerotier.py --assets /path/to/Duke \
+  --output /tmp/zerotier-rednukem-gameplay
+```
+
 ```sh
 tests/network/protocol-test.sh
 SANITIZE=1 tests/network/protocol-test.sh

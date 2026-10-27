@@ -6,6 +6,8 @@
 #ifdef NETCODE_DISABLE
 namespace rnet
 {
+bool zeroTierSelected = false;
+char zeroTierNetwork[17] = "";
 namespace
 {
 void unavailable() { OSD_Printf("Multiplayer is unavailable in this NETCODE=0 build.\n"); }
@@ -17,6 +19,14 @@ bool client() { return false; }
 bool dedicated() { return false; }
 bool playback() { return false; }
 bool inGame() { return false; }
+bool zeroTier() { return false; }
+bool waitingForZeroTier() { return false; }
+std::string zeroTierNetworkId() { return {}; }
+bool startZeroTier() { unavailable(); return false; }
+bool zeroTierReady() { return false; }
+std::string zeroTierStatus() { return "Multiplayer unavailable in this build."; }
+bool selectZeroTier(bool) { unavailable(); return false; }
+bool hostZeroTier(int, const char*) { unavailable(); return false; }
 uint32_t tick() { return 0; }
 uint32_t mapSerial() { return 0; }
 int localPlayer() { return myconnectindex; }
@@ -33,7 +43,7 @@ void send(int, uint8_t, const std::vector<uint8_t>&, bool) {}
 void broadcast(uint8_t, const std::vector<uint8_t>&, bool) {}
 void disconnect(const std::string&) {}
 void reject(int, const std::string&) {}
-void connect(const std::string&) { unavailable(); }
+void connect(const std::string&, bool, const std::string&) { unavailable(); }
 bool passwordRetryPending() { return false; }
 void retryPassword() { unavailable(); }
 void cancelPasswordPrompt() {}
@@ -61,7 +71,7 @@ bool argument(int, const char* const* argv, int& index)
     const char* arg = argv[index];
     if (!Bstrcasecmp(arg,"-dedicated") || !Bstrcasecmp(arg,"-server") ||
         !Bstrcasecmp(arg,"-client") || !Bstrcasecmp(arg,"-connect") ||
-        !Bstrcasecmp(arg,"-port") || !Bstrcasecmp(arg,"-password"))
+        !Bstrcasecmp(arg,"-port") || !Bstrcasecmp(arg,"-password") || !Bstrcasecmp(arg,"-zerotier"))
     {
         initprintf("Multiplayer requires a build compiled with NETCODE=1.\n");
         G_GameExit("Multiplayer requires a build compiled with NETCODE=1.");

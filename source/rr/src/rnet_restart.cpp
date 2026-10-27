@@ -464,7 +464,7 @@ void rnetAddonRestartRememberStartup(int argc, char const* const* argv)
 bool rnetAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const& host, uint16_t port, std::string const& password,
     std::string const& profileId, rnetaddon::Profile const& profile,
-    std::string const& directory, std::string& error)
+    std::string const& directory, std::string& error, std::string const& zeroTierNetwork)
 {
     if (!pendingFile.empty()) return fail(error, "An addon activation restart is already pending.");
     if (!profileIdentity(profileId)) return fail(error, "The addon profile identifier is invalid.");
@@ -480,6 +480,11 @@ bool rnetAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     std::string const authority = host.find(':') == std::string::npos ? host : "[" + host + "]";
     if (!port || !rnet::uri::parse("rednukem://" + authority + ":" + std::to_string(port), endpoint, error)) return false;
     if (!cleanString(password, 128)) return fail(error, "The saved server password is invalid.");
+    if (!zeroTierNetwork.empty())
+    {
+        if (zeroTierNetwork.size() != 16 || zeroTierNetwork.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+            return fail(error, "The saved ZeroTier network ID is invalid.");
+    }
     std::vector<std::string> arguments;
     std::string const previousAddon = comparablePath(rnetAddonActiveDirectory());
     // Carry local preferences and base-data search paths. Old addon, map, demo,
@@ -493,7 +498,7 @@ bool rnetAddonRestartRequest(std::vector<std::string> const& resourceArguments,
             "pname", "x", "mx", "gamegrp", "maxalloc", "server", "client", "cachesize", "g", "grp", "game_dir", "cfg",
             "port", "h", "mh", "j", "c", "conf", "s", "gametype", "maxplayers", "timelimit", "scorelimit", "autoaim",
             "weaponsstay", "maplist", "episode", "difficulty", "losekeys", "mapvote", "friendlyfire", "holsterweapon",
-            "chaseview", "lives", "stunserver", "password", "discord-appid", "discord-server-address"}))
+            "chaseview", "lives", "stunserver", "password", "discord-appid", "discord-server-address", "zerotier"}))
         {
             std::string value;
             if (!optionValue(startupArguments, i, value)) return fail(error, "Cannot preserve a local startup option for addon activation.");
@@ -509,6 +514,11 @@ bool rnetAddonRestartRequest(std::vector<std::string> const& resourceArguments,
     arguments.push_back(authority + ":" + std::to_string(endpoint.port));
     arguments.push_back("-password");
     arguments.push_back(password);
+    if (!zeroTierNetwork.empty())
+    {
+        arguments.push_back("-zerotier");
+        arguments.push_back(zeroTierNetwork);
+    }
     if (arguments.size() > maxArguments) return fail(error, "Too many addon activation options.");
     for (auto const& argument : arguments)
         if (!cleanString(argument)) return fail(error, "An addon activation option exceeds the restart handoff limit.");

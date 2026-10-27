@@ -9,6 +9,7 @@ namespace rnet { namespace rules {
 void startup();
 void shutdown();
 void applySettings();
+void useMenuSettings();
 void mapChanging(bool restart);
 void mapStart();
 void playerJoined(int player);

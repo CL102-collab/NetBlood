@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "screen.h"
 #include "sound.h"
 #include "view.h"
+#include "zerotier.h"
 
 void SaveGame(CGameMenuItemZEditBitmap *, CGameMenuEvent *);
 
@@ -211,6 +212,10 @@ CGameMenu menuParentalLock;
 CGameMenu menuSorry;
 CGameMenu menuSorry2;
 CGameMenu menuNetwork;
+static CGameMenu menuNetworkInternet;
+static CGameMenu menuNetworkZeroTier;
+static CGameMenu menuNetworkZeroTierHost;
+static CGameMenu menuNetworkZeroTierBrowse;
 CGameMenu menuNetworkHost;
 CGameMenu menuNetworkJoin;
 static CGameMenu menuNetworkPassword;
@@ -778,33 +783,38 @@ void SetupNetworkHostMenu(CGameMenuItemChain *pItem);
 void SetupNetworkJoinMenu(CGameMenuItemChain *pItem);
 void NetworkHostGame(CGameMenuItemChain *pItem);
 void NetworkJoinGame(CGameMenuItemChain *pItem);
+static void SetupZeroTierMenu(CGameMenuItemChain *pItem);
+static void NetworkHostZeroTierGame(CGameMenuItemChain *pItem);
 static void NetworkRetryPassword(CGameMenuItemChain *pItem);
 static void NetworkCancelPassword(CGameMenuItemChain *pItem);
 static void NetworkPasswordEntered(CGameMenuItemZEdit *pItem, CGameMenuEvent *pEvent);
 
 char zNetAddressBuffer[sizeof(gNetAddress)] = "localhost";
 char zNetPortBuffer[6] = "23513";
+static char zZeroTierHostPassword[129];
 
 // Keep long connection values inside their row while editing the full string.
 // The cursor is at the end, so show the suffix when the value needs to scroll.
 class CGameMenuItemNetworkEdit : public CGameMenuItemZEdit
 {
     char* const m_value;
+    bool const m_password;
 
 public:
     CGameMenuItemNetworkEdit(const char* label, int y, char* value, int capacity,
-        void (*callback)(CGameMenuItemZEdit *, CGameMenuEvent *) = NULL)
-        : CGameMenuItemZEdit(label, 3, 66, y, 180, value, capacity, 0, callback, 0), m_value(value)
+        void (*callback)(CGameMenuItemZEdit *, CGameMenuEvent *) = NULL, bool password = false)
+        : CGameMenuItemZEdit(label, 3, 66, y, 180, value, capacity, 0, callback, 0), m_value(value), m_password(password)
     {}
 
     void Draw(void) override
     {
         int labelWidth = 0, textWidth = 0, ellipsisWidth = 0;
+        std::string const value = m_password ? std::string(Bstrlen(m_value), '*') : std::string(m_value);
         gMenuTextMgr.GetFontInfo(m_nFont, m_pzText, &labelWidth, NULL);
-        gMenuTextMgr.GetFontInfo(m_nFont, m_value, &textWidth, NULL);
+        gMenuTextMgr.GetFontInfo(m_nFont, value.c_str(), &textWidth, NULL);
         gMenuTextMgr.GetFontInfo(m_nFont, "...", &ellipsisWidth, NULL);
         int const available = ClipLow(m_nWidth - labelWidth - 8, 0);
-        char const* visible = m_value;
+        char const* visible = value.c_str();
         bool const scrolled = textWidth > available;
         while (*visible && textWidth + (scrolled ? ellipsisWidth : 0) > available)
             gMenuTextMgr.GetFontInfo(m_nFont, ++visible, &textWidth, NULL);
@@ -826,6 +836,9 @@ public:
 };
 
 CGameMenuItemTitle itemNetworkTitle("MULTIPLAYER", 1, 160, 20, 2038);
+CGameMenuItemChain itemNetworkInternet("INTERNET", 1, 0, 80, 320, 1, &menuNetworkInternet, -1, NULL, 0);
+CGameMenuItemChain itemNetworkZeroTier("ZEROTIER", 1, 0, 100, 320, 1, &menuNetworkZeroTier, -1, SetupZeroTierMenu, 0);
+static CGameMenuItemTitle itemNetworkInternetTitle("INTERNET", 1, 160, 20, 2038);
 CGameMenuItemChain itemNetworkHost("HOST A GAME", 1, 0, 80, 320, 1, &menuNetworkHost, -1, SetupNetworkHostMenu, 0);
 CGameMenuItemChain itemNetworkJoin("JOIN A GAME", 1, 0, 100, 320, 1, &menuNetworkJoin, -1, SetupNetworkJoinMenu, 0);
 
@@ -846,6 +859,201 @@ static CGameMenuItemText itemNetworkPasswordReason(zNetworkPasswordReason, 3, 16
 static CGameMenuItemNetworkEdit itemNetworkPasswordEdit("PASSWORD:", 90, gNetPassword, sizeof(gNetPassword), NetworkPasswordEntered);
 static CGameMenuItemChain itemNetworkPasswordConnect("CONNECT", 3, 66, 115, 180, 1, NULL, -1, NetworkRetryPassword, 0);
 static CGameMenuItemChain itemNetworkPasswordCancel("CANCEL", 3, 66, 135, 180, 1, NULL, -1, NetworkCancelPassword, 0);
+
+static void DrawNetworkBrowserText(std::string text, int x, int y, int width, int shade = 32, int palette = 0)
+{
+    int measured = 0;
+    gMenuTextMgr.GetFontInfo(3, text.c_str(), &measured, NULL);
+    if (measured > width)
+    {
+        while (!text.empty())
+        {
+            text.pop_back();
+            std::string const shortened = text + "...";
+            gMenuTextMgr.GetFontInfo(3, shortened.c_str(), &measured, NULL);
+            if (measured <= width)
+            {
+                text = shortened;
+                break;
+            }
+        }
+    }
+    gMenuTextMgr.DrawText(text.c_str(), 3, x, y, shade, palette, true);
+}
+
+class CGameMenuItemZeroTierStatus : public CGameMenuItem
+{
+public:
+    explicit CGameMenuItemZeroTierStatus(int y)
+    {
+        m_nY = y;
+        bCanSelect = false;
+    }
+
+    void Draw(void) override
+    {
+        zerotier::pump();
+        DrawNetworkBrowserText(netZeroTierStatus(), 12, m_nY, 296);
+    }
+};
+
+class CGameMenuItemZeroTierBrowser : public CGameMenuItem
+{
+    static int const VisibleRows = 5;
+    int m_selected = 0, m_top = 0;
+    std::string m_selectedAddress, m_feedback;
+
+    void KeepSelection()
+    {
+        auto const& games = zerotier::servers();
+        if (games.empty())
+        {
+            m_selected = m_top = 0;
+            return;
+        }
+        for (size_t i = 0; i < games.size(); ++i)
+            if (games[i].address == m_selectedAddress)
+            {
+                m_selected = int(i);
+                break;
+            }
+        m_selected = ClipRange(m_selected, 0, int(games.size()) - 1);
+        m_selectedAddress = games[m_selected].address;
+        m_top = ClipRange(m_top, ClipLow(m_selected - VisibleRows + 1, 0), m_selected);
+    }
+
+    void Select(int index)
+    {
+        auto const& games = zerotier::servers();
+        if (games.empty()) return;
+        m_selected = ClipRange(index, 0, int(games.size()) - 1);
+        m_selectedAddress = games[m_selected].address;
+        m_feedback.clear();
+        KeepSelection();
+    }
+
+    void Refresh()
+    {
+        m_feedback.clear();
+        netStartZeroTier();
+        zerotier::browse(true);
+    }
+
+    void Join()
+    {
+        KeepSelection();
+        auto const& games = zerotier::servers();
+        if (!netZeroTierReady() || games.empty()) return;
+        // Copy the selected advertisement before a menu transition pumps networking.
+        zerotier::Server const game = games[m_selected];
+        if (game.maxPlayers > 0 && game.players >= game.maxPlayers)
+        {
+            m_feedback = "This game is full.";
+            return;
+        }
+        gNetZeroTier = true;
+        if (game.password)
+        {
+            netDisconnect();
+            Bstrncpyz(gNetAddress, game.address.c_str(), sizeof(gNetAddress));
+            gNetPort = zerotier::GamePort;
+            NetworkPromptPassword("This game requires a password");
+        }
+        else
+            NetworkJoinEndpoint(game.address.c_str(), zerotier::GamePort);
+    }
+
+    bool Clicked(int x, int y, int width, int height)
+    {
+        if (!MOUSEACTIVECONDITION || gGameMenuMgr.MouseOutsideBounds(&gGameMenuMgr.m_mousepos,
+            x << 16, y << 16, width << 16, height << 16)) return false;
+        if (gGameMenuMgr.m_mousecaught || g_mouseClickState != MOUSE_RELEASED
+            || gGameMenuMgr.MouseOutsideBounds(&gGameMenuMgr.m_mousedownpos,
+                x << 16, y << 16, width << 16, height << 16)) return false;
+        gGameMenuMgr.m_mousecaught = 1;
+        return true;
+    }
+
+public:
+    CGameMenuItemZeroTierBrowser()
+    {
+        m_nFont = 3;
+        m_nX = 10;
+        m_nY = 70;
+        m_nWidth = 300;
+    }
+
+    void Draw(void) override
+    {
+        zerotier::pump();
+        KeepSelection();
+        DrawNetworkBrowserText(m_feedback.empty() ? netZeroTierStatus() : m_feedback, 10, 45, 300);
+        DrawNetworkBrowserText("MAP", 12, 61, 190);
+        DrawNetworkBrowserText("MODE", 225, 61, 83);
+        auto const& games = zerotier::servers();
+        if (games.empty() && netZeroTierReady())
+            DrawNetworkBrowserText("No games found.", 12, 85, 296);
+        for (int row = 0; row < VisibleRows && m_top + row < int(games.size()); ++row)
+        {
+            int const index = m_top + row, y = 74 + row * 20;
+            auto const& game = games[index];
+            int const shade = index == m_selected ? 32 - (int(totalclock) & 63) : 32;
+            DrawNetworkBrowserText(game.map, 12, y, 201, shade);
+            DrawNetworkBrowserText(game.mode, 225, y, 83, shade);
+            DrawNetworkBrowserText(std::to_string(game.players) + "/" + std::to_string(game.maxPlayers) + " PLAYERS", 12, y + 8, 86, shade);
+            DrawNetworkBrowserText(game.password ? "LOCKED" : "OPEN", 110, y + 8, 76, shade);
+            DrawNetworkBrowserText(game.ping < 0 ? "... MS" : std::to_string(game.ping) + " MS", 240, y + 8, 68, shade);
+            if (Clicked(10, y, 300, 18))
+            {
+                Select(index);
+                Join();
+                return;
+            }
+        }
+        DrawNetworkBrowserText("UP/DOWN: SELECT  ENTER: JOIN  LEFT/RIGHT: PAGE", 12, 178, 296);
+        DrawNetworkBrowserText("REFRESH (F5)", 12, 188, 150);
+        if (!games.empty())
+            DrawNetworkBrowserText(std::to_string(m_selected + 1) + "/" + std::to_string(games.size()), 260, 188, 48);
+        if (Clicked(10, 186, 150, 12)) Refresh();
+    }
+
+    bool Event(CGameMenuEvent& event) override
+    {
+        KeepSelection();
+        switch (event.at0)
+        {
+        case kMenuEventInit: Refresh(); return false;
+        case kMenuEventDeInit: zerotier::browse(false); return false;
+        case kMenuEventUp: case kMenuEventScrollUp: Select(m_selected - 1); return false;
+        case kMenuEventDown: case kMenuEventScrollDown: Select(m_selected + 1); return false;
+        case kMenuEventLeft: case kMenuEventTop: Select(m_selected - VisibleRows); return false;
+        case kMenuEventRight: case kMenuEventBottom: Select(m_selected + VisibleRows); return false;
+        case kMenuEventEnter: Join(); return false;
+        case kMenuEventKey:
+            if (event.at2 == sc_F5) { Refresh(); return false; }
+            break;
+        }
+        return CGameMenuItem::Event(event);
+    }
+};
+
+static CGameMenuItemTitle itemZeroTierTitle("ZEROTIER", 1, 160, 20, 2038);
+static CGameMenuItemChain itemZeroTierBrowse("BROWSE GAMES", 1, 0, 80, 320, 1, &menuNetworkZeroTierBrowse, -1, NULL, 0);
+static CGameMenuItemChain itemZeroTierHost("HOST GAME", 1, 0, 100, 320, 1, &menuNetworkZeroTierHost, -1, SetupZeroTierMenu, 0);
+static CGameMenuItemZeroTierStatus itemZeroTierStatus(140);
+static CGameMenuItemTitle itemZeroTierHostTitle("HOST GAME", 1, 160, 20, 2038);
+static CGameMenuItemSlider itemZeroTierHostPlayers("MAX PLAYERS:", 3, 66, 70, 180, kMaxPlayers, 2, kMaxPlayers, 1, NULL, -1, -1, kMenuSliderValue);
+static CGameMenuItemNetworkEdit itemZeroTierHostPassword("PASSWORD:", 90, zZeroTierHostPassword, sizeof(zZeroTierHostPassword), NULL, true);
+static CGameMenuItemChain itemZeroTierHostStart("HOST GAME", 3, 66, 115, 180, 1, NULL, -1, NetworkHostZeroTierGame, 0);
+static CGameMenuItemZeroTierStatus itemZeroTierHostStatus(150);
+static CGameMenuItemTitle itemZeroTierBrowseTitle("BROWSE GAMES", 1, 160, 20, 2038);
+static CGameMenuItemZeroTierBrowser itemZeroTierBrowser;
+
+static void UpdateZeroTierHostButton(CGameMenuItem* item)
+{
+    zerotier::pump();
+    item->bEnable = !netIsClient() && netZeroTierReady();
+}
 
 // There is no better way to do this than manually.
 
@@ -1752,6 +1960,8 @@ void UpdateNetworkMenus(void)
     itemMain1.bEnable = itemMainSave1.bEnable = !client;
     itemMain4.bEnable = itemMainSave3.bEnable = itemMainSave4.bEnable = !netIsLive();
     itemNetworkHost.bEnable = itemNetworkHostHost.bEnable = !client;
+    itemZeroTierHost.bEnable = !client;
+    itemZeroTierHostStart.bEnable = !client && netZeroTierReady();
     CGameMenuItem *const serverSettings[] = { &itemNetStart1, &itemNetStart2, &itemNetStart3, &itemNetStart4,
         &itemNetStart5, &itemNetStart6, &itemNetStart7, &itemNetStart8, &itemNetStart9, &itemNetStart10,
         &itemNetStart11, &itemNetStart12 };
@@ -1770,7 +1980,7 @@ bool CanOpenGameMenu(CGameMenu const *pMenu)
         return false;
     if (netIsClient() && (pMenu == &menuEpisode || pMenu == &menuDifficulty || pMenu == &menuDifficultyCustom
         || pMenu == &menuUserMap || pMenu == &menuNetStart || pMenu == &menuMultiUserMaps
-        || pMenu == &menuNetworkHost))
+        || pMenu == &menuNetworkHost || pMenu == &menuNetworkZeroTierHost))
     {
         viewSetMessage("Game settings are controlled by the server");
         return false;
@@ -2792,9 +3002,32 @@ void SetupNetworkMenu(void)
     }
 
     menuNetwork.Add(&itemNetworkTitle, false);
-    menuNetwork.Add(&itemNetworkHost, true);
-    menuNetwork.Add(&itemNetworkJoin, false);
+    menuNetwork.Add(&itemNetworkInternet, true);
+    menuNetwork.Add(&itemNetworkZeroTier, false);
     menuNetwork.Add(&itemBloodQAV, false);
+
+    menuNetworkInternet.Add(&itemNetworkInternetTitle, false);
+    menuNetworkInternet.Add(&itemNetworkHost, true);
+    menuNetworkInternet.Add(&itemNetworkJoin, false);
+    menuNetworkInternet.Add(&itemBloodQAV, false);
+
+    menuNetworkZeroTier.Add(&itemZeroTierTitle, false);
+    menuNetworkZeroTier.Add(&itemZeroTierBrowse, true);
+    menuNetworkZeroTier.Add(&itemZeroTierHost, false);
+    menuNetworkZeroTier.Add(&itemZeroTierStatus, false);
+    menuNetworkZeroTier.Add(&itemBloodQAV, false);
+
+    menuNetworkZeroTierHost.Add(&itemZeroTierHostTitle, false);
+    menuNetworkZeroTierHost.Add(&itemZeroTierHostPlayers, true);
+    menuNetworkZeroTierHost.Add(&itemZeroTierHostPassword, false);
+    menuNetworkZeroTierHost.Add(&itemZeroTierHostStart, false);
+    menuNetworkZeroTierHost.Add(&itemZeroTierHostStatus, false);
+    menuNetworkZeroTierHost.Add(&itemBloodQAV, false);
+    itemZeroTierHostStart.pPreDrawCallback = UpdateZeroTierHostButton;
+
+    menuNetworkZeroTierBrowse.Add(&itemZeroTierBrowseTitle, false);
+    menuNetworkZeroTierBrowse.Add(&itemZeroTierBrowser, true);
+    menuNetworkZeroTierBrowse.Add(&itemBloodQAV, false);
 
     menuNetworkHost.Add(&itemNetworkHostTitle, false);
     menuNetworkHost.Add(&itemNetworkHostPlayerNum, true);
@@ -2827,30 +3060,54 @@ void SetupNetworkJoinMenu(CGameMenuItemChain *pItem)
     UNREFERENCED_PARAMETER(pItem);
 }
 
-void NetworkHostGame(CGameMenuItemChain *pItem)
+static void SetupZeroTierMenu(CGameMenuItemChain* pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
+    netStartZeroTier();
+}
+
+static void HostNetworkGame(bool zeroTier)
+{
     if (netIsClient())
     {
         viewSetMessage("Disconnect before hosting a game");
         return;
     }
+    if (zeroTier && !netZeroTierReady())
+    {
+        netStartZeroTier();
+        viewSetMessage(netZeroTierStatus());
+        return;
+    }
+    std::string error;
+    const char* const password = zeroTier ? zZeroTierHostPassword : "";
+    if (!netValidatePassword(password, error))
+    {
+        viewSetMessage(error.c_str());
+        return;
+    }
     sndStopSong();
     FX_StopAllSounds();
     UpdateDacs(0, true);
-    gNetPlayers = itemNetworkHostPlayerNum.nValue;
-    gNetPort = strtoul(zNetPortBuffer, NULL, 10);
+    gNetPort = zeroTier ? zerotier::GamePort : strtoul(zNetPortBuffer, NULL, 10);
     if (!gNetPort)
         gNetPort = kNetDefaultPort;
     if (gDemo.at0 || gDemo.at1)
         gDemo.Close();
     netDisconnect();
     // netDisconnect resets the previous roster; retain the newly selected capacity.
-    gNetPlayers = itemNetworkHostPlayerNum.nValue;
+    gNetPlayers = zeroTier ? itemZeroTierHostPlayers.nValue : itemNetworkHostPlayerNum.nValue;
+    gNetZeroTier = zeroTier;
+    if (!netSetHostPassword(password, error))
+    {
+        viewSetMessage(error.c_str());
+        return;
+    }
     gNetMode = NETWORK_SERVER;
     gGameOptions.nGameType = kGameTypeCoop;
     gGameOptions.uGameFlags = kGameFlagNone;
     netInitialize(false);
+    if (!netIsServer()) return;
     gGameStarted = false;
     gStartNewGame = false;
     gMe = gView = &gPlayer[myconnectindex];
@@ -2862,10 +3119,23 @@ void NetworkHostGame(CGameMenuItemChain *pItem)
         gGameMenuMgr.Push(&menuNetStart, 1);
 }
 
+void NetworkHostGame(CGameMenuItemChain *pItem)
+{
+    UNREFERENCED_PARAMETER(pItem);
+    HostNetworkGame(false);
+}
+
+static void NetworkHostZeroTierGame(CGameMenuItemChain *pItem)
+{
+    UNREFERENCED_PARAMETER(pItem);
+    HostNetworkGame(true);
+}
+
 void NetworkJoinGame(CGameMenuItemChain *pItem)
 {
     UNREFERENCED_PARAMETER(pItem);
     unsigned long const port = strtoul(zNetPortBuffer, NULL, 10);
+    gNetZeroTier = false;
     NetworkJoinEndpoint(zNetAddressBuffer, port > 0 && port <= 65535 ? static_cast<uint16_t>(port) : kNetDefaultPort);
 }
 

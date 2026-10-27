@@ -24,6 +24,7 @@ void check(bool result, char const* expression, int line)
 #define CHECK(x) check(bool(x), #x, __LINE__)
 std::string const host = "201:f044:ca34:9cc9:2946:ad06:6f2d:5c4e";
 std::string const password = "a space \" quote \\ $(touch password-executed)";
+std::string const overlay = std::getenv("TEST_ZEROTIER_NETWORK") ? std::getenv("TEST_ZEROTIER_NETWORK") : "";
 std::string activatedRoot;
 std::string previousAddonRoot;
 rnetaddon::Profile activated;
@@ -81,6 +82,9 @@ int main(int argc, char** raw)
         CHECK(contains(arguments, cwd() + "/addon $(touch path-executed)"));
         CHECK(contains(arguments, "-connect")); CHECK(contains(arguments, "[" + host + "]:23514"));
         CHECK(contains(arguments, "-password")); CHECK(contains(arguments, password));
+        CHECK(contains(arguments, "-zerotier") == !overlay.empty());
+        if (!overlay.empty()) CHECK(contains(arguments, overlay));
+        CHECK(!contains(arguments, "1111111111111111"));
         CHECK(contains(arguments, "-nologo"));
         CHECK(contains(arguments, "-nosetup"));
         CHECK(contains(arguments, "-noautoload"));
@@ -113,7 +117,8 @@ int main(int argc, char** raw)
         "-j", "OLD-DIRECTORY", "-j", "./OLD-DIRECTORY/",
         "-game_dir", "OLD-DIRECTORY", "-g", "OLD.pk3", "OLD.zip", "-x", "OLD.CON", "-h=OLD.def", "-mh", "OLD-extra.def",
         "-rff=OLD.RFF", "-snd=OLD-SOUNDS.RFF", "-art=OLD-TILES", "-client=OLD.invalid", "-port=1111", "-password=OLD-password",
-        "-dedicated", "-server", "8", "-episode", "2", "-playback", "OLD.DEM", "-stunserver", "off"};
+        "-dedicated", "-server", "8", "-episode", "2", "-playback", "OLD.DEM", "-stunserver", "off",
+        "-zerotier", "1111111111111111"};
     rnetAddonRestartRememberStartup(int(sizeof(local) / sizeof(local[0])), local);
     CHECK(!rnetAddonRestartActive());
     CHECK(!rnetAddonRestartPending());
@@ -126,6 +131,7 @@ int main(int argc, char** raw)
     CHECK(!rnetAddonRestartRequest({"-x", "TEST.CON"}, host, 23514, password, std::string(32, '0'), addon, directory, error));
     CHECK(!rnetAddonRestartRequest({"-x", "TEST\n.CON"}, host, 23514, password, identity, addon, directory, error));
     CHECK(!rnetAddonRestartRequest({}, host, 23514, password, identity, addon, directory, error));
+    CHECK(!rnetAddonRestartRequest({"-x", "TEST.CON"}, host, 23514, password, identity, addon, directory, error, "not-a-network"));
     CHECK(!rnetAddonRestartPending());
 
     std::string const malformed = directory + "/malformed";
@@ -177,7 +183,7 @@ int main(int argc, char** raw)
     CHECK(waitpid(failedLaunch, &failureStatus, 0) == failedLaunch);
     CHECK(WIFEXITED(failureStatus) && WEXITSTATUS(failureStatus) == 0);
 #endif
-    CHECK(rnetAddonRestartRequest(resources, host, 23514, password, identity, addon, directory, error));
+    CHECK(rnetAddonRestartRequest(resources, host, 23514, password, identity, addon, directory, error, overlay));
     CHECK(rnetAddonRestartPending());
     CHECK(!rnetAddonRestartReady()); // The UI gets a real display interval.
     CHECK(!rnetAddonRestartRequest(resources, host, 23514, password, identity, addon, directory, error));

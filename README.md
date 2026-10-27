@@ -67,6 +67,10 @@ See [STUN configuration and limits](docs/stun.md).
 
 ### Dedicated multiplayer server
 
+For graphical hosting without forwarded ports, see [ZeroTier multiplayer](docs/zerotier.md).
+The Multiplayer menu offers Internet and ZeroTier connections, including a
+ZeroTier game browser and password-protected listen hosts.
+
 Start a headless server with hot-join and server-owned gameplay rules:
 
 ```sh
@@ -161,6 +165,9 @@ voting, team chat, a scoreboard and lagometer, co-op lives and revival, map
 rotation, STUN discovery, and Discord/URI joining. See the
 [multiplayer guide](docs/rednukem-networking.md) for setup, supported game modes,
 server rules, password protection, and packet/legacy demo compatibility.
+
+The [ZeroTier multiplayer guide](docs/zerotier.md) covers the bundled connection,
+game browser, and graphical hosting without a forwarded game port.
 
 ## Building from source
 See: https://wiki.eduke32.com/wiki/Main_Page

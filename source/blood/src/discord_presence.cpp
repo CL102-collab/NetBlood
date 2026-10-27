@@ -10,6 +10,7 @@
 #include "menu.h"
 #include "netdemo.h"
 #include "netserver.h"
+#include "network.h"
 #include "view.h"
 
 #include <ctime>
@@ -269,6 +270,7 @@ void discordPresenceApplyPendingJoin()
     std::string error;
     if (!parseJoin(uri, endpoint, error)) return;
     LOG_F(INFO, "DISCORD joining %s", uri.c_str());
+    gNetZeroTier = false;
     NetworkJoinEndpoint(endpoint.host.c_str(), endpoint.port);
     discordPresencePump();
 }
@@ -296,7 +298,7 @@ void discordPresencePrintStatus()
     LOG_F(INFO, "DISCORD status=%s application=%s", state, *gDiscordApplicationId ? gDiscordApplicationId : "unset");
     if (!registrationError.empty()) LOG_F(WARNING, "DISCORD launch registration: %s", registrationError.c_str());
     NetPresenceInfo info;
-    if (gNetMode == NETWORK_SERVER && !*gDiscordServerAddress
+    if (gNetMode == NETWORK_SERVER && !netZeroTierActive() && !*gDiscordServerAddress
         && (!netGetPresenceInfo(info) || info.joinUri.empty()))
         OSD_Printf("Set discord_server_address to netblood://public-host:port to enable invitations from this listen server.\n");
 }

@@ -19,6 +19,7 @@
 #include "rnet_presence.h"
 #include "rnet_uri.h"
 #include "rnet_demo.h"
+#include "zerotier.h"
 #include "../../blood/src/netprotocol.h"
 #include "../../blood/src/netsnapshot.h"
 #include <algorithm>
@@ -34,6 +35,8 @@
 #endif
 
 namespace rnet {
+bool zeroTierSelected = false;
+char zeroTierNetwork[17] = ZEROTIER_NETWORK_ID;
 namespace {
 constexpr uint32_t Magic = 0x314d4e52; // RNM1: deliberately distinct from Blood and lockstep.
 constexpr size_t HeaderSize = 17;
@@ -62,10 +65,17 @@ uint32_t lastSnapshot = 0, connectStart = 0, playbackStart = 0, lastApplied = 0;
 double nextTick = 0, nextSnapshot = 0;
 std::string remote, pendingConnect, currentMap, pendingMap, lastError, pendingError, loadedMapPath;
 std::string passwordRetryAddress;
+bool passwordRetryZeroTier = false;
+std::string passwordRetryNetwork;
 bool passwordPromptQueued = false, passwordWasIncorrect = false;
 bool mapQueued = false, freshMap = false, haveWelcome = false, transportConnected = false;
 bool recordWelcomePending = false, recordWelcomeRebase = false, playbackFinished = false;
 bool recordMapPending = false;
+bool activeZeroTier = false, pendingZeroTierHost = false;
+std::string zeroTierOption;
+std::string serviceNetwork, activeZeroTierNetwork, pendingZeroTierNetwork;
+std::string zeroTierError;
+std::string configuredZeroTierNetwork() { return zeroTierNetwork[0] ? zeroTierNetwork : ZEROTIER_NETWORK_ID; }
 bool contentLoadPending = false;
 int pendingVolume = 0, pendingLevel = 0, pendingSkill = 1;
 std::vector<uint8_t> welcomeBytes;
@@ -429,6 +439,8 @@ void process(int sender, const uint8_t* bytes, size_t size, ENetPeer* source = n
         if (in.end()) {
             if (!haveWelcome && (reason == "Server password required" || reason == "Incorrect server password")) {
                 passwordRetryAddress = remote;
+                passwordRetryZeroTier = activeZeroTier;
+                passwordRetryNetwork = activeZeroTierNetwork;
                 passwordPromptQueued = true;
                 passwordWasIncorrect = reason == "Incorrect server password";
             }
@@ -505,8 +517,34 @@ void remove(int p) {
     roster();
 }
 void beginConnect() {
+    if (zeroTierSelected && pendingZeroTierNetwork.empty()) pendingZeroTierNetwork = configuredZeroTierNetwork();
+    if (zeroTierSelected && (!zerotier::ready() || serviceNetwork != pendingZeroTierNetwork)) {
+        if (serviceNetwork != pendingZeroTierNetwork || zerotier::state() == zerotier::State::Stopped) {
+            if (active()) {
+                std::string const target = pendingConnect;
+                disconnect();
+                pendingConnect = target;
+            }
+            zerotier::Config config;
+            config.game = zerotier::Game::Rednukem;
+            config.networkId = pendingZeroTierNetwork;
+            std::string error;
+            if (!zerotier::start(config, error)) {
+                zeroTierError = error;
+                pendingConnect.clear();
+                fail(error.empty() ? zerotier::status() : error);
+            } else { serviceNetwork = pendingZeroTierNetwork; zeroTierError.clear(); }
+        } else if (zerotier::state() == zerotier::State::Error || zerotier::state() == zerotier::State::Denied) {
+            pendingConnect.clear();
+            fail(zerotier::status());
+        }
+        return;
+    }
     std::string target = pendingConnect; pendingConnect.clear();
     disconnect();
+    activeZeroTier = zeroTierSelected;
+    activeZeroTierNetwork = activeZeroTier ? pendingZeroTierNetwork : std::string();
+    pendingZeroTierNetwork.clear();
     if (!supportedGame()) { fail("Authoritative multiplayer requires Duke Nukem 3D or Redneck Rampage game data."); return; }
     remote = target;
     uri::Endpoint dest; std::string error;
@@ -517,8 +555,9 @@ void beginConnect() {
     remote = uri::address(dest);
     ENetAddress address{};
     if (enet_address_set_host(&address, &dest.host[0]) < 0) { fail("Cannot resolve server " + dest.host); return; }
-    address.port = dest.port;
-    g_netClient = enet_host_create(nullptr, 1, 3, 0, 0);
+    address.port = activeZeroTier ? zerotier::GamePort : dest.port;
+    g_netClient = activeZeroTier ? zerotier::createHost(nullptr, 1, 3, 0, 0)
+                                : enet_host_create(nullptr, 1, 3, 0, 0);
     if (!g_netClient) { fail("Could not create client UDP socket"); return; }
     g_netClient->packetCopies = packetCopies;
     g_netClient->maximumPacketSize = MaxPacketBytes;
@@ -568,12 +607,25 @@ void console() {
 int command(osdcmdptr_t p) {
     std::string const name = p->name;
     if (name == "net_status") status();
-    else if (name == "net_disconnect") disconnect();
+    else if (name == "net_disconnect") { pendingConnect.clear(); pendingZeroTierNetwork.clear(); disconnect(); }
     else if (name == "net_stoprecord") stopRecord();
     else if (name == "net_record" && p->numparms == 1) record(p->parms[0]);
     else if (name == "net_playback" && p->numparms == 1) play(p->parms[0]);
     else return OSDCMD_SHOWHELP;
     return OSDCMD_OK;
+}
+int zeroTierSetting(osdcmdptr_t p) {
+    if (p->numparms) {
+        if (active() || pendingZeroTierHost || !pendingConnect.empty()) {
+            OSD_Printf("Disconnect before changing the ZeroTier network.\n"); return OSDCMD_OK;
+        }
+        std::string const value = p->parms[0];
+        if (!value.empty() && (value.size() != 16 || value.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)) {
+            OSD_Printf("The ZeroTier network ID must contain 16 hexadecimal digits.\n");
+            return OSDCMD_OK;
+        }
+    }
+    return osdcmd_cvar_set(p);
 }
 }
 
@@ -583,6 +635,48 @@ bool client() { return running && g_netClient != nullptr; }
 bool dedicated() { return isDedicated; }
 bool playback() { return isPlayback; }
 bool inGame() { return loaded && !loading && (server() || lastApplied); }
+bool zeroTier() { return activeZeroTier && active(); }
+bool waitingForZeroTier() {
+    return zeroTierSelected && (pendingZeroTierHost || !pendingConnect.empty() || !pendingError.empty());
+}
+std::string zeroTierNetworkId() { return activeZeroTierNetwork; }
+bool zeroTierReady() { return zerotier::ready() && serviceNetwork == configuredZeroTierNetwork(); }
+std::string zeroTierStatus() { return zeroTierError.empty() ? zerotier::status() : zeroTierError; }
+bool selectZeroTier(bool enabled) {
+    if ((active() && enabled != activeZeroTier) ||
+        ((pendingZeroTierHost || !pendingConnect.empty()) && enabled != zeroTierSelected)) {
+        OSD_Printf("Disconnect before changing the connection type.\n");
+        return false;
+    }
+    zeroTierSelected = enabled;
+    return true;
+}
+bool startZeroTier() {
+    if (activeZeroTier && active()) return true;
+    zerotier::Config config;
+    config.game = zerotier::Game::Rednukem;
+    config.networkId = configuredZeroTierNetwork();
+    std::string error;
+    bool result = zerotier::start(config, error);
+    zeroTierError = result ? std::string() : error;
+    if (result) {
+        serviceNetwork = config.networkId;
+        Bstrncpyz(zeroTierNetwork, config.networkId.c_str(), sizeof(zeroTierNetwork));
+    }
+    if (!result && !error.empty()) OSD_Printf("ZeroTier: %s\n", error.c_str());
+    return result;
+}
+bool hostZeroTier(int players, const char* password) {
+    if (active()) { OSD_Printf("Disconnect before hosting a new game.\n"); return false; }
+    if (!selectZeroTier(true) || !startZeroTier() || !zeroTierReady()) return false;
+    setMaxPlayers(players);
+    rules::useMenuSettings();
+    Bstrncpyz(g_netPassword, password ? password : "", sizeof(g_netPassword));
+    g_networkMode = NET_SERVER;
+    pendingZeroTierHost = false;
+    startup();
+    return server();
+}
 uint32_t tick() { return serverTick; }
 uint32_t mapSerial() { return generation; }
 int localPlayer() { return dedicated() ? -1 : local; }
@@ -625,10 +719,20 @@ void reject(int p, const std::string& reason) {
     transmit(slots[p].peer, Reject, out.data, true);
     enet_peer_disconnect_later(slots[p].peer, 1);
 }
-void cancelPasswordPrompt() { passwordRetryAddress.clear(); passwordPromptQueued = false; }
+void cancelPasswordPrompt() { passwordRetryAddress.clear(); passwordPromptQueued = false; passwordRetryNetwork.clear(); }
 bool passwordRetryPending() { return !passwordRetryAddress.empty(); }
-void retryPassword() { std::string target = passwordRetryAddress; cancelPasswordPrompt(); if (!target.empty()) connect(target); }
-void connect(const std::string& target) { cancelPasswordPrompt(); pendingConnect = target; }
+void retryPassword() {
+    std::string target = passwordRetryAddress, network = passwordRetryNetwork;
+    bool const overlay = passwordRetryZeroTier;
+    cancelPasswordPrompt();
+    if (!target.empty()) connect(target, overlay, network);
+}
+void connect(const std::string& target, bool useZeroTier, const std::string& network) {
+    cancelPasswordPrompt();
+    zeroTierSelected = useZeroTier;
+    pendingZeroTierNetwork = useZeroTier ? (network.empty() ? configuredZeroTierNetwork() : network) : std::string();
+    pendingConnect = target;
+}
 void queueMap(const std::string& map, bool restart) {
     if (!server()) { OSD_Printf("Only the server operator can change maps. Use callvote.\n"); return; }
     pendingMap = map; freshMap = restart; mapQueued = true;
@@ -650,12 +754,21 @@ void contentReady(int p) {
     (void)p;
 }
 void startup() {
+    if (!zeroTierOption.empty()) Bstrncpyz(zeroTierNetwork, zeroTierOption.c_str(), sizeof(zeroTierNetwork));
     initialized = true; social::init(); rules::startup(); content::startup(); presence::startup();
     if (g_networkMode == NET_SERVER && pendingConnect.empty()) {
+        if (zeroTierSelected && !zeroTierReady()) {
+            pendingZeroTierHost = startZeroTier();
+            if (!pendingZeroTierHost) fail(zeroTierStatus());
+            return;
+        }
+        activeZeroTier = zeroTierSelected;
+        activeZeroTierNetwork = activeZeroTier ? zeroTierNetwork : std::string();
         if (!supportedGame()) { G_GameExit("Authoritative multiplayer requires Duke Nukem 3D or Redneck Rampage game data."); return; }
-        ENetAddress address{}; address.host = ENET_HOST_ANY; address.port = g_netPort;
+        ENetAddress address{}; address.host = ENET_HOST_ANY; address.port = activeZeroTier ? zerotier::GamePort : g_netPort;
         // Keep one transport slot available to explain a full gameplay roster.
-        g_netServer = enet_host_create(&address, capacity + 1, 3, 0, 0);
+        g_netServer = activeZeroTier ? zerotier::createHost(&address, capacity + 1, 3, 0, 0)
+                                   : enet_host_create(&address, capacity + 1, 3, 0, 0);
         if (!g_netServer) { G_GameExit("Could not create server UDP socket"); return; }
         g_netServer->packetCopies = packetCopies;
         g_netServer->maximumPacketSize = MaxPacketBytes;
@@ -680,6 +793,8 @@ void startup() {
     if (!pendingConnect.empty()) beginConnect();
 }
 void disconnect(const std::string& reason) {
+    zerotier::advertise(nullptr);
+    pendingZeroTierHost = false;
     cancelPasswordPrompt();
     presence::detachHost(); rules::shutdown(); content::shutdown(); netDemoStopRecording(); netDemoStopPlayback();
     if (host()) {
@@ -701,10 +816,14 @@ void disconnect(const std::string& reason) {
     }
     if (!reason.empty()) { lastError = reason; OSD_Printf("NET error: %s\n", reason.c_str()); }
 }
-void shutdown() { presence::shutdown(); disconnect(); content::shutdown(); initialized = false; }
+void shutdown() { presence::shutdown(); disconnect(); content::shutdown(); zerotier::stop(); initialized = false; }
 void pump() {
+    zerotier::pump();
     if (!initialized || pumping) return;
     pumping = true;
+    if (activeZeroTier && active() && !zerotier::ready() &&
+        (zerotier::state() == zerotier::State::Error || zerotier::state() == zerotier::State::Denied))
+        fail(zerotier::status());
     if (host()) {
         host()->packetCopies = std::max(1, std::min(8, packetCopies));
         ENetEvent event{}; unsigned budget = 256;
@@ -733,7 +852,8 @@ void pump() {
         if (server()) for (int p = 0; p < capacity; ++p) if (slots[p].peer && !slots[p].authenticated && timerGetTicks() - slots[p].lastInput > 15000) reject(p, "Authentication timed out");
     }
     if (client() && !transportConnected && timerGetTicks() - connectStart > 15000)
-        fail("No response from server. Check its address and UDP port forwarding; STUN cannot bypass restrictive NAT or CGNAT.");
+        fail(activeZeroTier ? "The ZeroTier host did not reply. Check that the game is still running and both players are connected."
+            : "No response from server. Check its address and UDP port forwarding; STUN cannot bypass restrictive NAT or CGNAT.");
     if (playback() && !rules::cinematicPlaying()) {
         std::vector<uint8_t> packet; uint32_t time; unsigned budget = 128;
         while (budget-- && netDemoNextPacket(timerGetTicks() - playbackStart, packet, time)) process(-1, packet.data(), packet.size());
@@ -745,19 +865,41 @@ void pump() {
             }
         }
     }
+    if (server() && activeZeroTier && loaded) {
+        zerotier::Advertisement game;
+        game.map = currentMap;
+        game.mode = rules::coop() ? "Co-op" : rules::teams() ? "Teams" : "Dukematch";
+        game.maxPlayers = capacity;
+        game.password = g_netPassword[0] != 0;
+        game.protocol = Protocol;
+        for (int p = 0; p < MAXPLAYERS; ++p) game.players += connected(p);
+        zerotier::advertise(&game);
+    }
     content::pump(); presence::pump(); console();
     if (host()) enet_host_flush(host());
     pumping = false;
     if (!pendingError.empty()) {
         std::string error; error.swap(pendingError);
         std::string const retryAddress = passwordRetryAddress;
+        std::string const retryNetwork = passwordRetryNetwork;
+        bool const retryZeroTier = passwordRetryZeroTier;
         bool const prompt = passwordPromptQueued;
+        bool const fatalOverlay = dedicated() && (zeroTier() || zeroTierSelected);
         disconnect(error);
-        if (prompt && !dedicated()) { passwordRetryAddress = retryAddress; passwordPromptQueued = true; }
+        if (fatalOverlay) { G_GameExit(error.c_str()); return; }
+        if (prompt && !dedicated()) {
+            passwordRetryAddress = retryAddress; passwordRetryNetwork = retryNetwork;
+            passwordRetryZeroTier = retryZeroTier; passwordPromptQueued = true;
+        }
     }
 }
 void gameTick() {
     if (!initialized) return;
+    if (pendingZeroTierHost && zeroTierReady()) { pendingZeroTierHost = false; startup(); }
+    else if (pendingZeroTierHost && (zerotier::state() == zerotier::State::Error || zerotier::state() == zerotier::State::Denied)) {
+        pendingZeroTierHost = false;
+        fail(zerotier::status());
+    }
     if (passwordPromptQueued) {
         passwordPromptQueued = false;
         Menu_NetworkPasswordPrompt(passwordWasIncorrect);
@@ -866,8 +1008,9 @@ void registerCommands() {
     static osdcvardata_t vars[] = {
         {"net_packetcopies", "Total UDP datagram copies (1-8)", (void*)&packetCopies, CVAR_INT, 1, 8},
         {"net_snapshotrate", "Server snapshots per second", (void*)&snapshotRate, CVAR_INT, 1, 30},
+        {"net_zerotier_network", "Shared ZeroTier network ID (16 hexadecimal digits)", zeroTierNetwork, CVAR_STRING | CVAR_FUNCPTR, 0, sizeof(zeroTierNetwork)},
     };
-    for (auto& var : vars) OSD_RegisterCvar(&var, osdcmd_cvar_set);
+    for (auto& var : vars) OSD_RegisterCvar(&var, !Bstrcmp(var.name, "net_zerotier_network") ? zeroTierSetting : osdcmd_cvar_set);
     social::registerCommands(); audio::registerCommands(); rules::registerCommands(); presence::registerCommands();
 }
 bool earlyArguments(int& argc, const char* const*& argv, int& code) {
@@ -883,6 +1026,17 @@ bool argument(int argc, const char* const* argv, int& i) {
     if (presence::parseArgument(argc, argv, i)) return true;
     if (rules::parseArgument(argc, argv, i)) { ++i; return true; }
     const char* arg = argv[i]; if (arg[0] != '-') return false;
+    if (!Bstrcasecmp(arg, "-zerotier")) {
+        ++i;
+        if (i < argc && argv[i][0] != '-') {
+            if (std::strlen(argv[i]) != 16 || std::strspn(argv[i], "0123456789abcdefABCDEF") != 16)
+                G_GameExit("-zerotier requires a 16-digit hexadecimal network ID");
+            zeroTierOption = argv[i++];
+            Bstrncpyz(zeroTierNetwork, zeroTierOption.c_str(), sizeof(zeroTierNetwork));
+        }
+        zeroTierSelected = true;
+        return true;
+    }
     if (!Bstrcasecmp(arg, "-dedicated")) {
         isDedicated = true; g_networkMode = NET_SERVER; g_noSetup = g_noLogo = true; ++i; return true;
     }

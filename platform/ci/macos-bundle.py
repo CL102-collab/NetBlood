@@ -34,11 +34,16 @@ def main():
     for path in (frameworks, resources, executables):
         path.mkdir(parents=True)
     run(sys.executable, str(repo / "platform/ci/package.py"), "stage",
-        "--destination", str(resources))
+        "--destination", str(resources), "--zerotier-build", str(work / "x86_64/zerotier-output"),
+        "--executable-directory", str(executables))
     for name in ("nblood.icns", "game.png"):
         shutil.copy2(repo / "platform/Apple/bundles/NBlood.app/Contents/Resources" / name, resources)
     binary = executables / "NBlood"
     run("lipo", "-create", str(work / "x86_64/nblood"), str(work / "arm64/nblood"), "-output", str(binary))
+    companion = executables / "netblood-zerotier"
+    run("lipo", "-create", str(work / "x86_64/zerotier-output/netblood-zerotier"),
+        str(work / "arm64/zerotier-output/netblood-zerotier"), "-output", str(companion))
+    binaries = (binary, companion)
     for arch in ("x86_64", "arm64"):
         if not any("/Metal.framework/" in dependency for dependency in dependencies(binary, arch)):
             raise SystemExit(f"Native Metal framework missing from the {arch} executable")
@@ -51,9 +56,10 @@ def main():
         str(work / "arm64/prefix/lib" / sdl_name), "-output", str(sdl))
     dylibs = (sdl,)
     bundled = {path.name for path in dylibs}
-    for path in (binary, *dylibs):
+    for path in (*binaries, *dylibs):
         run("lipo", "-verify_arch", "x86_64", "arm64", str(path))
-        for dependency in dependencies(path):
+        all_dependencies = set().union(*(dependencies(path, arch) for arch in ("x86_64", "arm64")))
+        for dependency in all_dependencies:
             if dependency.startswith(("/usr/lib/", "/System/Library/")):
                 continue
             name = pathlib.PurePosixPath(dependency).name
@@ -62,9 +68,11 @@ def main():
             run("install_name_tool", "-change", dependency, "@rpath/" + name, str(path))
         if path in dylibs:
             run("install_name_tool", "-id", "@rpath/" + path.name, str(path))
-    run("install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(binary))
-    for path in (binary, *dylibs):
-        for dependency in dependencies(path):
+    for path in binaries:
+        run("install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(path))
+    for path in (*binaries, *dylibs):
+        all_dependencies = set().union(*(dependencies(path, arch) for arch in ("x86_64", "arm64")))
+        for dependency in all_dependencies:
             if not dependency.startswith(("/usr/lib/", "/System/Library/", "@rpath/")):
                 raise SystemExit(f"Non-relocatable dependency: {dependency}")
 
@@ -89,12 +97,16 @@ def main():
         "Supply your own Blood 1.21 game files in the startup window.\n"
         "This macOS package includes software, Polymost OpenGL, and native Metal rendering.\n"
         "Metal requires a Metal-capable GPU; no MoltenVK runtime is used.\n"
+        "The universal ZeroTier companion is included; no separate installation is needed.\n"
+        "See docs/zerotier.md for shared-network setup and availability.\n"
         "This development package is ad-hoc signed, not Apple-notarized.\n")
-    for path in (*dylibs, binary, app):
+    for path in (*dylibs, companion, binary, app):
         run("codesign", "--force", "--sign", "-", str(path))
     run("codesign", "--verify", "--deep", "--strict", str(app))
     if "Usage:" not in run(str(binary), "-dedicated", "-?"):
         raise SystemExit("Packaged native executable did not print its command-line help")
+    if "IPC version" not in run(str(companion), "--help"):
+        raise SystemExit("Packaged native ZeroTier companion did not print its command-line help")
     print(f"Verified both architectures, dependency closure and signature: {app}")
 
 
