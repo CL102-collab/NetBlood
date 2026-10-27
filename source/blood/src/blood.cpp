@@ -1385,7 +1385,7 @@ void PrintHelp(void)
         "-art [file.art]\tSpecify an art base file name\n"
         "-cachesize #\tSet cache size in kB\n"
         "-cfg [file.cfg]\tUse an alternate configuration file\n"
-        "-client [host]\tConnect to a multiplayer game\n"
+        "-client [host]\tConnect to a multiplayer game (implies -quick and -nodemo)\n"
         "-stunserver [auto|off|host:port]\tPublic UDP address discovery (default: Google STUN)\n"
         "netblood://host[:port]\tJoin a server from a connection link (no other arguments)\n"
         "-connect-uri [URI]\tOpen a netblood:// connection link (no other arguments)\n"
@@ -1565,6 +1565,7 @@ void ParseOptions(void)
             if (OptArgc < 1)
                 ThrowError("Missing argument");
             gNetMode = NETWORK_CLIENT;
+            bQuickStart = bNoDemo = true;
             strncpy(gNetAddress, OptArgv[0], sizeof(gNetAddress)-1);
             break;
         case 14:
